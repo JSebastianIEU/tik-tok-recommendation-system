@@ -5,7 +5,7 @@ from typing import Tuple, List
 from .schemas import TikTokPost
 
 from typing import Any, Dict, Iterable, List, Tuple
-from datetime import datetime
+from datetime import datetime, timezone
 
 from pydantic import ValidationError
 
@@ -51,7 +51,7 @@ def validate_record(record: Dict[str, Any]) -> Tuple[bool, List[str]]:
         errors.append("each post must have at least 3 comments")
 
     # Validate each comment created_at is not in the future and is a datetime
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     for idx, c in enumerate(post.comments):
         if not isinstance(c, Comment):
             errors.append(f"comment[{idx}] is not a Comment instance")
