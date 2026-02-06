@@ -7,6 +7,12 @@ Usage: python scripts/validate_data.py data/mock/tiktok_posts_mock.jsonl
 import os
 import sys
 import argparse
+import argparse
+import os
+from pathlib import Path
+
+from src.common.validation import validate_file
+from src.common.constants import MOCK_DATA_PATH
 
 # Ensure repository root is on PYTHONPATH so `src` package is importable
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -44,16 +50,6 @@ if __name__ == "__main__":
 
 Usage: python scripts/validate_data.py data/mock/tiktok_posts_mock.jsonl
 """
-
-import sys
-import argparse
-import os
-import sys
-import sys
-from pathlib import Path
-
-from src.common.validation import validate_file
-from src.common.constants import MOCK_DATA_PATH
 
 # Ensure repository root is on PYTHONPATH so `src` package is importable
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
