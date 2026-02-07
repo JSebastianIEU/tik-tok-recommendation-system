@@ -20,5 +20,7 @@ jobs:
         run: |
           echo "TODO: run linter (e.g., ruff .)"
       - name: Test
+        env:
+          PYTHONPATH: .
         run: |
           pytest
