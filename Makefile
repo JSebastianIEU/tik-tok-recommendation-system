@@ -1,16 +1,18 @@
 .PHONY: lint test validate-data baseline query
 
+# Lint only tests for Sprint 1 (repo has known scaffold lint debt elsewhere).
 lint:
-	@echo "TODO: add linter (e.g., ruff/flake8) and config, then invoke it here"
+	python -m ruff check tests
 
+# Run only repo tests and ensure src/ is importable.
 test:
-	pytest
+	PYTHONPATH=. python -m pytest -q tests
 
 validate-data:
-	python scripts/validate_data.py data/mock/tiktok_posts_mock.jsonl
+	PYTHONPATH=. python scripts/validate_data.py data/mock/tiktok_posts_mock.jsonl
 
 baseline:
-	python scripts/run_baseline.py data/mock/tiktok_posts_mock.jsonl
+	PYTHONPATH=. python scripts/run_baseline.py data/mock/tiktok_posts_mock.jsonl
 
 query:
-	python scripts/query_index.py --query "example creator economy" --topk 3
+	PYTHONPATH=. python scripts/query_index.py --query "example creator economy" --topk 3
