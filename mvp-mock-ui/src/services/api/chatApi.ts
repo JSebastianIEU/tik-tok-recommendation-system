@@ -1,9 +1,9 @@
 import { MockChatService } from "../mock/mockChatApi";
 import type { IChatService } from "../contracts/IChatService";
 import type { ChatMessage, ChatRequest } from "../contracts/models";
-import { buildApiUrl, MOCK_ONLY_MODE } from "./runtimeConfig";
+import { buildApiUrl } from "./runtimeConfig";
 
-const CHAT_API_URL = buildApiUrl("/chat");
+const CHAT_API_URL = buildApiUrl("/api/chat");
 
 interface ChatApiResponse {
   answer: string;
@@ -22,10 +22,6 @@ export class ApiChatService implements IChatService {
   private readonly mockService = new MockChatService();
 
   public async sendMessage(request: ChatRequest): Promise<ChatMessage> {
-    if (MOCK_ONLY_MODE) {
-      return this.mockService.sendMessage(request);
-    }
-
     let response: Response;
 
     try {

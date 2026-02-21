@@ -1,8 +1,8 @@
 import type { ReportOutput } from "../../features/report/types";
 import { generateMockReport } from "../mock/mockReportApi";
-import { buildApiUrl, MOCK_ONLY_MODE } from "./runtimeConfig";
+import { buildApiUrl } from "./runtimeConfig";
 
-const REPORT_API_URL = buildApiUrl("/generate-report");
+const REPORT_API_URL = buildApiUrl("/api/generate-report");
 
 export interface GenerateReportPayload {
   seed_video_id: string;
@@ -27,10 +27,6 @@ function fallbackToMock(payload: GenerateReportPayload): ReportOutput {
 export async function generateReport(
   payload: GenerateReportPayload
 ): Promise<ReportOutput> {
-  if (MOCK_ONLY_MODE) {
-    return fallbackToMock(payload);
-  }
-
   let response: Response;
 
   try {
