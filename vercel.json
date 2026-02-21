@@ -5,6 +5,14 @@
   "outputDirectory": "mvp-mock-ui/dist",
   "rewrites": [
     {
+      "source": "/api/(.*)",
+      "destination": "/api/$1"
+    },
+    {
+      "source": "/thumbnail",
+      "destination": "/api/thumbnail"
+    },
+    {
       "source": "/(.*)",
       "destination": "/index.html"
     }

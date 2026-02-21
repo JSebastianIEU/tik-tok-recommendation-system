@@ -17,10 +17,29 @@ function isGitHubPagesHost(): boolean {
   return hostname.endsWith("github.io");
 }
 
+function isLocalhostHost(hostname: string): boolean {
+  const normalized = hostname.trim().toLowerCase();
+  return (
+    normalized === "localhost" ||
+    normalized === "127.0.0.1" ||
+    normalized === "::1"
+  );
+}
+
+function getDefaultApiBaseUrl(): string {
+  if (typeof window === "undefined") {
+    return DEFAULT_LOCAL_API_BASE_URL;
+  }
+
+  return isLocalhostHost(window.location.hostname)
+    ? DEFAULT_LOCAL_API_BASE_URL
+    : normalizeBaseUrl(window.location.origin);
+}
+
 const configuredBaseUrl = normalizeBaseUrl(import.meta.env.VITE_API_BASE_URL ?? "");
 
 export const API_BASE_URL =
-  configuredBaseUrl || DEFAULT_LOCAL_API_BASE_URL;
+  configuredBaseUrl || getDefaultApiBaseUrl();
 
 export const MOCK_ONLY_MODE =
   isTruthy(import.meta.env.VITE_USE_MOCK_ONLY) || isGitHubPagesHost();
