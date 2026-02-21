@@ -8,7 +8,6 @@
     "server": "tsx server/index.ts",
     "dev:all": "concurrently -k -n API,WEB -c cyan,magenta \"npm run server\" \"npm run dev -- --host 127.0.0.1 --port 5173 --strictPort --clearScreen false\"",
     "build": "tsc && vite build",
-    "build:gh": "tsc && vite build --mode github-pages --base=./",
     "preview": "vite preview"
   },
   "dependencies": {
