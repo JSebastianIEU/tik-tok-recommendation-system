@@ -61,8 +61,8 @@ Después de importar, Vercel mostrará pantalla "Configure Project". Verificar:
 - Si no: seleccionar manualmente "Vite"
 
 **Root Directory:**  
-- ✅ Debe estar vacío o mostrar "."
-- Esta es la raíz del repositorio, no `mvp-mock-ui/` (Vercel maneja la detección interna)
+- ✅ Debe mostrar: `mvp-mock-ui`
+- Esta app frontend vive dentro de `mvp-mock-ui/`, por eso el build debe ejecutarse ahí
 
 **Build Command:**  
 - ✅ Debe mostrar: `npm run build`
@@ -70,8 +70,8 @@ Después de importar, Vercel mostrará pantalla "Configure Project". Verificar:
 - NO cambiar
 
 **Output Directory:**  
-- ✅ Debe mostrar: `mvp-mock-ui/dist`
-- Esto se calcula automáticamente desde `vite.config.ts` (línea 5-6)
+- ✅ Debe mostrar: `dist`
+- Al usar `Root Directory: mvp-mock-ui`, la salida se resuelve como `mvp-mock-ui/dist`
 - NO cambiar
 
 **Install Command:**  
@@ -86,9 +86,9 @@ Después de importar, Vercel mostrará pantalla "Configure Project". Verificar:
 
 ```
 Framework detected: Vite ✅
-Root Directory: . ✅
+Root Directory: mvp-mock-ui ✅
 Build Command: npm run build ✅
-Output Directory: mvp-mock-ui/dist ✅
+Output Directory: dist ✅
 Install Command: npm install ✅
 ```
 
@@ -261,7 +261,7 @@ Solución: Ver PASO 7
 - Vercel muestra "✓ Ready. Deployed"
 - Pero al abrir el link: error 404
 
-**Causa probable:** Output directory mal configurado
+**Causa probable:** Root directory u output directory mal configurados
 
 **Solución:**
 
@@ -269,7 +269,8 @@ Solución: Ver PASO 7
    - Vercel dashboard → Seleccionar proyecto → Settings → General
    
 2. Verificar: **Build & Deployment**
-   - "Output Directory": debe ser `mvp-mock-ui/dist`
+   - "Root Directory": debe ser `mvp-mock-ui`
+   - "Output Directory": debe ser `dist`
    - Si es diferente, cambiar y hacer clic en "Save"
 
 3. En dashboard, hacer clic en "Redeploy" (arriba a la derecha)

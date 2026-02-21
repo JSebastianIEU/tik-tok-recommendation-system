@@ -16,10 +16,10 @@ This project is configured and ready to be deployed on Vercel. Follow these step
    - Vercel will auto-detect that this is a Node.js + Vite project
 
 2. **Configure Build Settings**
-   - **Root Directory**: Leave blank (project root) or set to `.`
-   - **Build Command**: `npm run build` (Vercel will auto-detect this)
-   - **Output Directory**: `mvp-mock-ui/dist` (Vercel will auto-detect this from vite.config.ts)
-   - **Install Command**: `npm install` (default)
+   - **Root Directory**: `mvp-mock-ui`
+   - **Build Command**: `npm run build`
+   - **Output Directory**: `dist`
+   - **Install Command**: `npm install`
 
 3. **Environment Variables** (if needed)
    - Set `DEEPSEEK_API_KEY` and other environment variables in Vercel project settings
