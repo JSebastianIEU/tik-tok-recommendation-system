@@ -2,19 +2,5 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "installCommand": "cd mvp-mock-ui && npm install",
   "buildCommand": "cd mvp-mock-ui && npm run build",
-  "outputDirectory": "mvp-mock-ui/dist",
-  "rewrites": [
-    {
-      "source": "/api/(.*)",
-      "destination": "/api/$1"
-    },
-    {
-      "source": "/thumbnail",
-      "destination": "/api/thumbnail"
-    },
-    {
-      "source": "/(.*)",
-      "destination": "/index.html"
-    }
-  ]
+  "outputDirectory": "mvp-mock-ui/dist"
 }

@@ -1,6 +1,6 @@
 import { buildApiUrl, MOCK_ONLY_MODE } from "../../../services/api/runtimeConfig";
 
-const THUMBNAIL_PROXY_URL = buildApiUrl("/thumbnail");
+const THUMBNAIL_PROXY_URL = buildApiUrl("/api/thumbnail");
 
 export function buildThumbnailProxyUrl(
   thumbnailUrl: string,
