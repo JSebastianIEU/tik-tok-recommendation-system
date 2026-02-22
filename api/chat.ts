@@ -1,8 +1,4 @@
 // @ts-nocheck
-import { buildLocalChatAnswer } from "../mvp-mock-ui/server/fallback/buildLocalChatAnswer";
-import { buildChatPrompt } from "../mvp-mock-ui/server/prompts/buildChatPrompt";
-import { validateReportOutput } from "../mvp-mock-ui/server/validation/validateReportOutput";
-import type { ReportOutput } from "../mvp-mock-ui/src/features/report/types";
 
 interface ChatRequestBody {
   report?: unknown;
@@ -18,6 +14,19 @@ interface ApiResponse {
   setHeader(name: string, value: string): void;
   status(code: number): ApiResponse;
   json(payload: unknown): void;
+}
+
+function hasValidReportShape(value: unknown): boolean {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const report = value as Record<string, unknown>;
+  return (
+    typeof report.header === "object" &&
+    typeof report.executive_summary === "object" &&
+    Array.isArray((report as { comparables?: unknown }).comparables)
+  );
 }
 
 function removeEmoji(value: string): string {
@@ -45,6 +54,19 @@ function extractTextContent(content: unknown): string {
   return "";
 }
 
+function buildLocalFallbackAnswer(question: string): string {
+  const q = question.toLowerCase();
+  if (q.includes("hashtag")) {
+    return "Use 3-5 hashtags: 2 niche, 2 medium, 1 broad. Keep them directly tied to the promised outcome in your hook.";
+  }
+
+  if (q.includes("retention") || q.includes("hook")) {
+    return "Retention improves when the first 2 seconds show the outcome before explanation. Shorten setup, show proof first.";
+  }
+
+  return "Focus next on hook clarity, tighter edit pacing, and one explicit CTA with a single action.";
+}
+
 export default async function handler(request: ApiRequest, response: ApiResponse) {
   if (request.method !== "POST") {
     response.setHeader("Allow", "POST");
@@ -61,7 +83,7 @@ export default async function handler(request: ApiRequest, response: ApiResponse
       return;
     }
 
-    if (!validateReportOutput(body.report)) {
+    if (!hasValidReportShape(body.report)) {
       response.status(400).json({ error: "The provided report payload is invalid." });
       return;
     }
@@ -74,15 +96,10 @@ export default async function handler(request: ApiRequest, response: ApiResponse
     if (!deepSeekEnabled) {
       response.setHeader("x-chat-source", "baseline-local-no-key");
       response.json({
-        answer: removeEmoji(buildLocalChatAnswer(body.report as ReportOutput, question))
+        answer: removeEmoji(buildLocalFallbackAnswer(question))
       });
       return;
     }
-
-    const chatPrompt = buildChatPrompt({
-      report: body.report as ReportOutput,
-      question
-    });
 
     try {
       const providerResponse = await fetch(`${baseUrl}/chat/completions`, {
@@ -102,7 +119,16 @@ export default async function handler(request: ApiRequest, response: ApiResponse
             },
             {
               role: "user",
-              content: chatPrompt
+              content: JSON.stringify({
+                question,
+                summary:
+                  typeof (body.report as any)?.executive_summary?.summary_text === "string"
+                    ? (body.report as any).executive_summary.summary_text
+                    : "",
+                metrics: Array.isArray((body.report as any)?.executive_summary?.metrics)
+                  ? (body.report as any).executive_summary.metrics
+                  : []
+              })
             }
           ]
         })
@@ -125,7 +151,7 @@ export default async function handler(request: ApiRequest, response: ApiResponse
       console.error(providerError);
       response.setHeader("x-chat-source", "baseline-local-provider-error");
       response.json({
-        answer: removeEmoji(buildLocalChatAnswer(body.report as ReportOutput, question))
+        answer: removeEmoji(buildLocalFallbackAnswer(question))
       });
     }
   } catch (error) {
