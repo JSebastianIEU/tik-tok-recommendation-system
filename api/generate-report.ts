@@ -136,6 +136,28 @@ function engagementRate(item: DatasetItem): string {
   return `${(((likes + comments + shares) / views) * 100).toFixed(2)}%`;
 }
 
+function toNumber(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  return 0;
+}
+
+function average(values: number[]): number {
+  if (values.length === 0) {
+    return 0;
+  }
+  return values.reduce((sum, current) => sum + current, 0) / values.length;
+}
+
+function toPercentScale(value: number, maxExpected: number): number {
+  if (maxExpected <= 0) {
+    return 0;
+  }
+  const scaled = (value / maxExpected) * 100;
+  return Math.max(0, Math.min(100, Math.round(scaled)));
+}
+
 function buildFallbackReport(
   dataset: DatasetItem[],
   payload: GenerateReportRequestBody,
@@ -149,8 +171,9 @@ function buildFallbackReport(
   const hashtags = normalizeTagValues(normalizeArray(payload.hashtags));
 
   const seed = dataset.find((item) => item.video_id === seedId) ?? dataset[0];
-  const comparables = dataset
-    .filter((item) => item.video_id !== seed?.video_id)
+  const totalCandidates = dataset.filter((item) => item.video_id !== seed?.video_id).length;
+  const candidatePool = dataset.filter((item) => item.video_id !== seed?.video_id);
+  const comparables = candidatePool
     .slice(0, 5)
     .map((item, index) => ({
       id: `${item.video_id || `cmp-${index + 1}`}-${index + 1}`,
@@ -178,16 +201,49 @@ function buildFallbackReport(
       ]
     }));
 
-  const retention = Math.min(96, 62 + Math.round(description.split(/\s+/).filter(Boolean).length * 0.6));
-  const hook = Math.min(95, 58 + hashtags.length * 6 + mentions.length * 2);
-  const clarity = Math.min(96, 60 + Math.round(description.length / 14));
+  const seedViews = toNumber(seed?.metrics?.views);
+  const seedLikes = toNumber(seed?.metrics?.likes);
+  const seedComments = toNumber(seed?.metrics?.comments_count);
+  const seedShares = toNumber(seed?.metrics?.shares);
+  const seedEngagement =
+    seedViews > 0
+      ? ((seedLikes + seedComments + seedShares) / seedViews) * 100
+      : 0;
+
+  const candidateViews = candidatePool.map((item) => toNumber(item.metrics?.views));
+  const candidateLikes = candidatePool.map((item) => toNumber(item.metrics?.likes));
+  const candidateComments = candidatePool.map((item) => toNumber(item.metrics?.comments_count));
+  const candidateShares = candidatePool.map((item) => toNumber(item.metrics?.shares));
+  const candidateEngagementRates = candidatePool.map((item) => {
+    const views = toNumber(item.metrics?.views);
+    const likes = toNumber(item.metrics?.likes);
+    const comments = toNumber(item.metrics?.comments_count);
+    const shares = toNumber(item.metrics?.shares);
+    return views > 0 ? ((likes + comments + shares) / views) * 100 : 0;
+  });
+
+  const avgViews = average(candidateViews);
+  const avgLikes = average(candidateLikes);
+  const avgComments = average(candidateComments);
+  const avgShares = average(candidateShares);
+  const avgEngagement = average(candidateEngagementRates);
+
+  const maxViews = Math.max(seedViews, avgViews, 1);
+  const maxLikes = Math.max(seedLikes, avgLikes, 1);
+  const maxComments = Math.max(seedComments, avgComments, 1);
+  const maxShares = Math.max(seedShares, avgShares, 1);
+  const maxEngagement = Math.max(seedEngagement, avgEngagement, 0.1);
+
+  const retention = toPercentScale(seedEngagement, 12);
+  const hook = toPercentScale(seedLikes, maxLikes);
+  const clarity = toPercentScale(seedComments + seedShares, maxComments + maxShares);
 
   return {
     header: {
       title: "TikTok Performance Forecast",
       subtitle: "Comparative signal report",
       badges: {
-        candidates_k: comparables.length,
+        candidates_k: totalCandidates,
         model,
         mode: "serverless"
       },
@@ -213,26 +269,42 @@ function buildFallbackReport(
         {
           id: "engagement-rate",
           label: "Engagement rate",
-          your_value_label: "6.20%",
-          comparable_value_label: "7.10%",
-          your_value_pct: 62,
-          comparable_value_pct: 71
+          your_value_label: `${seedEngagement.toFixed(2)}%`,
+          comparable_value_label: `${avgEngagement.toFixed(2)}%`,
+          your_value_pct: toPercentScale(seedEngagement, maxEngagement),
+          comparable_value_pct: toPercentScale(avgEngagement, maxEngagement)
         },
         {
-          id: "likes-per-view",
-          label: "Likes per view",
-          your_value_label: "0.051",
-          comparable_value_label: "0.062",
-          your_value_pct: 51,
-          comparable_value_pct: 62
+          id: "likes",
+          label: "Likes",
+          your_value_label: `${seedLikes}`,
+          comparable_value_label: `${Math.round(avgLikes)}`,
+          your_value_pct: toPercentScale(seedLikes, maxLikes),
+          comparable_value_pct: toPercentScale(avgLikes, maxLikes)
         },
         {
-          id: "hashtag-density",
-          label: "Hashtag density",
-          your_value_label: "0.13",
-          comparable_value_label: "0.11",
-          your_value_pct: 65,
-          comparable_value_pct: 55
+          id: "comments",
+          label: "Comments",
+          your_value_label: `${seedComments}`,
+          comparable_value_label: `${Math.round(avgComments)}`,
+          your_value_pct: toPercentScale(seedComments, maxComments),
+          comparable_value_pct: toPercentScale(avgComments, maxComments)
+        },
+        {
+          id: "shares",
+          label: "Shares",
+          your_value_label: `${seedShares}`,
+          comparable_value_label: `${Math.round(avgShares)}`,
+          your_value_pct: toPercentScale(seedShares, maxShares),
+          comparable_value_pct: toPercentScale(avgShares, maxShares)
+        },
+        {
+          id: "views",
+          label: "Views",
+          your_value_label: `${seedViews}`,
+          comparable_value_label: `${Math.round(avgViews)}`,
+          your_value_pct: toPercentScale(seedViews, maxViews),
+          comparable_value_pct: toPercentScale(avgViews, maxViews)
         }
       ],
       note: "Target outperforming benchmark in hook clarity and CTA specificity."
