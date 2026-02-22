@@ -1,16 +1,6 @@
 // @ts-nocheck
 import fs from "node:fs/promises";
 import path from "node:path";
-import { getSeedVideo } from "../src/services/data/selectDemoSlices";
-import { parseDemoDatasetJsonl } from "../src/services/data/parseDemoDatasetJsonl";
-import type { DemoVideoRecord } from "../src/services/data/types";
-import type { ReportOutput } from "../src/features/report/types";
-import { buildLocalBaselineReport } from "../server/fallback/buildLocalBaselineReport";
-import { enrichComparableMedia } from "../server/formatters/enrichComparableMedia";
-import { normalizeReportOutput } from "../server/formatters/normalizeReportOutput";
-import { buildReportPrompt } from "../server/prompts/buildReportPrompt";
-import { HARD_CODED_EXTRACTED_KEYWORDS } from "../server/prompts/seedVideoContext";
-import { validateReportOutput } from "../server/validation/validateReportOutput";
 
 interface GenerateReportRequestBody {
   seed_video_id?: string;
@@ -30,6 +20,32 @@ interface ApiResponse {
   json(payload: unknown): void;
 }
 
+interface DatasetItem {
+  video_id: string;
+  video_url?: string;
+  caption?: string;
+  thumbnail_url?: string;
+  hashtags?: string[];
+  views?: number;
+  likes?: number;
+  comments_count?: number;
+  shares?: number;
+  metrics?: {
+    views?: number;
+    likes?: number;
+    comments_count?: number;
+    shares?: number;
+  };
+  author?: unknown;
+}
+
+interface MetricSnapshot {
+  views: number;
+  likes: number;
+  comments_count: number;
+  shares: number;
+}
+
 function normalizeArray(value: unknown): string[] {
   if (!Array.isArray(value)) {
     return [];
@@ -40,59 +56,6 @@ function normalizeArray(value: unknown): string[] {
     .filter(Boolean);
 }
 
-function removeEmoji(value: string): string {
-  return value.replace(/\p{Extended_Pictographic}/gu, "").trim();
-}
-
-function sanitizeUnknownStrings<T>(value: T): T {
-  if (typeof value === "string") {
-    return removeEmoji(value) as T;
-  }
-
-  if (Array.isArray(value)) {
-    return value.map((item) => sanitizeUnknownStrings(item)) as T;
-  }
-
-  if (value && typeof value === "object") {
-    const source = value as Record<string, unknown>;
-    const entries = Object.entries(source).map(([key, innerValue]) => [
-      key,
-      sanitizeUnknownStrings(innerValue)
-    ]);
-    return Object.fromEntries(entries) as T;
-  }
-
-  return value;
-}
-
-function dedupeByVideoId(records: DemoVideoRecord[]): DemoVideoRecord[] {
-  const seen = new Set<string>();
-  const uniqueRecords: DemoVideoRecord[] = [];
-
-  for (const record of records) {
-    const uniqueKey =
-      typeof record.video_url === "string" && record.video_url.trim()
-        ? record.video_url.trim()
-        : `${record.video_id}-${record.caption.slice(0, 32)}`;
-
-    if (seen.has(uniqueKey)) {
-      continue;
-    }
-    seen.add(uniqueKey);
-    uniqueRecords.push(record);
-  }
-
-  return uniqueRecords;
-}
-
-function getCombinedCandidates(
-  dataset: DemoVideoRecord[],
-  seedVideoId: string
-): DemoVideoRecord[] {
-  const filtered = dataset.filter((record) => record.video_id !== seedVideoId);
-  return dedupeByVideoId(filtered);
-}
-
 function normalizeTagValues(values: string[]): string[] {
   return values
     .map((value) => value.trim().replace(/^#/, ""))
@@ -100,43 +63,8 @@ function normalizeTagValues(values: string[]): string[] {
     .map((value) => `#${value}`);
 }
 
-function buildUploadedSeedRecord(
-  sourceSeed: DemoVideoRecord,
-  description: string,
-  hashtags: string[]
-): DemoVideoRecord {
-  const normalizedHashtags = normalizeTagValues(hashtags);
-  const fallbackCaption = sourceSeed.caption.trim();
-  const nextCaption = description.trim() || fallbackCaption;
-
-  return {
-    ...sourceSeed,
-    caption: nextCaption,
-    hashtags: normalizedHashtags.length > 0 ? normalizedHashtags : sourceSeed.hashtags.slice(0, 4),
-    keywords: [...HARD_CODED_EXTRACTED_KEYWORDS],
-    comments: [],
-    video_url: "",
-    metrics: {
-      views: 0,
-      likes: 0,
-      comments_count: 0,
-      shares: 0
-    }
-  };
-}
-
-async function normalizeAndEnrichReport(
-  report: ReportOutput,
-  candidates: DemoVideoRecord[],
-  modelLabel: string
-): Promise<ReportOutput> {
-  const normalized = normalizeReportOutput(report, {
-    candidatesK: candidates.length,
-    extractedKeywords: [...HARD_CODED_EXTRACTED_KEYWORDS],
-    modelLabel
-  });
-
-  return enrichComparableMedia(normalized, candidates);
+function removeEmoji(value: string): string {
+  return value.replace(/\p{Extended_Pictographic}/gu, "").trim();
 }
 
 function extractTextContent(content: unknown): string {
@@ -173,54 +101,10 @@ function extractFirstJsonObject(rawContent: string): unknown {
     return JSON.parse(fencedMatch[1]);
   }
 
-  let startIndex = -1;
-  let depth = 0;
-  let inString = false;
-  let isEscaped = false;
-
-  for (let index = 0; index < trimmed.length; index += 1) {
-    const character = trimmed[index];
-
-    if (isEscaped) {
-      isEscaped = false;
-      continue;
-    }
-
-    if (character === "\\") {
-      isEscaped = true;
-      continue;
-    }
-
-    if (character === '"') {
-      inString = !inString;
-      continue;
-    }
-
-    if (inString) {
-      continue;
-    }
-
-    if (character === "{") {
-      if (depth === 0) {
-        startIndex = index;
-      }
-      depth += 1;
-      continue;
-    }
-
-    if (character === "}" && depth > 0) {
-      depth -= 1;
-      if (depth === 0 && startIndex >= 0) {
-        const candidate = trimmed.slice(startIndex, index + 1);
-        return JSON.parse(candidate);
-      }
-    }
-  }
-
   throw new Error("No valid JSON was found in the provider response.");
 }
 
-async function loadDatasetFromFile(): Promise<DemoVideoRecord[]> {
+async function loadDatasetFromFile(): Promise<DatasetItem[]> {
   const candidatePaths = [
     path.resolve(process.cwd(), "src/data/demodata.jsonl"),
     path.resolve(process.cwd(), "mvp-mock-ui/src/data/demodata.jsonl")
@@ -229,12 +113,294 @@ async function loadDatasetFromFile(): Promise<DemoVideoRecord[]> {
   for (const datasetPath of candidatePaths) {
     try {
       const raw = await fs.readFile(datasetPath, "utf-8");
-      return parseDemoDatasetJsonl(raw);
+      return raw
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as DatasetItem);
     } catch {
     }
   }
 
   return [];
+}
+
+function toAuthorLabel(author: unknown): string {
+  if (typeof author === "string") {
+    return author.startsWith("@") ? author : `@${author}`;
+  }
+
+  if (author && typeof author === "object") {
+    const username = (author as Record<string, unknown>).username;
+    if (typeof username === "string" && username.trim()) {
+      return `@${username.replace(/^@/, "")}`;
+    }
+  }
+
+  return "@creator";
+}
+
+function toNumber(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  return 0;
+}
+
+function average(values: number[]): number {
+  if (values.length === 0) {
+    return 0;
+  }
+  return values.reduce((sum, current) => sum + current, 0) / values.length;
+}
+
+function toPercentScale(value: number, maxExpected: number): number {
+  if (maxExpected <= 0) {
+    return 0;
+  }
+  const scaled = (value / maxExpected) * 100;
+  return Math.max(0, Math.min(100, Math.round(scaled)));
+}
+
+function getMetrics(item: DatasetItem | undefined): MetricSnapshot {
+  const nested = item?.metrics;
+  const views = Number(nested?.views ?? item?.views ?? 0);
+  const likes = Number(nested?.likes ?? item?.likes ?? 0);
+  const comments = Number(nested?.comments_count ?? item?.comments_count ?? 0);
+  const shares = Number(nested?.shares ?? item?.shares ?? 0);
+
+  return {
+    views: Number.isFinite(views) ? views : 0,
+    likes: Number.isFinite(likes) ? likes : 0,
+    comments_count: Number.isFinite(comments) ? comments : 0,
+    shares: Number.isFinite(shares) ? shares : 0
+  };
+}
+
+function engagementRate(item: DatasetItem): string {
+  const metrics = getMetrics(item);
+  const views = Math.max(1, metrics.views);
+  return `${(((metrics.likes + metrics.comments_count + metrics.shares) / views) * 100).toFixed(2)}%`;
+}
+
+function buildFallbackReport(
+  dataset: DatasetItem[],
+  payload: GenerateReportRequestBody,
+  model: string,
+  deepseekSummary: string,
+  deepseekRecommendations: string[]
+) {
+  const seedId = typeof payload.seed_video_id === "string" ? payload.seed_video_id : "s001";
+  const description = typeof payload.description === "string" ? payload.description : "";
+  const mentions = normalizeArray(payload.mentions);
+  const hashtags = normalizeTagValues(normalizeArray(payload.hashtags));
+
+  const seed = dataset.find((item) => item.video_id === seedId) ?? dataset[0];
+  const totalCandidates = dataset.filter((item) => item.video_id !== seed?.video_id).length;
+  const candidatePool = dataset.filter((item) => item.video_id !== seed?.video_id);
+
+  const comparables = candidatePool
+    .slice(0, 5)
+    .map((item, index) => {
+      const metrics = getMetrics(item);
+      return {
+        id: `${item.video_id || `cmp-${index + 1}`}-${index + 1}`,
+        caption: removeEmoji(item.caption ?? "Comparable TikTok video"),
+        author: toAuthorLabel(item.author),
+        video_url: typeof item.video_url === "string" ? item.video_url : "",
+        thumbnail_url: typeof item.thumbnail_url === "string" ? item.thumbnail_url : "",
+        hashtags: Array.isArray(item.hashtags) ? item.hashtags.slice(0, 5) : [],
+        similarity: Number((0.92 - index * 0.08).toFixed(2)),
+        metrics: {
+          views: metrics.views,
+          likes: metrics.likes,
+          comments_count: metrics.comments_count,
+          shares: metrics.shares,
+          engagement_rate: engagementRate(item)
+        },
+        matched_keywords: ["hook", "clarity", "CTA"],
+        observations: [
+          "Opening line communicates the payoff fast.",
+          "Editing rhythm keeps attention high.",
+          "CTA is explicit and easy to act on."
+        ]
+      };
+    });
+
+  const seedMetrics = getMetrics(seed);
+  const seedViews = toNumber(seedMetrics.views);
+  const seedLikes = toNumber(seedMetrics.likes);
+  const seedComments = toNumber(seedMetrics.comments_count);
+  const seedShares = toNumber(seedMetrics.shares);
+  const seedEngagement =
+    seedViews > 0
+      ? ((seedLikes + seedComments + seedShares) / seedViews) * 100
+      : 0;
+
+  const candidateViews = candidatePool.map((item) => toNumber(getMetrics(item).views));
+  const candidateLikes = candidatePool.map((item) => toNumber(getMetrics(item).likes));
+  const candidateComments = candidatePool.map((item) => toNumber(getMetrics(item).comments_count));
+  const candidateShares = candidatePool.map((item) => toNumber(getMetrics(item).shares));
+  const candidateEngagementRates = candidatePool.map((item) => {
+    const metrics = getMetrics(item);
+    const views = toNumber(metrics.views);
+    const likes = toNumber(metrics.likes);
+    const comments = toNumber(metrics.comments_count);
+    const shares = toNumber(metrics.shares);
+    return views > 0 ? ((likes + comments + shares) / views) * 100 : 0;
+  });
+
+  const avgViews = average(candidateViews);
+  const avgLikes = average(candidateLikes);
+  const avgComments = average(candidateComments);
+  const avgShares = average(candidateShares);
+  const avgEngagement = average(candidateEngagementRates);
+
+  const maxViews = Math.max(seedViews, avgViews, 1);
+  const maxLikes = Math.max(seedLikes, avgLikes, 1);
+  const maxComments = Math.max(seedComments, avgComments, 1);
+  const maxShares = Math.max(seedShares, avgShares, 1);
+  const maxEngagement = Math.max(seedEngagement, avgEngagement, 0.1);
+
+  const retention = toPercentScale(seedEngagement, 12);
+  const hook = toPercentScale(seedLikes, maxLikes);
+  const clarity = toPercentScale(seedComments + seedShares, maxComments + maxShares);
+
+  return {
+    header: {
+      title: "TikTok Performance Forecast",
+      subtitle: "Comparative signal report",
+      badges: {
+        candidates_k: totalCandidates,
+        model,
+        mode: "serverless"
+      },
+      disclaimer: "Estimates are directional and based on historical comparables."
+    },
+    executive_summary: {
+      metrics: [
+        { id: "retention-estimated", label: "Estimated retention", value: `${retention}%` },
+        { id: "hook-strength", label: "Hook strength", value: `${hook}%` },
+        { id: "message-clarity", label: "Message clarity", value: `${clarity}%` }
+      ],
+      extracted_keywords: ["tiktok", "hook", "retention", "cta", "storytelling"],
+      meaning_points:
+        deepseekRecommendations.length > 0
+          ? deepseekRecommendations.slice(0, 3)
+          : [
+              "Opening promise should be concrete in the first 2 seconds.",
+              "Keep one message per clip to avoid cognitive load.",
+              "Close with one clear CTA tied to the promised outcome."
+            ],
+      summary_text:
+        deepseekSummary ||
+        "Your concept is viable; the largest upside is a sharper first-second hook and a more explicit CTA."
+    },
+    comparables,
+    direct_comparison: {
+      rows: [
+        {
+          id: "engagement-rate",
+          label: "Engagement rate",
+          your_value_label: `${seedEngagement.toFixed(2)}%`,
+          comparable_value_label: `${avgEngagement.toFixed(2)}%`,
+          your_value_pct: toPercentScale(seedEngagement, maxEngagement),
+          comparable_value_pct: toPercentScale(avgEngagement, maxEngagement)
+        },
+        {
+          id: "likes",
+          label: "Likes",
+          your_value_label: `${seedLikes}`,
+          comparable_value_label: `${Math.round(avgLikes)}`,
+          your_value_pct: toPercentScale(seedLikes, maxLikes),
+          comparable_value_pct: toPercentScale(avgLikes, maxLikes)
+        },
+        {
+          id: "comments",
+          label: "Comments",
+          your_value_label: `${seedComments}`,
+          comparable_value_label: `${Math.round(avgComments)}`,
+          your_value_pct: toPercentScale(seedComments, maxComments),
+          comparable_value_pct: toPercentScale(avgComments, maxComments)
+        },
+        {
+          id: "shares",
+          label: "Shares",
+          your_value_label: `${seedShares}`,
+          comparable_value_label: `${Math.round(avgShares)}`,
+          your_value_pct: toPercentScale(seedShares, maxShares),
+          comparable_value_pct: toPercentScale(avgShares, maxShares)
+        },
+        {
+          id: "views",
+          label: "Views",
+          your_value_label: `${seedViews}`,
+          comparable_value_label: `${Math.round(avgViews)}`,
+          your_value_pct: toPercentScale(seedViews, maxViews),
+          comparable_value_pct: toPercentScale(avgViews, maxViews)
+        }
+      ],
+      note: "Target outperforming benchmark in hook clarity and CTA specificity."
+    },
+    relevant_comments: {
+      items: [
+        {
+          id: "rc1",
+          text: "Loved the idea, but get to the result faster.",
+          topic: "hook",
+          polarity: "Negative",
+          relevance_note: "Indicates first seconds can be tighter."
+        },
+        {
+          id: "rc2",
+          text: "This is useful, where can I get the template?",
+          topic: "cta",
+          polarity: "Question",
+          relevance_note: "High intent; add explicit CTA destination."
+        }
+      ],
+      disclaimer: "Comment sample is indicative, not exhaustive."
+    },
+    recommendations: {
+      items: (deepseekRecommendations.length
+        ? deepseekRecommendations
+        : [
+            "Rewrite the first sentence to promise one measurable outcome.",
+            "Show proof (before/after or result) within 2 seconds.",
+            "Use one explicit CTA with a single next action."
+          ]
+      )
+        .slice(0, 3)
+        .map((text, index) => ({
+          id: `rec-${index + 1}`,
+          title: removeEmoji(text),
+          priority: index === 0 ? "High" : "Medium",
+          effort: index === 0 ? "Low" : "Medium",
+          evidence: "Consistent with top comparable patterns in this dataset."
+        }))
+    }
+  };
+}
+
+function parseDeepSeekEnhancement(raw: string): { summary: string; recommendations: string[] } {
+  try {
+    const parsed = extractFirstJsonObject(raw) as {
+      summary?: unknown;
+      recommendations?: unknown;
+    };
+
+    const summary = typeof parsed.summary === "string" ? parsed.summary.trim() : "";
+    const recommendations = Array.isArray(parsed.recommendations)
+      ? parsed.recommendations
+          .filter((item) => typeof item === "string")
+          .map((item) => item.trim())
+          .filter(Boolean)
+      : [];
+
+    return { summary, recommendations };
+  } catch {
+    return { summary: "", recommendations: [] };
+  }
 }
 
 export default async function handler(request: ApiRequest, response: ApiResponse) {
@@ -246,139 +412,68 @@ export default async function handler(request: ApiRequest, response: ApiResponse
 
   try {
     const body = (request.body ?? {}) as GenerateReportRequestBody;
-    const description = typeof body.description === "string" ? body.description : "";
-    const mentions = normalizeArray(body.mentions);
-    const hashtags = normalizeArray(body.hashtags);
-    const seedVideoId = typeof body.seed_video_id === "string" ? body.seed_video_id : "s001";
-
     const dataset = await loadDatasetFromFile();
-    if (dataset.length === 0) {
-      response.status(400).json({ error: "Local dataset is empty or invalid." });
-      return;
-    }
-
-    const seed = dataset.find((record) => record.video_id === seedVideoId) ?? getSeedVideo(dataset);
-    if (!seed) {
-      response.status(404).json({ error: "Seed video was not found in local dataset." });
-      return;
-    }
-
-    const uploadedSeed = buildUploadedSeedRecord(seed, description, hashtags);
-    const candidates = getCombinedCandidates(dataset, seedVideoId);
-    if (candidates.length === 0) {
-      response.status(400).json({ error: "No comparable candidates were found." });
-      return;
-    }
-
-    const reportPrompt = buildReportPrompt({
-      seed: uploadedSeed,
-      candidates,
-      mentions,
-      hashtags,
-      description,
-      candidatesK: candidates.length
-    });
-
-    const localFallbackReport = buildLocalBaselineReport({
-      seed: uploadedSeed,
-      candidates,
-      mentions,
-      hashtags,
-      description,
-      candidatesK: candidates.length
-    });
-
     const apiKey = (process.env.DEEPSEEK_API_KEY ?? "").trim();
     const model = (process.env.DEEPSEEK_MODEL ?? "deepseek-reasoner").trim() || "deepseek-reasoner";
     const baseUrl = (process.env.DEEPSEEK_BASE_URL ?? "https://api.deepseek.com").trim() || "https://api.deepseek.com";
     const deepSeekEnabled = Boolean(apiKey) && apiKey !== "your_key_here";
 
-    if (!deepSeekEnabled) {
+    let deepseekSummary = "";
+    let deepseekRecommendations: string[] = [];
+
+    if (deepSeekEnabled) {
+      try {
+        const prompt = {
+          description: typeof body.description === "string" ? body.description : "",
+          mentions: normalizeArray(body.mentions),
+          hashtags: normalizeTagValues(normalizeArray(body.hashtags))
+        };
+
+        const providerResponse = await fetch(`${baseUrl}/chat/completions`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${apiKey}`
+          },
+          body: JSON.stringify({
+            model,
+            temperature: 0.3,
+            messages: [
+              {
+                role: "system",
+                content:
+                  "Return only JSON with keys: summary (string), recommendations (array of 3 concise strings). No markdown."
+              },
+              {
+                role: "user",
+                content: JSON.stringify(prompt)
+              }
+            ]
+          })
+        });
+
+        if (providerResponse.ok) {
+          const completion = (await providerResponse.json()) as {
+            choices?: Array<{ message?: { content?: unknown } }>;
+          };
+
+          const rawContent = extractTextContent(completion.choices?.[0]?.message?.content ?? "");
+          const parsed = parseDeepSeekEnhancement(rawContent);
+          deepseekSummary = parsed.summary;
+          deepseekRecommendations = parsed.recommendations;
+          response.setHeader("x-report-source", "deepseek");
+        } else {
+          response.setHeader("x-report-source", "baseline-local-provider-error");
+        }
+      } catch {
+        response.setHeader("x-report-source", "baseline-local-provider-error");
+      }
+    } else {
       response.setHeader("x-report-source", "baseline-local-no-key");
-      const report = await normalizeAndEnrichReport(
-        sanitizeUnknownStrings(localFallbackReport) as ReportOutput,
-        candidates,
-        model
-      );
-      response.json({ report });
-      return;
     }
 
-    try {
-      const providerResponse = await fetch(`${baseUrl}/chat/completions`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`
-        },
-        body: JSON.stringify({
-          model,
-          temperature: 0.2,
-          messages: [
-            {
-              role: "system",
-              content:
-                "You are a senior growth and content analyst. Return valid JSON only, in English, no markdown, no extra text, no emojis."
-            },
-            {
-              role: "user",
-              content: reportPrompt
-            }
-          ]
-        })
-      });
-
-      if (!providerResponse.ok) {
-        throw new Error(`DeepSeek error: ${providerResponse.status}`);
-      }
-
-      const completion = (await providerResponse.json()) as {
-        choices?: Array<{ message?: { content?: unknown } }>;
-      };
-
-      const rawContent = extractTextContent(completion.choices?.[0]?.message?.content ?? "");
-      if (!rawContent) {
-        response.setHeader("x-report-source", "baseline-local-empty-provider-response");
-        const report = await normalizeAndEnrichReport(
-          sanitizeUnknownStrings(localFallbackReport) as ReportOutput,
-          candidates,
-          model
-        );
-        response.json({ report });
-        return;
-      }
-
-      const parsed = extractFirstJsonObject(rawContent);
-      const sanitizedReport = sanitizeUnknownStrings(parsed);
-
-      if (!validateReportOutput(sanitizedReport)) {
-        response.setHeader("x-report-source", "baseline-local-invalid-provider-schema");
-        const report = await normalizeAndEnrichReport(
-          sanitizeUnknownStrings(localFallbackReport) as ReportOutput,
-          candidates,
-          model
-        );
-        response.json({ report });
-        return;
-      }
-
-      response.setHeader("x-report-source", "deepseek");
-      const report = await normalizeAndEnrichReport(
-        sanitizedReport as ReportOutput,
-        candidates,
-        model
-      );
-      response.json({ report });
-    } catch (providerError) {
-      console.error(providerError);
-      response.setHeader("x-report-source", "baseline-local-provider-error");
-      const report = await normalizeAndEnrichReport(
-        sanitizeUnknownStrings(localFallbackReport) as ReportOutput,
-        candidates,
-        model
-      );
-      response.json({ report });
-    }
+    const report = buildFallbackReport(dataset, body, model, deepseekSummary, deepseekRecommendations);
+    response.json({ report });
   } catch (error) {
     console.error(error);
     response.status(500).json({ error: "The report could not be generated right now." });

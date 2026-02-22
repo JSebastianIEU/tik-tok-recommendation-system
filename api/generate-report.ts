@@ -24,7 +24,12 @@ interface DatasetItem {
   video_id: string;
   video_url?: string;
   caption?: string;
+  thumbnail_url?: string;
   hashtags?: string[];
+  views?: number;
+  likes?: number;
+  comments_count?: number;
+  shares?: number;
   metrics?: {
     views?: number;
     likes?: number;
@@ -32,6 +37,13 @@ interface DatasetItem {
     shares?: number;
   };
   author?: unknown;
+}
+
+interface MetricSnapshot {
+  views: number;
+  likes: number;
+  comments_count: number;
+  shares: number;
 }
 
 function normalizeArray(value: unknown): string[] {
@@ -158,6 +170,21 @@ function toPercentScale(value: number, maxExpected: number): number {
   return Math.max(0, Math.min(100, Math.round(scaled)));
 }
 
+function getMetrics(item: DatasetItem | undefined): MetricSnapshot {
+  const nested = item?.metrics;
+  const views = Number(nested?.views ?? item?.views ?? 0);
+  const likes = Number(nested?.likes ?? item?.likes ?? 0);
+  const comments = Number(nested?.comments_count ?? item?.comments_count ?? 0);
+  const shares = Number(nested?.shares ?? item?.shares ?? 0);
+
+  return {
+    views: Number.isFinite(views) ? views : 0,
+    likes: Number.isFinite(likes) ? likes : 0,
+    comments_count: Number.isFinite(comments) ? comments : 0,
+    shares: Number.isFinite(shares) ? shares : 0
+  };
+}
+
 function buildFallbackReport(
   dataset: DatasetItem[],
   payload: GenerateReportRequestBody,
@@ -175,22 +202,21 @@ function buildFallbackReport(
   const candidatePool = dataset.filter((item) => item.video_id !== seed?.video_id);
   const comparables = candidatePool
     .slice(0, 5)
-    .map((item, index) => ({
+    .map((item, index) => {
+      const metrics = getMetrics(item);
+      return {
       id: `${item.video_id || `cmp-${index + 1}`}-${index + 1}`,
       caption: removeEmoji(item.caption ?? "Comparable TikTok video"),
       author: toAuthorLabel(item.author),
       video_url: typeof item.video_url === "string" ? item.video_url : "",
-      thumbnail_url:
-        typeof (item as Record<string, unknown>).thumbnail_url === "string"
-          ? String((item as Record<string, unknown>).thumbnail_url)
-          : "",
+      thumbnail_url: typeof item.thumbnail_url === "string" ? item.thumbnail_url : "",
       hashtags: Array.isArray(item.hashtags) ? item.hashtags.slice(0, 5) : [],
       similarity: Number((0.92 - index * 0.08).toFixed(2)),
       metrics: {
-        views: Number(item.metrics?.views ?? 0),
-        likes: Number(item.metrics?.likes ?? 0),
-        comments_count: Number(item.metrics?.comments_count ?? 0),
-        shares: Number(item.metrics?.shares ?? 0),
+        views: metrics.views,
+        likes: metrics.likes,
+        comments_count: metrics.comments_count,
+        shares: metrics.shares,
         engagement_rate: engagementRate(item)
       },
       matched_keywords: ["hook", "clarity", "CTA"],
@@ -199,26 +225,29 @@ function buildFallbackReport(
         "Editing rhythm keeps attention high.",
         "CTA is explicit and easy to act on."
       ]
-    }));
+    };
+    });
 
-  const seedViews = toNumber(seed?.metrics?.views);
-  const seedLikes = toNumber(seed?.metrics?.likes);
-  const seedComments = toNumber(seed?.metrics?.comments_count);
-  const seedShares = toNumber(seed?.metrics?.shares);
+  const seedMetrics = getMetrics(seed);
+  const seedViews = toNumber(seedMetrics.views);
+  const seedLikes = toNumber(seedMetrics.likes);
+  const seedComments = toNumber(seedMetrics.comments_count);
+  const seedShares = toNumber(seedMetrics.shares);
   const seedEngagement =
     seedViews > 0
       ? ((seedLikes + seedComments + seedShares) / seedViews) * 100
       : 0;
 
-  const candidateViews = candidatePool.map((item) => toNumber(item.metrics?.views));
-  const candidateLikes = candidatePool.map((item) => toNumber(item.metrics?.likes));
-  const candidateComments = candidatePool.map((item) => toNumber(item.metrics?.comments_count));
-  const candidateShares = candidatePool.map((item) => toNumber(item.metrics?.shares));
+  const candidateViews = candidatePool.map((item) => toNumber(getMetrics(item).views));
+  const candidateLikes = candidatePool.map((item) => toNumber(getMetrics(item).likes));
+  const candidateComments = candidatePool.map((item) => toNumber(getMetrics(item).comments_count));
+  const candidateShares = candidatePool.map((item) => toNumber(getMetrics(item).shares));
   const candidateEngagementRates = candidatePool.map((item) => {
-    const views = toNumber(item.metrics?.views);
-    const likes = toNumber(item.metrics?.likes);
-    const comments = toNumber(item.metrics?.comments_count);
-    const shares = toNumber(item.metrics?.shares);
+    const metrics = getMetrics(item);
+    const views = toNumber(metrics.views);
+    const likes = toNumber(metrics.likes);
+    const comments = toNumber(metrics.comments_count);
+    const shares = toNumber(metrics.shares);
     return views > 0 ? ((likes + comments + shares) / views) * 100 : 0;
   });
 
@@ -256,11 +285,14 @@ function buildFallbackReport(
         { id: "message-clarity", label: "Message clarity", value: `${clarity}%` }
       ],
       extracted_keywords: ["tiktok", "hook", "retention", "cta", "storytelling"],
-      meaning_points: [
-        "Opening promise should be concrete in the first 2 seconds.",
-        "Keep one message per clip to avoid cognitive load.",
-        "Close with one clear CTA tied to the promised outcome."
-      ],
+      meaning_points:
+        deepseekRecommendations.length > 0
+          ? deepseekRecommendations.slice(0, 3)
+          : [
+              "Opening promise should be concrete in the first 2 seconds.",
+              "Keep one message per clip to avoid cognitive load.",
+              "Close with one clear CTA tied to the promised outcome."
+            ],
       summary_text: deepseekSummary || "Your concept is viable; the largest upside is a sharper first-second hook and a more explicit CTA."
     },
     comparables,
