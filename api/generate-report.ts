@@ -44,15 +44,15 @@ function normalizeArray(value: unknown): string[] {
     .filter(Boolean);
 }
 
-function removeEmoji(value: string): string {
-  return value.replace(/\p{Extended_Pictographic}/gu, "").trim();
-}
-
 function normalizeTagValues(values: string[]): string[] {
   return values
     .map((value) => value.trim().replace(/^#/, ""))
     .filter(Boolean)
     .map((value) => `#${value}`);
+}
+
+function removeEmoji(value: string): string {
+  return value.replace(/\p{Extended_Pictographic}/gu, "").trim();
 }
 
 function extractTextContent(content: unknown): string {
@@ -89,54 +89,10 @@ function extractFirstJsonObject(rawContent: string): unknown {
     return JSON.parse(fencedMatch[1]);
   }
 
-  let startIndex = -1;
-  let depth = 0;
-  let inString = false;
-  let isEscaped = false;
-
-  for (let index = 0; index < trimmed.length; index += 1) {
-    const character = trimmed[index];
-
-    if (isEscaped) {
-      isEscaped = false;
-      continue;
-    }
-
-    if (character === "\\") {
-      isEscaped = true;
-      continue;
-    }
-
-    if (character === '"') {
-      inString = !inString;
-      continue;
-    }
-
-    if (inString) {
-      continue;
-    }
-
-    if (character === "{") {
-      if (depth === 0) {
-        startIndex = index;
-      }
-      depth += 1;
-      continue;
-    }
-
-    if (character === "}" && depth > 0) {
-      depth -= 1;
-      if (depth === 0 && startIndex >= 0) {
-        const candidate = trimmed.slice(startIndex, index + 1);
-        return JSON.parse(candidate);
-      }
-    }
-  }
-
   throw new Error("No valid JSON was found in the provider response.");
 }
 
-async function loadDatasetFromFile(): Promise<DemoVideoRecord[]> {
+async function loadDatasetFromFile(): Promise<DatasetItem[]> {
   const candidatePaths = [
     path.resolve(process.cwd(), "mvp-mock-ui/src/data/demodata.jsonl"),
     path.resolve(process.cwd(), "src/data/demodata.jsonl")
@@ -402,169 +358,6 @@ export default async function handler(request: ApiRequest, response: ApiResponse
 
     const report = buildFallbackReport(dataset, body, model, deepseekSummary, deepseekRecommendations);
     response.json({ report });
-  } catch (error) {
-    console.error(error);
-    response.status(500).json({ error: "The report could not be generated right now." });
-  }
-}
-  const candidatePaths = [
-    path.resolve(process.cwd(), "mvp-mock-ui/src/data/demodata.jsonl"),
-    path.resolve(process.cwd(), "src/data/demodata.jsonl")
-  ];
-
-  for (const datasetPath of candidatePaths) {
-    try {
-      const raw = await fs.readFile(datasetPath, "utf-8");
-      return parseDemoDatasetJsonl(raw);
-    } catch {
-    }
-  }
-
-  return [];
-}
-
-export default async function handler(request: ApiRequest, response: ApiResponse) {
-  if (request.method !== "POST") {
-    response.setHeader("Allow", "POST");
-    response.status(405).json({ error: "Method not allowed." });
-    return;
-  }
-
-  try {
-    const body = (request.body ?? {}) as GenerateReportRequestBody;
-    const description = typeof body.description === "string" ? body.description : "";
-    const mentions = normalizeArray(body.mentions);
-    const hashtags = normalizeArray(body.hashtags);
-    const seedVideoId = typeof body.seed_video_id === "string" ? body.seed_video_id : "s001";
-
-    const dataset = await loadDatasetFromFile();
-    if (dataset.length === 0) {
-      response.status(400).json({ error: "Local dataset is empty or invalid." });
-      return;
-    }
-
-    const seed = dataset.find((record) => record.video_id === seedVideoId) ?? getSeedVideo(dataset);
-    if (!seed) {
-      response.status(404).json({ error: "Seed video was not found in local dataset." });
-      return;
-    }
-
-    const uploadedSeed = buildUploadedSeedRecord(seed, description, hashtags);
-    const candidates = getCombinedCandidates(dataset, seedVideoId);
-    if (candidates.length === 0) {
-      response.status(400).json({ error: "No comparable candidates were found." });
-      return;
-    }
-
-    const reportPrompt = buildReportPrompt({
-      seed: uploadedSeed,
-      candidates,
-      mentions,
-      hashtags,
-      description,
-      candidatesK: candidates.length
-    });
-
-    const localFallbackReport = buildLocalBaselineReport({
-      seed: uploadedSeed,
-      candidates,
-      mentions,
-      hashtags,
-      description,
-      candidatesK: candidates.length
-    });
-
-    const apiKey = (process.env.DEEPSEEK_API_KEY ?? "").trim();
-    const model = (process.env.DEEPSEEK_MODEL ?? "deepseek-reasoner").trim() || "deepseek-reasoner";
-    const baseUrl = (process.env.DEEPSEEK_BASE_URL ?? "https://api.deepseek.com").trim() || "https://api.deepseek.com";
-    const deepSeekEnabled = Boolean(apiKey) && apiKey !== "your_key_here";
-
-    if (!deepSeekEnabled) {
-      response.setHeader("x-report-source", "baseline-local-no-key");
-      const report = await normalizeAndEnrichReport(
-        sanitizeUnknownStrings(localFallbackReport) as ReportOutput,
-        candidates,
-        model
-      );
-      response.json({ report });
-      return;
-    }
-
-    try {
-      const providerResponse = await fetch(`${baseUrl}/chat/completions`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`
-        },
-        body: JSON.stringify({
-          model,
-          temperature: 0.2,
-          messages: [
-            {
-              role: "system",
-              content:
-                "You are a senior growth and content analyst. Return valid JSON only, in English, no markdown, no extra text, no emojis."
-            },
-            {
-              role: "user",
-              content: reportPrompt
-            }
-          ]
-        })
-      });
-
-      if (!providerResponse.ok) {
-        throw new Error(`DeepSeek error: ${providerResponse.status}`);
-      }
-
-      const completion = (await providerResponse.json()) as {
-        choices?: Array<{ message?: { content?: unknown } }>;
-      };
-
-      const rawContent = extractTextContent(completion.choices?.[0]?.message?.content ?? "");
-      if (!rawContent) {
-        response.setHeader("x-report-source", "baseline-local-empty-provider-response");
-        const report = await normalizeAndEnrichReport(
-          sanitizeUnknownStrings(localFallbackReport) as ReportOutput,
-          candidates,
-          model
-        );
-        response.json({ report });
-        return;
-      }
-
-      const parsed = extractFirstJsonObject(rawContent);
-      const sanitizedReport = sanitizeUnknownStrings(parsed);
-
-      if (!validateReportOutput(sanitizedReport)) {
-        response.setHeader("x-report-source", "baseline-local-invalid-provider-schema");
-        const report = await normalizeAndEnrichReport(
-          sanitizeUnknownStrings(localFallbackReport) as ReportOutput,
-          candidates,
-          model
-        );
-        response.json({ report });
-        return;
-      }
-
-      response.setHeader("x-report-source", "deepseek");
-      const report = await normalizeAndEnrichReport(
-        sanitizedReport as ReportOutput,
-        candidates,
-        model
-      );
-      response.json({ report });
-    } catch (providerError) {
-      console.error(providerError);
-      response.setHeader("x-report-source", "baseline-local-provider-error");
-      const report = await normalizeAndEnrichReport(
-        sanitizeUnknownStrings(localFallbackReport) as ReportOutput,
-        candidates,
-        model
-      );
-      response.json({ report });
-    }
   } catch (error) {
     console.error(error);
     response.status(500).json({ error: "The report could not be generated right now." });
