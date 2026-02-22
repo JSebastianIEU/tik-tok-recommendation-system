@@ -170,6 +170,40 @@ function toPercentScale(value: number, maxExpected: number): number {
   return Math.max(0, Math.min(100, Math.round(scaled)));
 }
 
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function estimateInputQuality(
+  description: string,
+  hashtags: string[],
+  mentions: string[]
+): { qualityScore: number; hook: number; clarity: number; retention: number } {
+  const descriptionWords = description.split(/\s+/).filter(Boolean).length;
+  const hashtagCount = hashtags.length;
+  const mentionCount = mentions.length;
+
+  const hook = clamp(
+    48 + Math.min(descriptionWords, 40) * 0.7 + hashtagCount * 4,
+    35,
+    92
+  );
+  const clarity = clamp(
+    44 + Math.min(descriptionWords, 60) * 0.8 + mentionCount * 3,
+    30,
+    94
+  );
+  const qualityScore = clamp((hook * 0.45 + clarity * 0.55) / 100, 0.35, 0.95);
+  const retention = clamp(40 + hook * 0.35 + clarity * 0.25, 35, 95);
+
+  return {
+    qualityScore,
+    hook: Math.round(hook),
+    clarity: Math.round(clarity),
+    retention: Math.round(retention)
+  };
+}
+
 function getMetrics(item: DatasetItem | undefined): MetricSnapshot {
   const nested = item?.metrics;
   const views = Number(nested?.views ?? item?.views ?? 0);
@@ -228,16 +262,6 @@ function buildFallbackReport(
     };
     });
 
-  const seedMetrics = getMetrics(seed);
-  const seedViews = toNumber(seedMetrics.views);
-  const seedLikes = toNumber(seedMetrics.likes);
-  const seedComments = toNumber(seedMetrics.comments_count);
-  const seedShares = toNumber(seedMetrics.shares);
-  const seedEngagement =
-    seedViews > 0
-      ? ((seedLikes + seedComments + seedShares) / seedViews) * 100
-      : 0;
-
   const candidateViews = candidatePool.map((item) => toNumber(getMetrics(item).views));
   const candidateLikes = candidatePool.map((item) => toNumber(getMetrics(item).likes));
   const candidateComments = candidatePool.map((item) => toNumber(getMetrics(item).comments_count));
@@ -257,15 +281,49 @@ function buildFallbackReport(
   const avgShares = average(candidateShares);
   const avgEngagement = average(candidateEngagementRates);
 
-  const maxViews = Math.max(seedViews, avgViews, 1);
-  const maxLikes = Math.max(seedLikes, avgLikes, 1);
-  const maxComments = Math.max(seedComments, avgComments, 1);
-  const maxShares = Math.max(seedShares, avgShares, 1);
-  const maxEngagement = Math.max(seedEngagement, avgEngagement, 0.1);
+  const totalAvgInteractions = Math.max(1, avgLikes + avgComments + avgShares);
+  const avgLikeRatio = avgLikes / totalAvgInteractions;
+  const avgCommentRatio = avgComments / totalAvgInteractions;
+  const avgShareRatio = avgShares / totalAvgInteractions;
 
-  const retention = toPercentScale(seedEngagement, 12);
-  const hook = toPercentScale(seedLikes, maxLikes);
-  const clarity = toPercentScale(seedComments + seedShares, maxComments + maxShares);
+  const quality = estimateInputQuality(description, hashtags, mentions);
+  const projectedViews = Math.round(avgViews * (0.55 + quality.qualityScore * 0.9));
+  const projectedEngagement = clamp(avgEngagement * (0.78 + quality.qualityScore * 0.5), 2, 25);
+  const projectedInteractions = Math.round(projectedViews * (projectedEngagement / 100));
+  const projectedLikes = Math.round(projectedInteractions * avgLikeRatio);
+  const projectedComments = Math.round(projectedInteractions * avgCommentRatio);
+  const projectedShares = Math.round(projectedInteractions * avgShareRatio);
+
+  const maxViews = Math.max(projectedViews, avgViews, 1);
+  const maxLikes = Math.max(projectedLikes, avgLikes, 1);
+  const maxComments = Math.max(projectedComments, avgComments, 1);
+  const maxShares = Math.max(projectedShares, avgShares, 1);
+  const maxEngagement = Math.max(projectedEngagement, avgEngagement, 0.1);
+
+  const retention = quality.retention;
+  const hook = quality.hook;
+  const clarity = quality.clarity;
+
+  const strengths: string[] = [];
+  const improvements: string[] = [];
+
+  if (hook >= 68) {
+    strengths.push("Your hook already has strong potential for first-second attention.");
+  } else {
+    improvements.push("Make the first sentence more outcome-driven to increase scroll-stop power.");
+  }
+
+  if (clarity >= 70) {
+    strengths.push("Your message is clear and should be easy to understand for cold viewers.");
+  } else {
+    improvements.push("Reduce ambiguity: one promise, one audience, one CTA in the first 6 seconds.");
+  }
+
+  if (hashtags.length >= 3 && hashtags.length <= 6) {
+    strengths.push("Your hashtag strategy is within a healthy range for discoverability.");
+  } else {
+    improvements.push("Use 3-6 focused hashtags aligned to the exact value proposition.");
+  }
 
   return {
     header: {
@@ -285,14 +343,12 @@ function buildFallbackReport(
         { id: "message-clarity", label: "Message clarity", value: `${clarity}%` }
       ],
       extracted_keywords: ["tiktok", "hook", "retention", "cta", "storytelling"],
-      meaning_points:
-        deepseekRecommendations.length > 0
-          ? deepseekRecommendations.slice(0, 3)
-          : [
-              "Opening promise should be concrete in the first 2 seconds.",
-              "Keep one message per clip to avoid cognitive load.",
-              "Close with one clear CTA tied to the promised outcome."
-            ],
+      meaning_points: [
+        ...strengths.slice(0, 2),
+        ...(deepseekRecommendations.length > 0
+          ? deepseekRecommendations.slice(0, 1)
+          : improvements.slice(0, 1))
+      ],
       summary_text: deepseekSummary || "Your concept is viable; the largest upside is a sharper first-second hook and a more explicit CTA."
     },
     comparables,
@@ -301,41 +357,41 @@ function buildFallbackReport(
         {
           id: "engagement-rate",
           label: "Engagement rate",
-          your_value_label: `${seedEngagement.toFixed(2)}%`,
+          your_value_label: `${projectedEngagement.toFixed(2)}%`,
           comparable_value_label: `${avgEngagement.toFixed(2)}%`,
-          your_value_pct: toPercentScale(seedEngagement, maxEngagement),
+          your_value_pct: toPercentScale(projectedEngagement, maxEngagement),
           comparable_value_pct: toPercentScale(avgEngagement, maxEngagement)
         },
         {
           id: "likes",
           label: "Likes",
-          your_value_label: `${seedLikes}`,
+          your_value_label: `${projectedLikes}`,
           comparable_value_label: `${Math.round(avgLikes)}`,
-          your_value_pct: toPercentScale(seedLikes, maxLikes),
+          your_value_pct: toPercentScale(projectedLikes, maxLikes),
           comparable_value_pct: toPercentScale(avgLikes, maxLikes)
         },
         {
           id: "comments",
           label: "Comments",
-          your_value_label: `${seedComments}`,
+          your_value_label: `${projectedComments}`,
           comparable_value_label: `${Math.round(avgComments)}`,
-          your_value_pct: toPercentScale(seedComments, maxComments),
+          your_value_pct: toPercentScale(projectedComments, maxComments),
           comparable_value_pct: toPercentScale(avgComments, maxComments)
         },
         {
           id: "shares",
           label: "Shares",
-          your_value_label: `${seedShares}`,
+          your_value_label: `${projectedShares}`,
           comparable_value_label: `${Math.round(avgShares)}`,
-          your_value_pct: toPercentScale(seedShares, maxShares),
+          your_value_pct: toPercentScale(projectedShares, maxShares),
           comparable_value_pct: toPercentScale(avgShares, maxShares)
         },
         {
           id: "views",
           label: "Views",
-          your_value_label: `${seedViews}`,
+          your_value_label: `${projectedViews}`,
           comparable_value_label: `${Math.round(avgViews)}`,
-          your_value_pct: toPercentScale(seedViews, maxViews),
+          your_value_pct: toPercentScale(projectedViews, maxViews),
           comparable_value_pct: toPercentScale(avgViews, maxViews)
         }
       ],
