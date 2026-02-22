@@ -135,7 +135,8 @@ function buildScoredComparables(
       caption: candidate.caption,
       author: toDisplayAuthor(candidate),
       video_url: extractVideoUrl(candidate),
-      thumbnail_url: "",
+      thumbnail_url:
+        typeof candidate.thumbnail_url === "string" ? candidate.thumbnail_url : "",
       hashtags: candidate.hashtags.slice(0, 5),
       similarity: score,
       metrics: toComparableMetrics(candidate),

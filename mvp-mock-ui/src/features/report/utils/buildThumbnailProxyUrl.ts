@@ -6,6 +6,10 @@ export function buildThumbnailProxyUrl(
   thumbnailUrl: string,
   videoUrl: string
 ): string {
+  if (thumbnailUrl.startsWith("/")) {
+    return thumbnailUrl;
+  }
+
   const params = new URLSearchParams();
   const normalizedThumbnailUrl = thumbnailUrl.trim();
   const normalizedVideoUrl = videoUrl.trim();

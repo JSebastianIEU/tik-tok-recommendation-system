@@ -157,7 +157,10 @@ function buildFallbackReport(
       caption: removeEmoji(item.caption ?? "Comparable TikTok video"),
       author: toAuthorLabel(item.author),
       video_url: typeof item.video_url === "string" ? item.video_url : "",
-      thumbnail_url: "",
+      thumbnail_url:
+        typeof (item as Record<string, unknown>).thumbnail_url === "string"
+          ? String((item as Record<string, unknown>).thumbnail_url)
+          : "",
       hashtags: Array.isArray(item.hashtags) ? item.hashtags.slice(0, 5) : [],
       similarity: Number((0.92 - index * 0.08).toFixed(2)),
       metrics: {
