@@ -1,0 +1,25 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: tiktok-postgres
+    environment:
+      POSTGRES_USER: tiktok
+      POSTGRES_PASSWORD: tiktok
+      POSTGRES_DB: tiktok
+    ports:
+      - "5433:5432"
+    volumes:
+      - tiktok_pg_data:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tiktok -d tiktok"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  tiktok_pg_data:
+    driver: local
+
