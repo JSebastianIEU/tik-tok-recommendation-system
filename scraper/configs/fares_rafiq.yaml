@@ -1,0 +1,36 @@
+﻿keywords:
+  - "viral trend 2025"
+  - "tiktok trend"
+  - "funny video"
+  - "meme trend"
+  - "celebrity drama"
+  - "influencer exposed"
+  - "prank video"
+  - "cringe compilation"
+  - "viral challenge"
+  - "internet drama"
+hashtags:
+  - "#viral"
+  - "#trend"
+  - "#fyp"
+  - "#funny"
+  - "#meme"
+  - "#celebrity"
+  - "#influencer"
+  - "#drama"
+  - "#challenge"
+  - "#cringe"
+per_query_video_limit: 40
+max_comments_per_video: 300
+comment_sort: "top"
+modes_enabled:
+  - "keyword"
+  - "hashtag"
+concurrency: 2
+headless: true
+db_url: null
+output_raw_jsonl:
+  enabled: true
+  path: "../data/raw/fares_rafiq_entertainment_trends_viral.jsonl"
+source_label: "member6_fares_rafiq_entertainment_trends_viral"
+

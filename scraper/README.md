@@ -1,82 +1,128 @@
-## Scraper subsystem
+## TikTok Scraper (JSON-Only First)
 
-This folder contains optional, **non-CI-critical** tooling for collecting real TikTok data and persisting it to Postgres. It is isolated from the core `requirements.txt` so that experiments here do not affect the main scaffold.
+This scraper can now run **without Docker, PostgreSQL, or `psycopg`**.
 
-### Components
+Default team configs are set to `db_url: null`, so each member generates JSONL datasets only.
 
-- `requirements-scraper.txt` — Python dependencies for all scrapers (Selenium, TikTokApi/Playwright, Postgres client).
-- `docker-compose.yml` — local Postgres instance for development.
-- `db/` — schema DDL and small DB helpers.
-- `tiktok_post_scraper.py` — Selenium-based scraper for a single TikTok post (or batches of URLs).
-- `scrape_tiktok_sample.py` — TikTokApi-based sampler for trending / hashtag / user videos.
+## What You Get
 
-### Setup
+- One JSONL dataset per teammate (separate files under `scraper/data/raw/`)
+- Scraped video URL + metadata + author stats + many comments
+- Easy final merge into one JSONL file (`python -m scraper merge-json ...`)
 
-1. Create and activate a virtualenv (recommended):
+## Team Configs
 
-   ```bash
-   python -m venv .scraper-venv
-   source .scraper-venv/bin/activate
-   ```
+- `scraper/configs/juan_sebastian.yaml`
+- `scraper/configs/jad_chebly.yaml`
+- `scraper/configs/omar_mekawi.yaml`
+- `scraper/configs/alp_arslan.yaml`
+- `scraper/configs/arielo_moreira.yaml`
+- `scraper/configs/fares_rafiq.yaml`
 
-2. Install scraper-specific dependencies:
+Each config already includes:
 
-   ```bash
-   pip install -r scraper/requirements-scraper.txt
-   # TikTokApi/Playwright browsers (once):
-   python -m playwright install
-   ```
+- Assigned keywords/hashtags
+- `db_url: null` (JSON-only mode)
+- Dedicated output JSONL path
+- Unique `source_label`
 
-3. Start Postgres via Docker Compose (runs on `localhost:5433` by default):
+## Install (Windows PowerShell and macOS)
 
-   ```bash
-   cd scraper
-   docker compose up -d
-   ```
+### PowerShell (Windows)
 
-   The default connection URL is:
-
-   ```bash
-   export DATABASE_URL="postgresql://tiktok:tiktok@localhost:5433/tiktok"
-   ```
-
-### Running the Selenium post scraper
-
-Scrape a single TikTok video URL, optionally downloading media and writing to Postgres:
-
-```bash
-PYTHONPATH=. DATABASE_URL=$DATABASE_URL \
-python scraper/tiktok_post_scraper.py \
-  "https://www.tiktok.com/@user/video/123" \
-  --comments 5 \
-  --source single_url
+```powershell
+pip install -r scraper/requirements.txt
+python -m playwright install
 ```
 
-Key behaviours:
+### macOS
 
-- Uses Selenium + `__UNIVERSAL_DATA_FOR_REHYDRATION__` JSON for robust metadata.
-- Falls back to DOM scraping for top comments when available.
-- Handles TikTok overlays (cookie banner, communication popups) including elements rendered in Shadow DOM.
+```bash
+pip install -r scraper/requirements.txt
+python -m playwright install
+```
 
-### Running the TikTokApi sampler
+Optional but recommended for better discovery:
 
-The sampler uses the unofficial `TikTokApi` wrapper on top of Playwright. You must provide a valid `MS_TOKEN` (cookie value) and have Playwright browsers installed.
+- Set `MS_TOKEN` in your environment.
+
+PowerShell:
+
+```powershell
+$env:MS_TOKEN="your_ms_token_here"
+```
+
+macOS:
 
 ```bash
 export MS_TOKEN="your_ms_token_here"
-PYTHONPATH=. DATABASE_URL=$DATABASE_URL \
-python scraper/scrape_tiktok_sample.py trending \
-  --count 100 \
-  --output data/raw/trending_100.jsonl
 ```
 
-Other modes:
+## Run Per Teammate (No DB Needed)
 
-- Hashtag: `python scraper/scrape_tiktok_sample.py hashtag --name kencarson --count 300`
-- User: `python scraper/scrape_tiktok_sample.py user --name rollingloud --count 150`
+### PowerShell
 
-Each run:
+```powershell
+python -m scraper run --config "scraper/configs/juan_sebastian.yaml"
+python -m scraper run --config "scraper/configs/jad_chebly.yaml"
+python -m scraper run --config "scraper/configs/omar_mekawi.yaml"
+python -m scraper run --config "scraper/configs/alp_arslan.yaml"
+python -m scraper run --config "scraper/configs/arielo_moreira.yaml"
+python -m scraper run --config "scraper/configs/fares_rafiq.yaml"
+```
 
-- Writes a flattened JSONL file (for offline analysis).
-- Inserts authors, videos, audio tracks, and snapshot rows into Postgres when `DATABASE_URL` is set.
+### macOS
+
+```bash
+python -m scraper run --config "scraper/configs/juan_sebastian.yaml"
+python -m scraper run --config "scraper/configs/jad_chebly.yaml"
+python -m scraper run --config "scraper/configs/omar_mekawi.yaml"
+python -m scraper run --config "scraper/configs/alp_arslan.yaml"
+python -m scraper run --config "scraper/configs/arielo_moreira.yaml"
+python -m scraper run --config "scraper/configs/fares_rafiq.yaml"
+```
+
+## Merge JSON Datasets (No DB Needed)
+
+### PowerShell
+
+```powershell
+python -m scraper merge-json --output "scraper/data/raw/team_merged.jsonl" --input "scraper/data/raw/juan_sebastian_fitness_self_improvement.jsonl" --input "scraper/data/raw/jad_chebly_finance_investing.jsonl" --input "scraper/data/raw/omar_mekawi_relationships_dating.jsonl" --input "scraper/data/raw/alp_arslan_politics_social_issues.jsonl" --input "scraper/data/raw/arielo_moreira_lifestyle_luxury_aspirational.jsonl" --input "scraper/data/raw/fares_rafiq_entertainment_trends_viral.jsonl"
+```
+
+### macOS
+
+```bash
+python -m scraper merge-json \
+  --output "scraper/data/raw/team_merged.jsonl" \
+  --input "scraper/data/raw/juan_sebastian_fitness_self_improvement.jsonl" \
+  --input "scraper/data/raw/jad_chebly_finance_investing.jsonl" \
+  --input "scraper/data/raw/omar_mekawi_relationships_dating.jsonl" \
+  --input "scraper/data/raw/alp_arslan_politics_social_issues.jsonl" \
+  --input "scraper/data/raw/arielo_moreira_lifestyle_luxury_aspirational.jsonl" \
+  --input "scraper/data/raw/fares_rafiq_entertainment_trends_viral.jsonl"
+```
+
+`merge-json` behavior:
+
+- Deduplicates by `normalized.video.video_id` when available (fallback: URL)
+- Keeps the richer duplicate record (more useful fields/comments)
+- Writes one merged JSONL output
+
+## Optional PostgreSQL Mode
+
+If later you want DB persistence again:
+
+- Set `db_url` in config (or `DATABASE_URL` env var)
+- Use:
+  - `python -m scraper init-db ...`
+  - `python -m scraper merge ...`
+
+## CLI Commands
+
+- `python -m scraper run --config <path>`
+- `python -m scraper merge-json --input <file> --input <file> --output <file>`
+- Optional DB mode:
+  - `python -m scraper init-db --db-url <url>`
+  - `python -m scraper merge --target-db <url> --source-db <url> ...`
 

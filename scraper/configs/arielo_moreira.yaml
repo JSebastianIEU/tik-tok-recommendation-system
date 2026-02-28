@@ -1,0 +1,36 @@
+﻿keywords:
+  - "luxury lifestyle"
+  - "millionaire routine"
+  - "private jet life"
+  - "luxury apartment tour"
+  - "rich mindset"
+  - "expensive cars"
+  - "dubai lifestyle"
+  - "how to get rich fast"
+  - "entrepreneur lifestyle"
+  - "success habits"
+hashtags:
+  - "#luxurylife"
+  - "#millionairemindset"
+  - "#richlife"
+  - "#entrepreneurlife"
+  - "#success"
+  - "#luxurycars"
+  - "#dubai"
+  - "#wealth"
+  - "#highvalue"
+  - "#richmindset"
+per_query_video_limit: 40
+max_comments_per_video: 300
+comment_sort: "top"
+modes_enabled:
+  - "keyword"
+  - "hashtag"
+concurrency: 2
+headless: true
+db_url: null
+output_raw_jsonl:
+  enabled: true
+  path: "../data/raw/arielo_moreira_lifestyle_luxury_aspirational.jsonl"
+source_label: "member5_arielo_moreira_lifestyle_luxury_aspirational"
+

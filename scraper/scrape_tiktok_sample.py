@@ -13,16 +13,12 @@ import asyncio
 import json
 import os
 import random
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, AsyncIterator, Dict, Iterable
+from typing import Any, AsyncIterator, Dict
 from urllib.parse import urlparse
 
 from TikTokApi import TikTokApi
-
-from scraper.db.writer import ScrapeContext, create_scrape_run, dry_run_print_sql, write_normalized_record
-
 
 def get_ms_token(explicit: str | None) -> str:
     token = explicit or os.environ.get("MS_TOKEN")
@@ -78,6 +74,26 @@ def load_random_proxy(path: str) -> Dict[str, Any] | None:
     return random.choice(proxies)
 
 
+def _resolve_db_url(explicit: str | None) -> str | None:
+    raw = (explicit or os.getenv("DATABASE_URL") or "").strip()
+    return raw or None
+
+
+def _dry_run_print(normalized: Dict[str, Any]) -> None:
+    try:
+        from scraper.db.writer import dry_run_print_sql
+    except ModuleNotFoundError:
+        author = normalized.get("author") or {}
+        video = normalized.get("video") or {}
+        comments = normalized.get("comments") or []
+        print(
+            f"[DRY RUN] author={author.get('author_id')} "
+            f"video={video.get('video_id')} comments={len(comments)}"
+        )
+        return
+    dry_run_print_sql(normalized)
+
+
 async def iter_videos_trending(api: TikTokApi, count: int) -> AsyncIterator[Dict[str, Any]]:
     async for video in api.trending.videos(count=count):
         yield video.as_dict
@@ -93,6 +109,56 @@ async def iter_videos_user(api: TikTokApi, name: str, count: int) -> AsyncIterat
     user = api.user(name)
     async for video in user.videos(count=count):
         yield video.as_dict
+
+
+async def iter_videos_keyword(api: TikTokApi, query: str, count: int) -> AsyncIterator[Dict[str, Any]]:
+    """
+    Best-effort keyword search over TikTokApi variants.
+    API signatures differ across versions, so we try common call styles.
+    """
+    search = getattr(api, "search", None)
+    if not search:
+        raise RuntimeError("TikTokApi search API is not available in this version.")
+
+    videos_method = getattr(search, "videos", None)
+    if not callable(videos_method):
+        raise RuntimeError("TikTokApi search.videos is not available in this version.")
+
+    call_variants = [
+        lambda: videos_method(query, count=count),
+        lambda: videos_method(query=query, count=count),
+        lambda: videos_method(keyword=query, count=count),
+        lambda: videos_method(keywords=query, count=count),
+    ]
+
+    last_error: Exception | None = None
+    for factory in call_variants:
+        try:
+            stream = factory()
+            async for video in stream:
+                yield video.as_dict
+            return
+        except TypeError as exc:
+            last_error = exc
+            continue
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+            continue
+
+    raise RuntimeError(f"Keyword search failed for '{query}': {last_error}")
+
+
+def _to_iso_datetime(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(value, tz=timezone.utc).isoformat()
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.isdigit():
+            return datetime.fromtimestamp(int(stripped), tz=timezone.utc).isoformat()
+        return stripped or None
+    return str(value)
 
 
 def flatten_video(v: Dict[str, Any]) -> Dict[str, Any]:
@@ -161,7 +227,7 @@ def to_normalized(flat: Dict[str, Any], *, source: str, position: int | None) ->
         "audio_id": music.get("id"),
         "duration_sec": raw.get("video", {}).get("duration"),
         "thumbnail_url": raw.get("video", {}).get("originCover"),
-        "created_at": str(flat.get("createTime")) if flat.get("createTime") is not None else None,
+        "created_at": _to_iso_datetime(flat.get("createTime")),
         "likes": stats.get("diggCount"),
         "comments_count": stats.get("commentCount"),
         "shares": stats.get("shareCount"),
@@ -201,6 +267,9 @@ async def main_async() -> int:
     p_user = subparsers.add_parser("user", help="Collect videos for a user")
     p_user.add_argument("--name", required=True, help="User uniqueId / username")
     p_user.add_argument("--count", type=int, default=200, help="Number of videos to fetch (default: 200)")
+    p_keyword = subparsers.add_parser("keyword", help="Collect videos for a search keyword")
+    p_keyword.add_argument("--name", required=True, help="Keyword phrase")
+    p_keyword.add_argument("--count", type=int, default=200, help="Number of videos to fetch (default: 200)")
 
     parser.add_argument(
         "--ms-token",
@@ -234,6 +303,8 @@ async def main_async() -> int:
 
     args = parser.parse_args()
     ms_token = get_ms_token(args.ms_token)
+    resolved_db_url = _resolve_db_url(args.db_url)
+    db_enabled = bool(resolved_db_url) and not args.dry_run
 
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -276,12 +347,20 @@ async def main_async() -> int:
         elif args.mode == "user":
             source_label = args.source or f"user:{args.name}"
             source_iter = iter_videos_user(api, args.name, args.count)
+        elif args.mode == "keyword":
+            source_label = args.source or f"keyword:{args.name}"
+            source_iter = iter_videos_keyword(api, args.name, args.count)
         else:
             raise SystemExit(f"Unknown mode: {args.mode}")
 
-        scrape_ctx: ScrapeContext | None = None
-        if not args.dry_run:
-            scrape_ctx = create_scrape_run(source_label, db_url=args.db_url)
+        scrape_ctx = None
+        write_normalized_record = None
+        if db_enabled:
+            from scraper.db.writer import create_scrape_run, write_normalized_record
+
+            scrape_ctx = create_scrape_run(source_label, db_url=resolved_db_url)
+        elif not args.dry_run:
+            print("DB disabled (no --db-url and no DATABASE_URL). Writing JSONL only.")
 
         count = 0
         with out_path.open("w", encoding="utf-8") as f:
@@ -292,14 +371,16 @@ async def main_async() -> int:
 
                 normalized = to_normalized(flat, source=source_label, position=count)
                 if args.dry_run:
-                    dry_run_print_sql(normalized)
-                else:
+                    _dry_run_print(normalized)
+                elif db_enabled and write_normalized_record is not None:
                     write_normalized_record(
                         normalized,
-                        db_url=args.db_url,
+                        db_url=resolved_db_url,
                         scrape_ctx=scrape_ctx,
                         position=count,
                     )
+                else:
+                    pass
 
         print(f"Wrote {count} records to {out_path}")
         return 0

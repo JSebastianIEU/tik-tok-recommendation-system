@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
@@ -175,7 +176,7 @@ def _insert_video_snapshot(
     video_id: str,
     metrics: Dict[str, Any],
     scraped_at: datetime,
-    scrape_ctx: Optional<ScrapeContext] = None,
+    scrape_ctx: Optional[ScrapeContext] = None,
     position: Optional[int] = None,
 ) -> int:
     cur = conn.cursor()
@@ -252,9 +253,13 @@ def _upsert_comments_and_snapshots(
     for c in comments:
         comment_id = c.get("comment_id") or c.get("id")
         if not comment_id:
-            # Derive a deterministic id from video + text slice
-            text = (c.get("text") or "")[:64]
-            comment_id = f"{video_id}:{hash(text)}"
+            # Derive a deterministic id when source comment id is unavailable.
+            text = (c.get("text") or "").strip().lower()
+            username = (c.get("username") or "").strip().lower()
+            parent_id = (c.get("parent_comment_id") or "").strip().lower()
+            seed = f"{video_id}|{username}|{parent_id}|{text[:256]}"
+            digest = hashlib.sha1(seed.encode("utf-8")).hexdigest()[:24]
+            comment_id = f"gen:{digest}"
 
         cur.execute(
             """

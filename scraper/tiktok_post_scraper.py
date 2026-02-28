@@ -11,13 +11,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterator, Optional
+from typing import Any, Dict, Iterator, Optional, TYPE_CHECKING
 from urllib.request import urlretrieve
 
 from bs4 import BeautifulSoup
@@ -27,8 +28,14 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
-from scraper.db.writer import ScrapeContext, create_scrape_run, dry_run_print_sql, write_normalized_record
-from scraper.selenium_utils import dismiss_communication_banner, dismiss_cookie_banner
+from scraper.selenium_utils import (
+    click_shadow_button_by_text,
+    dismiss_communication_banner,
+    dismiss_cookie_banner,
+)
+
+if TYPE_CHECKING:
+    from scraper.db.writer import ScrapeContext
 
 
 def create_driver(headless: bool = True) -> webdriver.Chrome:
@@ -146,11 +153,47 @@ def _click_comment_icon(driver: webdriver.Chrome, timeout: int = 8) -> None:
         return
 
 
-def _scroll_to_load_comments(driver: webdriver.Chrome, wait_seconds: int = 6) -> None:
+def _set_comment_sort(driver: webdriver.Chrome, comment_sort: str) -> None:
+    desired = (comment_sort or "top").strip().lower()
+    if desired == "top":
+        return
+    if desired not in {"top", "new"}:
+        return
+
+    # Best-effort workflow:
+    # 1) Open the sort picker if present.
+    # 2) Click the requested option by visible text.
+    open_labels = ("Top comments", "Top", "Comments")
+    target_labels = ("Newest first", "Most recent", "Latest", "New")
+
+    for label in open_labels:
+        if click_shadow_button_by_text(driver, label, timeout=2):
+            time.sleep(0.3)
+            break
+
+    for label in target_labels:
+        if click_shadow_button_by_text(driver, label, timeout=2):
+            time.sleep(0.3)
+            return
+        try:
+            btn = driver.find_element(By.XPATH, f"//button[contains(normalize-space(.), '{label}')]")
+            btn.click()
+            time.sleep(0.3)
+            return
+        except Exception:
+            continue
+
+
+def _scroll_to_load_comments(
+    driver: webdriver.Chrome,
+    wait_seconds: int = 6,
+    comment_sort: str = "top",
+) -> None:
     try:
         dismiss_communication_banner(driver)
         dismiss_cookie_banner(driver)
         _click_comment_icon(driver)
+        _set_comment_sort(driver, comment_sort=comment_sort)
 
         driver.execute_script("window.scrollBy(0, 600);")
         time.sleep(1.5)
@@ -176,11 +219,19 @@ def _scroll_to_load_comments(driver: webdriver.Chrome, wait_seconds: int = 6) ->
         return
 
 
-def _get_comments_from_dom(driver: webdriver.Chrome, max_comments: int) -> list[dict]:
-    _scroll_to_load_comments(driver, wait_seconds=4)
+def _get_comments_from_dom(
+    driver: webdriver.Chrome,
+    max_comments: int,
+    *,
+    comment_sort: str = "top",
+) -> list[dict]:
+    if max_comments <= 0:
+        return []
+
+    _scroll_to_load_comments(driver, wait_seconds=4, comment_sort=comment_sort)
 
     comments: list[dict] = []
-    seen_texts: set[str] = set()
+    seen_keys: set[str] = set()
 
     def _parse_count(num_text: str) -> int:
         if not num_text:
@@ -189,7 +240,7 @@ def _get_comments_from_dom(driver: webdriver.Chrome, max_comments: int) -> list[
         try:
             import re as _re
 
-            m = _re.match(r"([\d\.]+)\s*([KkMm])?", text)
+            m = _re.match(r"([\d\.]+)\s*([KkMmBb])?", text)
             if not m:
                 return 0
             value = float(m.group(1))
@@ -198,63 +249,82 @@ def _get_comments_from_dom(driver: webdriver.Chrome, max_comments: int) -> list[
                 value *= 1_000
             elif suffix in ("M", "m"):
                 value *= 1_000_000
+            elif suffix in ("B", "b"):
+                value *= 1_000_000_000
             return int(value)
         except Exception:
             return 0
 
-    def _add_comment(text: str, like_count: int = 0, reply_count: int = 0) -> bool:
-        text = (text or "").strip()
-        if not text or len(text) > 2000 or text in seen_texts:
-            return False
-        seen_texts.add(text)
-        comments.append(
-            {
-                "text": text,
-                "likeCount": like_count,
-                "replyCount": reply_count,
-                "from_dom": True,
-            }
+    def _extract_text(el: Any) -> str:
+        text_candidates: list[str] = []
+        for text_sel in ("[data-e2e='comment-level-1']", "p", "span"):
+            try:
+                text_els = el.find_elements(By.CSS_SELECTOR, text_sel)
+            except Exception:
+                text_els = []
+            for text_el in text_els:
+                t = (text_el.text or "").strip()
+                if 5 < len(t) < 2000:
+                    text_candidates.append(t)
+        if not text_candidates:
+            return ""
+        text_candidates.sort(key=len, reverse=True)
+        return text_candidates[0]
+
+    def _extract_username(el: Any) -> Optional[str]:
+        selectors = (
+            "a[href*='/@']",
+            "[data-e2e='comment-username-1']",
+            "span[class*='SpanUniqueId']",
         )
-        return True
+        for sel in selectors:
+            try:
+                name_els = el.find_elements(By.CSS_SELECTOR, sel)
+            except Exception:
+                name_els = []
+            for item in name_els:
+                value = (item.text or "").strip().lstrip("@")
+                if value:
+                    return value
+        return None
+
+    no_growth_rounds = 0
+    max_rounds = min(600, max(40, max_comments * 3))
 
     selectors = [
         "div[class*='DivCommentObjectWrapper']",
         "div[class*='DivCommentItemWrapper']",
         "div[class*='DivCommentListContainer'] > div",
+        "div[data-e2e='comment-list'] > div",
     ]
 
-    for selector in selectors:
-        if len(comments) >= max_comments:
-            break
-        try:
-            elements = driver.find_elements(By.CSS_SELECTOR, selector)
-            for el in elements[: max_comments * 2]:
+    for _ in range(max_rounds):
+        added_this_round = 0
+
+        for selector in selectors:
+            if len(comments) >= max_comments:
+                break
+            try:
+                elements = driver.find_elements(By.CSS_SELECTOR, selector)
+            except Exception:
+                elements = []
+
+            for el in elements:
                 if len(comments) >= max_comments:
                     break
                 try:
-                    text_el = None
-                    try:
-                        level1 = el.find_elements(By.CSS_SELECTOR, "[data-e2e='comment-level-1']")
-                        if level1:
-                            text_el = level1[0]
-                    except Exception:
-                        text_el = None
-
-                    if not text_el:
-                        for text_sel in ("span", "p"):
-                            try:
-                                text_els = el.find_elements(By.CSS_SELECTOR, text_sel)
-                                if text_els:
-                                    text_el = text_els[0]
-                                    break
-                            except Exception:
-                                continue
-
-                    if not text_el:
+                    text = _extract_text(el)
+                    if not text:
                         continue
 
-                    text = (text_el.text or "").strip()
-                    if not (5 < len(text) < 1500):
+                    comment_id = (
+                        el.get_attribute("data-comment-id")
+                        or el.get_attribute("data-e2e-comment-id")
+                        or el.get_attribute("data-id")
+                    )
+                    username = _extract_username(el)
+                    dedupe_key = comment_id or f"{username or ''}|{text}"
+                    if dedupe_key in seen_keys:
                         continue
 
                     like_count = 0
@@ -269,45 +339,89 @@ def _get_comments_from_dom(driver: webdriver.Chrome, max_comments: int) -> list[
 
                     reply_count = 0
                     try:
-                        reply_label_els = el.find_elements(
+                        reply_els = el.find_elements(
                             By.XPATH,
-                            "following-sibling::div[contains(@class,'DivReplyContainer')][1]"
-                            "//div[contains(@class,'TUXButton-label')]",
+                            ".//*[contains(text(),'repl') or contains(text(),'Reply') or contains(text(),'reply')]",
                         )
-                        if reply_label_els:
-                            label = (reply_label_els[0].text or "").strip()
+                        if reply_els:
+                            label = (reply_els[0].text or "").strip()
                             import re as _re2
 
-                            m = _re2.search(r"View\s+(\d+)\s+repl", label)
+                            m = _re2.search(r"(\d+(?:\.\d+)?\s*[KkMm]?)", label)
                             if m:
-                                reply_count = int(m.group(1))
+                                reply_count = _parse_count(m.group(1))
                     except Exception:
                         reply_count = 0
 
-                    _add_comment(text, like_count=like_count, reply_count=reply_count)
+                    seen_keys.add(dedupe_key)
+                    comments.append(
+                        {
+                            "id": comment_id,
+                            "text": text,
+                            "username": username,
+                            "likeCount": like_count,
+                            "replyCount": reply_count,
+                            "from_dom": True,
+                        }
+                    )
+                    added_this_round += 1
                 except Exception:
                     continue
-            if comments:
-                break
-        except Exception:
-            continue
 
-    if not comments:
+        if len(comments) >= max_comments:
+            break
+
+        if added_this_round == 0:
+            no_growth_rounds += 1
+        else:
+            no_growth_rounds = 0
+
+        if no_growth_rounds >= 6:
+            break
+
         try:
-            level1_els = driver.find_elements(By.CSS_SELECTOR, "[data-e2e='comment-level-1']")
-            for el in level1_els[: max_comments * 2]:
-                if len(comments) >= max_comments:
-                    break
-                try:
-                    t = (el.text or "").strip()
-                    if 5 < len(t) < 1500:
-                        _add_comment(t)
-                except Exception:
-                    continue
+            scrolled = driver.execute_script(
+                """
+                const selectors = [
+                  "div[class*='DivCommentListContainer']",
+                  "div[data-e2e='comment-list']",
+                  "div[class*='CommentListContainer']"
+                ];
+                let didScroll = false;
+                for (const sel of selectors) {
+                  const nodes = document.querySelectorAll(sel);
+                  for (const node of nodes) {
+                    node.scrollTop = node.scrollHeight;
+                    didScroll = true;
+                  }
+                }
+                window.scrollBy(0, 800);
+                return didScroll;
+                """
+            )
+            if not scrolled:
+                driver.execute_script("window.scrollBy(0, 1200);")
         except Exception:
             pass
 
+        time.sleep(0.8)
+
     return comments[:max_comments]
+
+
+def _to_iso_datetime(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(value, tz=timezone.utc).isoformat()
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return None
+        if raw.isdigit():
+            return datetime.fromtimestamp(int(raw), tz=timezone.utc).isoformat()
+        return raw
+    return str(value)
 
 
 def _safe_get(obj: dict, *keys: str, default: Any = None) -> Any:
@@ -434,6 +548,7 @@ def scrape_tiktok_post(
     headless: bool = True,
     max_comments: int = 10,
     fast_mode: bool = False,
+    comment_sort: str = "top",
     download_video_path: Optional[str] = None,
     download_audio_path: Optional[str] = None,
 ) -> dict:
@@ -442,7 +557,7 @@ def scrape_tiktok_post(
         driver = create_driver(headless=headless)
 
     try:
-        want_comments = max(0, min(max_comments, 5))
+        want_comments = max(0, max_comments)
         page_wait = 5 if fast_mode else 8
         post_sleep = 1.0 if fast_mode else 2.0
 
@@ -479,7 +594,11 @@ def scrape_tiktok_post(
         top_comments_raw = _get_comments_from_data(data)[:want_comments] if want_comments else []
         top_comments = [parse_comment(c) for c in top_comments_raw if isinstance(c, dict)]
         if want_comments and len(top_comments) < want_comments and not fast_mode:
-            dom_comments = _get_comments_from_dom(driver, want_comments - len(top_comments))
+            dom_comments = _get_comments_from_dom(
+                driver,
+                want_comments - len(top_comments),
+                comment_sort=comment_sort,
+            )
             for c in dom_comments:
                 if len(top_comments) >= want_comments:
                     break
@@ -528,9 +647,7 @@ def scrape_tiktok_post(
             "audio_id": parsed["music"].get("id"),
             "duration_sec": parsed["video"].get("duration"),
             "thumbnail_url": parsed["video"].get("cover"),
-            "created_at": str(parsed.get("createTime"))
-            if parsed.get("createTime") is not None
-            else None,
+            "created_at": _to_iso_datetime(parsed.get("createTime")),
             "likes": parsed["stats"].get("likeCount"),
             "comments_count": parsed["stats"].get("commentCount"),
             "shares": parsed["stats"].get("shareCount"),
@@ -652,22 +769,36 @@ def _worker_scrape_chunk(
     headless: bool,
     fast_mode: bool,
     max_comments: int,
+    comment_sort: str,
 ) -> list[dict]:
     driver = create_driver(headless=headless)
     results: list[dict] = []
     try:
         for url in urls:
-            try:
-                out = scrape_tiktok_post(
-                    url,
-                    driver=driver,
-                    headless=headless,
-                    max_comments=max_comments,
-                    fast_mode=fast_mode,
-                )
-                results.append(out)
-            except Exception as e:
-                results.append({"success": False, "url": url, "error": str(e)})
+            last_error = "unknown scrape error"
+            success_result: Optional[dict] = None
+            for attempt in range(1, 4):
+                try:
+                    out = scrape_tiktok_post(
+                        url,
+                        driver=driver,
+                        headless=headless,
+                        max_comments=max_comments,
+                        fast_mode=fast_mode,
+                        comment_sort=comment_sort,
+                    )
+                    if out.get("success"):
+                        success_result = out
+                        break
+                    last_error = str(out.get("error") or last_error)
+                except Exception as e:
+                    last_error = str(e)
+                if attempt < 3:
+                    time.sleep(min(8, 2**attempt))
+            if success_result is not None:
+                results.append(success_result)
+            else:
+                results.append({"success": False, "url": url, "error": last_error})
     finally:
         driver.quit()
     return results
@@ -680,6 +811,7 @@ def scrape_tiktok_batch(
     headless: bool = True,
     fast_mode: bool = True,
     max_comments: int = 0,
+    comment_sort: str = "top",
     output_jsonl: Optional[str] = None,
 ) -> Iterator[dict]:
     if not urls:
@@ -708,6 +840,7 @@ def scrape_tiktok_batch(
                 headless,
                 fast_mode,
                 max_comments,
+                comment_sort,
             ): chunk
             for chunk in chunks
         }
@@ -716,6 +849,26 @@ def scrape_tiktok_batch(
                 if output_jsonl:
                     _write_result(result)
                 yield result
+
+
+def _resolve_db_url(explicit: Optional[str]) -> Optional[str]:
+    raw = (explicit or os.getenv("DATABASE_URL") or "").strip()
+    return raw or None
+
+
+def _dry_run_print(normalized: Dict[str, Any]) -> None:
+    try:
+        from scraper.db.writer import dry_run_print_sql
+    except ModuleNotFoundError:
+        author = normalized.get("author") or {}
+        video = normalized.get("video") or {}
+        comments = normalized.get("comments") or []
+        print(
+            f"[DRY RUN] author={author.get('author_id')} "
+            f"video={video.get('video_id')} comments={len(comments)}"
+        )
+        return
+    dry_run_print_sql(normalized)
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -735,8 +888,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument(
         "--comments",
         type=int,
-        default=5,
-        help="Max top comments per video (default 5). Use 0 in batch for speed.",
+        default=50,
+        help="Max comments per video (default 50). Use 0 in batch for speed.",
+    )
+    parser.add_argument(
+        "--comment-sort",
+        choices=["top", "new"],
+        default="top",
+        help="Comment sort mode when scraping via DOM fallback (default: top).",
     )
     parser.add_argument(
         "--download-video",
@@ -796,6 +955,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         help="Do not write to Postgres; print a summary of what would be written.",
     )
     args = parser.parse_args(argv)
+    resolved_db_url = _resolve_db_url(args.db_url)
+    db_enabled = bool(resolved_db_url) and not args.dry_run
 
     urls_file = getattr(args, "urls_file", None) or None
     jsonl_file = getattr(args, "jsonl_file", None) or None
@@ -816,9 +977,14 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         out_path = args.output or "tiktok_batch_output.jsonl"
         count = 0
-        scrape_ctx: Optional[ScrapeContext] = None
-        if not args.dry_run:
-            scrape_ctx = create_scrape_run(args.source, db_url=args.db_url)
+        scrape_ctx: Optional["ScrapeContext"] = None
+        write_normalized_record = None
+        if db_enabled:
+            from scraper.db.writer import create_scrape_run, write_normalized_record
+
+            scrape_ctx = create_scrape_run(args.source, db_url=resolved_db_url)
+        elif not args.dry_run:
+            print("DB disabled (no --db-url and no DATABASE_URL). Writing JSON/JSONL only.")
 
         for result in scrape_tiktok_batch(
             urls,
@@ -826,6 +992,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             headless=not args.no_headless,
             fast_mode=args.fast,
             max_comments=args.comments,
+            comment_sort=args.comment_sort,
             output_jsonl=out_path,
         ):
             count += 1
@@ -834,14 +1001,16 @@ def main(argv: Optional[list[str]] = None) -> int:
             if result.get("success") and "normalized" in result:
                 norm = result["normalized"]
                 if args.dry_run:
-                    dry_run_print_sql(norm)
-                else:
+                    _dry_run_print(norm)
+                elif db_enabled and write_normalized_record is not None:
                     write_normalized_record(
                         norm,
-                        db_url=args.db_url,
+                        db_url=resolved_db_url,
                         scrape_ctx=scrape_ctx,
                         position=None,
                     )
+                else:
+                    pass
         print(f"Done. Wrote {count} records to {out_path}")
         return 0
 
@@ -857,6 +1026,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         args.url,
         headless=not args.no_headless,
         max_comments=args.comments,
+        comment_sort=args.comment_sort,
         download_video_path=args.download_video,
         download_audio_path=args.download_audio,
     )
@@ -867,15 +1037,19 @@ def main(argv: Optional[list[str]] = None) -> int:
     norm = result.get("normalized")
     if norm:
         if args.dry_run:
-            dry_run_print_sql(norm)
-        else:
-            scrape_ctx = create_scrape_run(args.source, db_url=args.db_url)
+            _dry_run_print(norm)
+        elif db_enabled:
+            from scraper.db.writer import create_scrape_run, write_normalized_record
+
+            scrape_ctx = create_scrape_run(args.source, db_url=resolved_db_url)
             write_normalized_record(
                 norm,
-                db_url=args.db_url,
+                db_url=resolved_db_url,
                 scrape_ctx=scrape_ctx,
                 position=args.position,
             )
+        else:
+            print("DB disabled (no --db-url and no DATABASE_URL). Writing JSON only.")
 
     if args.output:
         Path(args.output).write_text(

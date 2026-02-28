@@ -1,0 +1,36 @@
+﻿keywords:
+  - "immigration crisis"
+  - "gender debate"
+  - "cancel culture"
+  - "freedom of speech"
+  - "climate change debate"
+  - "government corruption"
+  - "feminism debate"
+  - "capitalism vs socialism"
+  - "elections 2025"
+  - "social justice movement"
+hashtags:
+  - "#politics"
+  - "#debate"
+  - "#immigration"
+  - "#cancelculture"
+  - "#climatechange"
+  - "#feminism"
+  - "#elections"
+  - "#freedomofspeech"
+  - "#socialjustice"
+  - "#government"
+per_query_video_limit: 40
+max_comments_per_video: 300
+comment_sort: "top"
+modes_enabled:
+  - "keyword"
+  - "hashtag"
+concurrency: 2
+headless: true
+db_url: null
+output_raw_jsonl:
+  enabled: true
+  path: "../data/raw/alp_arslan_politics_social_issues.jsonl"
+source_label: "member4_alp_arslan_politics_social_issues"
+
