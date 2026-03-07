@@ -114,6 +114,36 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="Output merged JSONL file.",
     )
+
+    p_scrape_all = subparsers.add_parser(
+        "scrape-all",
+        help="Full-scale scrape: hashtags + keywords into Postgres/Supabase.",
+    )
+    p_scrape_all.add_argument(
+        "config",
+        help="Path to full_scale.yaml config.",
+    )
+    p_scrape_all.add_argument(
+        "--db-url",
+        help="Override DB URL (else from config or DATABASE_URL).",
+    )
+    p_scrape_all.add_argument(
+        "--init-db",
+        action="store_true",
+        help="Apply schema before scraping.",
+    )
+    p_scrape_all.add_argument(
+        "--skip-existing",
+        action="store_true",
+        help="Skip DB write for videos already in DB (avoids duplicate storage).",
+    )
+    p_scrape_all.add_argument(
+        "--delay",
+        type=float,
+        default=5,
+        help="Seconds between sources (default: 5).",
+    )
+
     return parser
 
 
@@ -156,6 +186,20 @@ def main(argv: list[str] | None = None) -> int:
         summary = merge_jsonl_files(args.inputs, args.output)
         _print_json_merge_summary(summary)
         return 0
+
+    if args.command == "scrape-all":
+        from scraper.run_full_scale import main as scrape_all_main
+
+        argv = [args.config]
+        if args.db_url:
+            argv.extend(["--db-url", args.db_url])
+        if args.init_db:
+            argv.append("--init-db")
+        if args.skip_existing:
+            argv.append("--skip-existing")
+        if args.delay != 5:
+            argv.extend(["--delay", str(args.delay)])
+        return scrape_all_main(argv)
 
     parser.print_help()
     return 1

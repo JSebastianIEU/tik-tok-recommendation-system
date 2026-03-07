@@ -25,6 +25,14 @@ class ScrapeContext:
     started_at: datetime
 
 
+def load_existing_video_ids(db_url: Optional[str] = None) -> set[str]:
+    """Load all video_ids from the videos table. Used to skip writes for already-stored videos."""
+    with get_connection(db_url) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT video_id FROM videos")
+            return {row[0] for row in cur.fetchall() if row[0]}
+
+
 def create_scrape_run(
     source: str,
     *,
@@ -310,6 +318,8 @@ def write_normalized_record(
     db_url: Optional[str] = None,
     scrape_ctx: Optional[ScrapeContext] = None,
     position: Optional[int] = None,
+    skip_existing: bool = False,
+    existing_video_ids: Optional[set[str]] = None,
 ) -> None:
     """
     Persist a single normalized record into Postgres.
@@ -328,6 +338,12 @@ def write_normalized_record(
     video = normalized.get("video") or {}
     author_snapshot = normalized.get("authorMetricSnapshot") or {}
     comments = normalized.get("comments") or []
+
+    video_id = video.get("video_id")
+    if skip_existing and existing_video_ids is not None and video_id is not None:
+        vid_str = str(video_id)
+        if vid_str in existing_video_ids:
+            return
 
     hashtags = video.get("hashtags") or []
     metrics = {

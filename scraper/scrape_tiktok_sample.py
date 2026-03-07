@@ -11,14 +11,19 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import os
 import random
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict
 from urllib.parse import urlparse
 
 from TikTokApi import TikTokApi
+
+# Reduce TikTokApi noise (status 10201, etc.)
+logging.getLogger("TikTokApi").setLevel(logging.WARNING)
 
 def get_ms_token(explicit: str | None) -> str:
     token = explicit or os.environ.get("MS_TOKEN")
@@ -113,16 +118,37 @@ async def iter_videos_user(api: TikTokApi, name: str, count: int) -> AsyncIterat
 
 async def iter_videos_keyword(api: TikTokApi, query: str, count: int) -> AsyncIterator[Dict[str, Any]]:
     """
-    Best-effort keyword search over TikTokApi variants.
-    API signatures differ across versions, so we try common call styles.
+    Keyword search over TikTokApi. Uses search.search_type(..., "item") when
+    search.videos is not available (e.g. TikTokApi 6.x).
     """
     search = getattr(api, "search", None)
     if not search:
         raise RuntimeError("TikTokApi search API is not available in this version.")
 
+    # TikTokApi 6.x: search has search_type(term, "item") for videos, not .videos
+    search_type = getattr(search, "search_type", None)
+    if callable(search_type):
+        found = 0
+        async for item in search_type(query, "item", count=count):
+            if found >= count:
+                return
+            as_dict = getattr(item, "as_dict", None)
+            if isinstance(as_dict, dict):
+                yield as_dict
+            elif isinstance(item, dict):
+                yield item
+            else:
+                yield {}
+            found += 1
+        return
+
+    # Fallback: try search.videos if it exists (older versions)
     videos_method = getattr(search, "videos", None)
     if not callable(videos_method):
-        raise RuntimeError("TikTokApi search.videos is not available in this version.")
+        raise RuntimeError(
+            "TikTokApi search.videos and search.search_type are not available. "
+            "Keyword search may require a different TikTokApi version."
+        )
 
     call_variants = [
         lambda: videos_method(query, count=count),
@@ -130,7 +156,6 @@ async def iter_videos_keyword(api: TikTokApi, query: str, count: int) -> AsyncIt
         lambda: videos_method(keyword=query, count=count),
         lambda: videos_method(keywords=query, count=count),
     ]
-
     last_error: Exception | None = None
     for factory in call_variants:
         try:
@@ -192,6 +217,18 @@ def flatten_video(v: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _build_tiktok_page_url(raw: Dict[str, Any], video_id: Any) -> str | None:
+    """Build TikTok page URL from raw video dict (required for DB videos.url)."""
+    share_url = raw.get("shareUrl") or raw.get("share_url") or raw.get("webVideoUrl")
+    if isinstance(share_url, str) and "tiktok.com" in share_url and "/video/" in share_url:
+        return share_url.split("?")[0].split("#")[0].rstrip("/")
+    author = raw.get("author") or {}
+    unique_id = author.get("uniqueId") if isinstance(author, dict) else None
+    if video_id and unique_id:
+        return f"https://www.tiktok.com/@{unique_id}/video/{video_id}"
+    return None
+
+
 def to_normalized(flat: Dict[str, Any], *, source: str, position: int | None) -> Dict[str, Any]:
     """
     Map the flattened TikTokApi record into the shared normalized schema
@@ -204,6 +241,10 @@ def to_normalized(flat: Dict[str, Any], *, source: str, position: int | None) ->
 
     author_id = author.get("id")
     video_id = flat.get("id")
+    if author_id is not None:
+        author_id = str(author_id)
+    if video_id is not None:
+        video_id = str(video_id)
     scraped_at = datetime.now(timezone.utc).isoformat()
 
     normalized_author = {
@@ -215,12 +256,13 @@ def to_normalized(flat: Dict[str, Any], *, source: str, position: int | None) ->
         "verified": bool(author.get("verified")),
     }
 
+    page_url = _build_tiktok_page_url(raw, video_id)
     audio_name = music.get("title") or ""
     normalized_video = {
         "video_id": video_id,
         "author_id": author_id,
         "scraped_at": scraped_at,
-        "url": raw.get("video", {}).get("playAddr"),
+        "url": page_url,
         "caption": flat.get("desc"),
         "hashtags": [h.get("name") for h in raw.get("challenges", []) if isinstance(h, dict) and h.get("name")],
         "audio_name": audio_name,
@@ -300,6 +342,11 @@ async def main_async() -> int:
         action="store_true",
         help="Do not write to Postgres; only emit JSONL and print summaries.",
     )
+    parser.add_argument(
+        "--skip-existing",
+        action="store_true",
+        help="Skip DB write for videos already in DB (avoids duplicate storage, saves writes).",
+    )
 
     args = parser.parse_args()
     ms_token = get_ms_token(args.ms_token)
@@ -324,11 +371,14 @@ async def main_async() -> int:
                     )
 
             try:
+                headless = os.getenv("TIKTOK_HEADLESS", "false").lower() in ("1", "true", "yes")
+                browser = os.getenv("TIKTOK_BROWSER", "webkit").strip() or "webkit"
                 await api.create_sessions(
                     ms_tokens=[ms_token],
                     num_sessions=1,
-                    sleep_after=3,
-                    browser=os.getenv("TIKTOK_BROWSER", "chromium"),
+                    sleep_after=5,
+                    headless=headless,
+                    browser=browser,
                     proxies=[proxy_cfg] if proxy_cfg else None,
                     timeout=60000,
                 )
@@ -355,32 +405,59 @@ async def main_async() -> int:
 
         scrape_ctx = None
         write_normalized_record = None
+        existing_video_ids: set[str] | None = None
         if db_enabled:
-            from scraper.db.writer import create_scrape_run, write_normalized_record
+            from scraper.db.writer import create_scrape_run, write_normalized_record, load_existing_video_ids
 
             scrape_ctx = create_scrape_run(source_label, db_url=resolved_db_url)
+            if args.skip_existing:
+                existing_video_ids = load_existing_video_ids(resolved_db_url)
+                print(f"Skip-existing: loaded {len(existing_video_ids)} video_ids from DB")
         elif not args.dry_run:
             print("DB disabled (no --db-url and no DATABASE_URL). Writing JSONL only.")
 
         count = 0
-        with out_path.open("w", encoding="utf-8") as f:
-            async for raw in source_iter:
-                flat = flatten_video(raw)
-                f.write(json.dumps(flat, ensure_ascii=False) + "\n")
-                count += 1
+        delay_every_n = int(os.getenv("TIKTOK_DELAY_EVERY_N", "30"))
+        delay_sec = float(os.getenv("TIKTOK_DELAY_SEC", "2"))
 
-                normalized = to_normalized(flat, source=source_label, position=count)
-                if args.dry_run:
-                    _dry_run_print(normalized)
-                elif db_enabled and write_normalized_record is not None:
-                    write_normalized_record(
-                        normalized,
-                        db_url=resolved_db_url,
-                        scrape_ctx=scrape_ctx,
-                        position=count,
-                    )
-                else:
+        with out_path.open("w", encoding="utf-8") as f:
+            try:
+                async for raw in source_iter:
+                    flat = flatten_video(raw)
+                    f.write(json.dumps(flat, ensure_ascii=False) + "\n")
+                    count += 1
+
+                    normalized = to_normalized(flat, source=source_label, position=count)
+                    if args.dry_run:
+                        _dry_run_print(normalized)
+                    elif db_enabled and write_normalized_record is not None:
+                        video = normalized.get("video", {})
+                        author = normalized.get("author", {})
+                        if video.get("url") and author.get("author_id"):
+                            write_normalized_record(
+                                normalized,
+                                db_url=resolved_db_url,
+                                scrape_ctx=scrape_ctx,
+                                position=count,
+                                skip_existing=args.skip_existing,
+                                existing_video_ids=existing_video_ids,
+                            )
+                    else:
+                        pass
+
+                    if delay_every_n > 0 and count % delay_every_n == 0 and delay_sec > 0:
+                        await asyncio.sleep(delay_sec)
+            except Exception as e:  # noqa: BLE001
+                recoverable: tuple[type, ...] = (KeyError,)
+                try:
+                    from TikTokApi.exceptions import EmptyResponseException, CaptchaException
+                    recoverable = (EmptyResponseException, CaptchaException, KeyError)
+                except ImportError:
                     pass
+                if isinstance(e, recoverable):
+                    print(f"Stopped early ({type(e).__name__}): {e}", file=sys.stderr)
+                else:
+                    raise
 
         print(f"Wrote {count} records to {out_path}")
         return 0
