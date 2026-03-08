@@ -132,6 +132,7 @@ Scrape **hashtags and keywords** at scale and persist to **Supabase** (or any Po
    ```
 
 Data persists in Supabase. Teammates use the same `DATABASE_URL` to share data.
+Each run writes a JSON summary file in `scraper/data/raw/` and tracks source-level checkpoint state in DB (`scrape_source_jobs`) so reruns can resume.
 
 ### Option B: Local Docker (solo dev)
 
@@ -148,8 +149,12 @@ python -m scraper scrape-all scraper/configs/full_scale.yaml --skip-existing
 - **`--skip-existing`**: Skips videos already in DB; use on repeated runs.
 - **`--init-db`**: Apply schema before first scrape.
 - **`--delay 10`**: Increase seconds between sources if rate-limited.
+- **Resume behavior**: `scrape-all` resumes by default and skips completed sources; use `--no-resume` to force rerun.
+- **Summary output**: set `--summary-path` to control where run metrics JSON is written.
 - **Customize**: Edit `scraper/configs/full_scale.yaml` for hashtags, keywords, counts.
 - **Bot detection**: Scraper uses `headless=false` and `webkit` by default. If issues persist, try `TIKTOK_BROWSER=chromium` or `playwright install webkit`.
+- **DB config precedence**: CLI `--db-url` > `DATABASE_URL` env > config `db_url`.
+- **DB commit batching**: tune with `SCRAPER_DB_COMMIT_EVERY` (default `50`).
 
 ## Optional PostgreSQL Mode (pipeline)
 
@@ -168,4 +173,3 @@ If later you want DB persistence for the Selenium pipeline:
 - Optional DB mode:
   - `python -m scraper init-db --db-url <url>`
   - `python -m scraper merge --target-db <url> --source-db <url> ...`
-

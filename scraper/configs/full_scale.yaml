@@ -4,6 +4,7 @@
 # - Supabase: set DATABASE_URL in .env (recommended for team persistence)
 # - Local: db_url below (or DATABASE_URL) → Docker Postgres
 # - Use --skip-existing to avoid re-scraping videos already in the DB
+# - --comments 5, --replies 5, --min-likes-for-replies 10 (only fetch replies for popular comments)
 
 hashtags:
   - name: fitness

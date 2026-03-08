@@ -27,38 +27,54 @@ docker exec tiktok-postgres pg_dump -U tiktok tiktok > backup.sql
 
 ---
 
-## Step 2: Get Your Supabase Connection String
+## Step 2: Get Your Supabase Connection String (psql)
 
-1. Open [Supabase Dashboard](https://supabase.com/dashboard)
-2. Select your project
-3. Go to **Project Settings** (gear icon) → **Database**
-4. Under **Connection string**, choose **URI**
-5. Copy the URI. It looks like:
-   ```
-   postgresql://postgres.[PROJECT_REF]:[YOUR-PASSWORD]@aws-0-[REGION].pooler.supabase.com:5432/postgres
-   ```
-   Or for direct connection:
+1. Open [Supabase Dashboard](https://supabase.com/dashboard) → your project
+2. Go to **Project Settings** (gear icon) → **Database**
+3. Scroll to **Connection string**
+4. Select **URI**
+5. **Use the pooler** (recommended if direct connection fails with "No route to host"):
+   - Toggle **Use connection pooling** ON
+   - Mode: **Transaction**
+   - Copy the URI. Format:
+     ```
+     postgresql://postgres.[PROJECT_REF]:[YOUR-PASSWORD]@aws-0-[REGION].pooler.supabase.com:5432/postgres
+     ```
+6. Or use **direct** (if your network allows it):
    ```
    postgresql://postgres:[YOUR-PASSWORD]@db.[PROJECT_REF].supabase.co:5432/postgres
    ```
-6. Replace `[YOUR-PASSWORD]` with your actual database password (from the same page)
+7. Replace `[YOUR-PASSWORD]` with your database password (same page, under "Database password")
 
 ---
 
-## Step 3: Import Data into Supabase
+## Step 3: Import Data with psql
+
+From your project root (where `backup.sql` is):
 
 ```bash
-/opt/homebrew/opt/libpq/bin/psql "YOUR_SUPABASE_URI" < backup.sql
+psql "YOUR_FULL_URI" < backup.sql
 ```
 
-Example (replace `YOUR_PASSWORD` and project ref if different):
+If `psql` isn't in PATH:
 
 ```bash
-/opt/homebrew/opt/libpq/bin/psql "postgresql://postgres:YOUR_PASSWORD@db.mlmlcilyoqvbvgljsjtv.supabase.co:5432/postgres" < backup.sql
+/opt/homebrew/opt/libpq/bin/psql "YOUR_FULL_URI" < backup.sql
 ```
 
-- If you see errors about tables already existing, that’s usually fine (schema was already applied)
-- Data should now be in Supabase
+**Example (pooler):**
+```bash
+psql "postgresql://postgres.mlmlcilyoqvbvgljsjtv:YOUR_PASSWORD@aws-0-us-east-1.pooler.supabase.com:5432/postgres" < backup.sql
+```
+
+**Example (direct):**
+```bash
+psql "postgresql://postgres:YOUR_PASSWORD@db.mlmlcilyoqvbvgljsjtv.supabase.co:5432/postgres" < backup.sql
+```
+
+- Replace `YOUR_PASSWORD` with your actual password
+- Replace `us-east-1` with your region if different (check the URI from the dashboard)
+- Some "relation already exists" errors are OK if schema was applied before
 
 ---
 

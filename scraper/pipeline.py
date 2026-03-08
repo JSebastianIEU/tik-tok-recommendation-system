@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import random
 import time
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, AsyncIterator, Callable, Iterable, Optional
+from typing import Any, AsyncIterator, Iterable, Optional
 from urllib.parse import quote_plus, urlparse
 
 from selenium.webdriver.common.by import By
@@ -43,6 +45,7 @@ class PipelineSummary:
     scraped_ok: int
     scraped_failed: int
     persisted_ok: int
+    persisted_skipped: int
     persist_failed: int
     comments_written: int
     unique_authors: int
@@ -451,31 +454,59 @@ def _build_query_jobs(config: PipelineConfig) -> list[tuple[str, str]]:
     return jobs
 
 
-def _resolve_db_url(config: PipelineConfig) -> str | None:
-    raw = (config.db_url or os.getenv("DATABASE_URL") or "").strip()
+def _resolve_db_url(config: PipelineConfig, *, db_url_override: str | None = None) -> str | None:
+    raw = (db_url_override or os.getenv("DATABASE_URL") or config.db_url or "").strip()
     return raw or None
 
 
-def run_pipeline(config: PipelineConfig) -> PipelineSummary:
+def _summary_path(config: PipelineConfig, started_at: datetime) -> Path:
+    base_dir = Path(config.output_raw_jsonl_path).resolve().parent
+    stamp = started_at.strftime("%Y%m%dT%H%M%SZ")
+    return base_dir / f"pipeline_summary_{stamp}.json"
+
+
+def _write_summary_file(summary: PipelineSummary, path: Path) -> None:
+    payload = {
+        "scrape_run_id": summary.scrape_run_id,
+        "total_queries": summary.total_queries,
+        "discovered_total": summary.discovered_total,
+        "unique_videos": summary.unique_videos,
+        "scraped_ok": summary.scraped_ok,
+        "scraped_failed": summary.scraped_failed,
+        "persisted_ok": summary.persisted_ok,
+        "persisted_skipped": summary.persisted_skipped,
+        "persist_failed": summary.persist_failed,
+        "comments_written": summary.comments_written,
+        "unique_authors": summary.unique_authors,
+        "started_at": summary.started_at.isoformat(),
+        "ended_at": summary.ended_at.isoformat(),
+        "duration_sec": int((summary.ended_at - summary.started_at).total_seconds()),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def run_pipeline(config: PipelineConfig, *, db_url_override: str | None = None) -> PipelineSummary:
     jobs = _build_query_jobs(config)
     if not jobs:
         raise ValueError("No queries to process. Check config keywords/hashtags and modes_enabled.")
 
     started_at = datetime.now(timezone.utc)
-    db_url = _resolve_db_url(config)
+    db_url = _resolve_db_url(config, db_url_override=db_url_override)
     db_enabled = db_url is not None
 
     scrape_ctx: Any = None
-    write_record: Optional[Callable[..., None]] = None
+    db_writer = None
     if db_enabled:
         try:
-            from scraper.db.writer import create_scrape_run, write_normalized_record
+            from scraper.db.writer import BatchedRecordWriter, create_scrape_run
         except ModuleNotFoundError as exc:  # pragma: no cover - depends on local env
             raise RuntimeError(
                 "DB mode requires psycopg. Install scraper requirements or run with db_url: null."
             ) from exc
         scrape_ctx = create_scrape_run(config.source_label, db_url=db_url)
-        write_record = write_normalized_record
+        commit_every = max(1, int(os.getenv("SCRAPER_DB_COMMIT_EVERY", "50")))
+        db_writer = BatchedRecordWriter(db_url=db_url, commit_every=commit_every)
         _log(f"Scrape run created: {scrape_ctx.scrape_run_id} (source={config.source_label})")
     else:
         _log("DB disabled (no db_url/DATABASE_URL). Running in JSON-only mode.")
@@ -511,60 +542,67 @@ def run_pipeline(config: PipelineConfig) -> PipelineSummary:
     scraped_ok = 0
     scraped_failed = 0
     persisted_ok = 0
+    persisted_skipped = 0
     persist_failed = 0
     comments_written = 0
     unique_authors: set[str] = set()
 
-    if unique_urls:
-        for result in scrape_tiktok_batch(
-            unique_urls,
-            workers=config.concurrency,
-            headless=config.headless,
-            fast_mode=False,
-            max_comments=config.max_comments_per_video,
-            comment_sort=config.comment_sort,
-            output_jsonl=raw_path,
-        ):
-            normalized_url = _normalize_video_url(result.get("url"))
-            candidate = url_to_candidate.get(normalized_url or "")
+    writer_ctx = db_writer if db_writer is not None else nullcontext(None)
+    with writer_ctx as active_writer:
+        if unique_urls:
+            for result in scrape_tiktok_batch(
+                unique_urls,
+                workers=config.concurrency,
+                headless=config.headless,
+                fast_mode=False,
+                max_comments=config.max_comments_per_video,
+                comment_sort=config.comment_sort,
+                output_jsonl=raw_path,
+            ):
+                normalized_url = _normalize_video_url(result.get("url"))
+                candidate = url_to_candidate.get(normalized_url or "")
 
-            if result.get("success"):
-                scraped_ok += 1
-                normalized = result.get("normalized") or {}
-                if not isinstance(normalized, dict):
-                    continue
+                if result.get("success"):
+                    scraped_ok += 1
+                    normalized = result.get("normalized") or {}
+                    if not isinstance(normalized, dict):
+                        continue
 
-                video_block = normalized.get("video")
-                if isinstance(video_block, dict) and candidate:
-                    video_block["source"] = f"{candidate.mode}:{candidate.query}"
-                    normalized["video"] = video_block
+                    video_block = normalized.get("video")
+                    if isinstance(video_block, dict) and candidate:
+                        video_block["source"] = f"{candidate.mode}:{candidate.query}"
+                        normalized["video"] = video_block
 
-                comments = normalized.get("comments") or []
-                if isinstance(comments, list):
-                    comments_written += len(comments)
-                author = normalized.get("author") or {}
-                if isinstance(author, dict):
-                    author_id = author.get("author_id")
-                    if isinstance(author_id, str) and author_id:
-                        unique_authors.add(author_id)
+                    comments = normalized.get("comments") or []
+                    if isinstance(comments, list):
+                        comments_written += len(comments)
+                    author = normalized.get("author") or {}
+                    if isinstance(author, dict):
+                        author_id = author.get("author_id")
+                        if isinstance(author_id, str) and author_id:
+                            unique_authors.add(author_id)
 
-                if db_enabled and write_record is not None:
-                    try:
-                        write_record(
-                            normalized,
-                            db_url=db_url,
-                            scrape_ctx=scrape_ctx,
-                            position=candidate.position if candidate else None,
-                        )
+                    if db_enabled and active_writer is not None:
+                        try:
+                            wrote = active_writer.write(
+                                normalized,
+                                scrape_ctx=scrape_ctx,
+                                position=candidate.position if candidate else None,
+                                skip_existing=True,
+                            )
+                            if wrote:
+                                persisted_ok += 1
+                            else:
+                                persisted_skipped += 1
+                        except Exception as exc:  # noqa: BLE001
+                            persist_failed += 1
+                            active_writer.rollback()
+                            _log(f"[persist] failed for {result.get('url')}: {exc}")
+                    else:
                         persisted_ok += 1
-                    except Exception as exc:  # noqa: BLE001
-                        persist_failed += 1
-                        _log(f"[persist] failed for {result.get('url')}: {exc}")
                 else:
-                    persisted_ok += 1
-            else:
-                scraped_failed += 1
-                _log(f"[scrape] failed {result.get('url')}: {result.get('error')}")
+                    scraped_failed += 1
+                    _log(f"[scrape] failed {result.get('url')}: {result.get('error')}")
 
     ended_at = datetime.now(timezone.utc)
     summary = PipelineSummary(
@@ -575,10 +613,14 @@ def run_pipeline(config: PipelineConfig) -> PipelineSummary:
         scraped_ok=scraped_ok,
         scraped_failed=scraped_failed,
         persisted_ok=persisted_ok,
+        persisted_skipped=persisted_skipped,
         persist_failed=persist_failed,
         comments_written=comments_written,
         unique_authors=len(unique_authors),
         started_at=started_at,
         ended_at=ended_at,
     )
+    summary_file = _summary_path(config, started_at)
+    _write_summary_file(summary, summary_file)
+    _log(f"[summary] wrote {summary_file}")
     return summary

@@ -16,6 +16,7 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterator, Optional, TYPE_CHECKING
@@ -820,35 +821,41 @@ def scrape_tiktok_batch(
     chunks: list[list[str]] = []
     for i in range(0, len(urls), chunk_size):
         chunks.append(urls[i : i + chunk_size])
-    file_lock = threading.Lock() if output_jsonl else None
     out_path = Path(output_jsonl) if output_jsonl else None
+    file_lock = threading.Lock() if out_path else None
+    out_handle = None
     if out_path:
         out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_handle = out_path.open("a", encoding="utf-8")
 
     def _write_result(obj: dict) -> None:
-        if not out_path or not file_lock:
+        if not out_handle or not file_lock:
             return
         with file_lock:
-            with out_path.open("a", encoding="utf-8") as f:
-                f.write(json.dumps(obj, ensure_ascii=False, default=str) + "\n")
+            out_handle.write(json.dumps(obj, ensure_ascii=False, default=str) + "\n")
+            out_handle.flush()
 
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = {
-            executor.submit(
-                _worker_scrape_chunk,
-                chunk,
-                headless,
-                fast_mode,
-                max_comments,
-                comment_sort,
-            ): chunk
-            for chunk in chunks
-        }
-        for future in as_completed(futures):
-            for result in future.result():
-                if output_jsonl:
-                    _write_result(result)
-                yield result
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {
+                executor.submit(
+                    _worker_scrape_chunk,
+                    chunk,
+                    headless,
+                    fast_mode,
+                    max_comments,
+                    comment_sort,
+                ): chunk
+                for chunk in chunks
+            }
+            for future in as_completed(futures):
+                for result in future.result():
+                    if output_jsonl:
+                        _write_result(result)
+                    yield result
+    finally:
+        if out_handle is not None:
+            out_handle.close()
 
 
 def _resolve_db_url(explicit: Optional[str]) -> Optional[str]:
@@ -978,39 +985,41 @@ def main(argv: Optional[list[str]] = None) -> int:
         out_path = args.output or "tiktok_batch_output.jsonl"
         count = 0
         scrape_ctx: Optional["ScrapeContext"] = None
-        write_normalized_record = None
+        db_writer = None
         if db_enabled:
-            from scraper.db.writer import create_scrape_run, write_normalized_record
+            from scraper.db.writer import BatchedRecordWriter, create_scrape_run
 
             scrape_ctx = create_scrape_run(args.source, db_url=resolved_db_url)
+            commit_every = max(1, int(os.getenv("SCRAPER_DB_COMMIT_EVERY", "50")))
+            db_writer = BatchedRecordWriter(db_url=resolved_db_url, commit_every=commit_every)
         elif not args.dry_run:
             print("DB disabled (no --db-url and no DATABASE_URL). Writing JSON/JSONL only.")
 
-        for result in scrape_tiktok_batch(
-            urls,
-            workers=args.workers,
-            headless=not args.no_headless,
-            fast_mode=args.fast,
-            max_comments=args.comments,
-            comment_sort=args.comment_sort,
-            output_jsonl=out_path,
-        ):
-            count += 1
-            status = "ok" if result.get("success") else "fail"
-            print(f"[{count}/{len(urls)}] {status} {result.get('url', '')[:60]}...")
-            if result.get("success") and "normalized" in result:
-                norm = result["normalized"]
-                if args.dry_run:
-                    _dry_run_print(norm)
-                elif db_enabled and write_normalized_record is not None:
-                    write_normalized_record(
-                        norm,
-                        db_url=resolved_db_url,
-                        scrape_ctx=scrape_ctx,
-                        position=None,
-                    )
-                else:
-                    pass
+        manager = db_writer if db_writer is not None else nullcontext(None)
+        with manager as active_writer:
+            for result in scrape_tiktok_batch(
+                urls,
+                workers=args.workers,
+                headless=not args.no_headless,
+                fast_mode=args.fast,
+                max_comments=args.comments,
+                comment_sort=args.comment_sort,
+                output_jsonl=out_path,
+            ):
+                count += 1
+                status = "ok" if result.get("success") else "fail"
+                print(f"[{count}/{len(urls)}] {status} {result.get('url', '')[:60]}...")
+                if result.get("success") and "normalized" in result:
+                    norm = result["normalized"]
+                    if args.dry_run:
+                        _dry_run_print(norm)
+                    elif db_enabled and active_writer is not None:
+                        active_writer.write(
+                            norm,
+                            scrape_ctx=scrape_ctx,
+                            position=None,
+                            skip_existing=False,
+                        )
         print(f"Done. Wrote {count} records to {out_path}")
         return 0
 
@@ -1063,4 +1072,3 @@ def main(argv: Optional[list[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

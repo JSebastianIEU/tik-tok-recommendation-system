@@ -25,6 +25,11 @@ def get_database_url(override: Optional[str] = None) -> str:
     return url
 
 
+def connect(db_url: Optional[str] = None) -> Connection:
+    """Create a raw psycopg connection (manual commit/rollback)."""
+    return psycopg.connect(get_database_url(db_url), autocommit=False)
+
+
 @contextmanager
 def get_connection(db_url: Optional[str] = None) -> Iterator[Connection]:
     """
@@ -33,7 +38,7 @@ def get_connection(db_url: Optional[str] = None) -> Iterator[Connection]:
     Uses autocommit by default so each writer function can manage its own
     transaction boundaries explicitly when needed.
     """
-    conn = psycopg.connect(get_database_url(db_url), autocommit=False)
+    conn = connect(db_url)
     try:
         yield conn
         conn.commit()
@@ -42,4 +47,3 @@ def get_connection(db_url: Optional[str] = None) -> Iterator[Connection]:
         raise
     finally:
         conn.close()
-

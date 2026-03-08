@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import replace
 
 from scraper.config import load_pipeline_config
 from typing import TYPE_CHECKING
@@ -20,6 +19,7 @@ def _print_summary(summary: "PipelineSummary") -> None:
     print(f"- scraped_ok: {summary.scraped_ok}")
     print(f"- scraped_failed: {summary.scraped_failed}")
     print(f"- persisted_ok: {summary.persisted_ok}")
+    print(f"- persisted_skipped: {summary.persisted_skipped}")
     print(f"- persist_failed: {summary.persist_failed}")
     print(f"- comments_written: {summary.comments_written}")
     print(f"- unique_authors: {summary.unique_authors}")
@@ -143,6 +143,34 @@ def build_parser() -> argparse.ArgumentParser:
         default=5,
         help="Seconds between sources (default: 5).",
     )
+    p_scrape_all.add_argument(
+        "--comments",
+        type=int,
+        default=5,
+        help="Max comments per video to fetch (default 5).",
+    )
+    p_scrape_all.add_argument(
+        "--replies",
+        type=int,
+        default=5,
+        help="Max replies per comment to fetch (default 5).",
+    )
+    p_scrape_all.add_argument(
+        "--min-likes-for-replies",
+        type=int,
+        default=10,
+        help="Only fetch replies for comments with at least this many likes (default 10).",
+    )
+    p_scrape_all.add_argument(
+        "--no-resume",
+        action="store_true",
+        help="Disable source checkpoint resume and execute all sources.",
+    )
+    p_scrape_all.add_argument(
+        "--summary-path",
+        default=None,
+        help="Optional path for run summary JSON.",
+    )
 
     return parser
 
@@ -162,9 +190,7 @@ def main(argv: list[str] | None = None) -> int:
         from scraper.pipeline import run_pipeline
 
         config = load_pipeline_config(args.config)
-        if args.db_url:
-            config = replace(config, db_url=args.db_url)
-        summary = run_pipeline(config)
+        summary = run_pipeline(config, db_url_override=args.db_url)
         _print_summary(summary)
         return 0
 
@@ -199,6 +225,16 @@ def main(argv: list[str] | None = None) -> int:
             argv.append("--skip-existing")
         if args.delay != 5:
             argv.extend(["--delay", str(args.delay)])
+        if args.comments != 5:
+            argv.extend(["--comments", str(args.comments)])
+        if args.replies != 5:
+            argv.extend(["--replies", str(args.replies)])
+        if args.min_likes_for_replies != 10:
+            argv.extend(["--min-likes-for-replies", str(args.min_likes_for_replies)])
+        if args.no_resume:
+            argv.append("--no-resume")
+        if args.summary_path:
+            argv.extend(["--summary-path", args.summary_path])
         return scrape_all_main(argv)
 
     parser.print_help()

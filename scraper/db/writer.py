@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-import uuid
 import hashlib
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from psycopg import Connection
 
-from .client import get_connection
+from .client import connect, get_connection
 
 
 @dataclass
@@ -25,8 +25,70 @@ class ScrapeContext:
     started_at: datetime
 
 
+class BatchedRecordWriter:
+    """Keep one DB connection open and commit every N writes."""
+
+    def __init__(self, *, db_url: Optional[str] = None, commit_every: int = 50) -> None:
+        self._db_url = db_url
+        self._commit_every = max(1, int(commit_every))
+        self._conn: Optional[Connection] = None
+        self._pending = 0
+
+    def __enter__(self) -> "BatchedRecordWriter":
+        self._conn = connect(self._db_url)
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        if self._conn is None:
+            return
+        try:
+            if exc:
+                self._conn.rollback()
+            elif self._pending > 0:
+                self._conn.commit()
+        finally:
+            self._conn.close()
+            self._conn = None
+            self._pending = 0
+
+    def write(
+        self,
+        normalized: Dict[str, Any],
+        *,
+        scrape_ctx: Optional[ScrapeContext] = None,
+        position: Optional[int] = None,
+        skip_existing: bool = False,
+    ) -> bool:
+        if self._conn is None:
+            raise RuntimeError("BatchedRecordWriter must be used as a context manager.")
+        wrote = write_normalized_record(
+            normalized,
+            conn=self._conn,
+            scrape_ctx=scrape_ctx,
+            position=position,
+            skip_existing=skip_existing,
+        )
+        if wrote:
+            self._pending += 1
+            if self._pending >= self._commit_every:
+                self._conn.commit()
+                self._pending = 0
+        return wrote
+
+    def rollback(self) -> None:
+        if self._conn is None:
+            return
+        self._conn.rollback()
+        self._pending = 0
+
+
 def load_existing_video_ids(db_url: Optional[str] = None) -> set[str]:
-    """Load all video_ids from the videos table. Used to skip writes for already-stored videos."""
+    """
+    Load all video_ids from the videos table.
+
+    Kept for backwards compatibility. For large datasets, prefer DB-side checks
+    via `skip_existing=True` in `write_normalized_record`.
+    """
     with get_connection(db_url) as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT video_id FROM videos")
@@ -56,27 +118,27 @@ def create_scrape_run(
 def _upsert_author(conn: Connection, author: Dict[str, Any]) -> None:
     if not author:
         return
-    cur = conn.cursor()
-    cur.execute(
-        """
-        INSERT INTO authors (author_id, username, display_name, bio, avatar_url, verified)
-        VALUES (%s, %s, %s, %s, %s, %s)
-        ON CONFLICT (author_id) DO UPDATE SET
-            username = EXCLUDED.username,
-            display_name = EXCLUDED.display_name,
-            bio = EXCLUDED.bio,
-            avatar_url = EXCLUDED.avatar_url,
-            verified = EXCLUDED.verified
-        """,
-        (
-            author.get("author_id"),
-            author.get("username"),
-            author.get("display_name"),
-            author.get("bio"),
-            author.get("avatar_url"),
-            author.get("verified"),
-        ),
-    )
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO authors (author_id, username, display_name, bio, avatar_url, verified)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (author_id) DO UPDATE SET
+                username = EXCLUDED.username,
+                display_name = EXCLUDED.display_name,
+                bio = EXCLUDED.bio,
+                avatar_url = EXCLUDED.avatar_url,
+                verified = EXCLUDED.verified
+            """,
+            (
+                author.get("author_id"),
+                author.get("username"),
+                author.get("display_name"),
+                author.get("bio"),
+                author.get("avatar_url"),
+                author.get("verified"),
+            ),
+        )
 
 
 def _upsert_audio(conn: Connection, audio: Dict[str, Any]) -> Optional[str]:
@@ -85,57 +147,83 @@ def _upsert_audio(conn: Connection, audio: Dict[str, Any]) -> Optional[str]:
     audio_id = audio.get("audio_id")
     if not audio_id:
         return None
-    cur = conn.cursor()
-    cur.execute(
-        """
-        INSERT INTO audios (audio_id, audio_name, audio_author_name, is_original)
-        VALUES (%s, %s, %s, %s)
-        ON CONFLICT (audio_id) DO UPDATE SET
-            audio_name = EXCLUDED.audio_name,
-            audio_author_name = EXCLUDED.audio_author_name,
-            is_original = EXCLUDED.is_original
-        """,
-        (
-            audio_id,
-            audio.get("audio_name"),
-            audio.get("audio_author_name"),
-            audio.get("is_original"),
-        ),
-    )
-    return audio_id
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO audios (audio_id, audio_name, audio_author_name, is_original)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (audio_id) DO UPDATE SET
+                audio_name = EXCLUDED.audio_name,
+                audio_author_name = EXCLUDED.audio_author_name,
+                is_original = EXCLUDED.is_original
+            """,
+            (
+                audio_id,
+                audio.get("audio_name"),
+                audio.get("audio_author_name"),
+                audio.get("is_original"),
+            ),
+        )
+    return str(audio_id)
+
+
+def _normalize_hashtag_tags(tags: Sequence[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in tags:
+        if not raw:
+            continue
+        tag = raw.lstrip("#").strip()
+        if not tag or tag in seen:
+            continue
+        seen.add(tag)
+        out.append(tag)
+    return out
 
 
 def _ensure_hashtags(conn: Connection, tags: Sequence[str]) -> List[int]:
     """Ensure all hashtag tags exist and return their ids."""
-    if not tags:
+    normalized_tags = _normalize_hashtag_tags(tags)
+    if not normalized_tags:
         return []
-    cur = conn.cursor()
-    ids: List[int] = []
-    for raw in tags:
-        if not raw:
-            continue
-        tag = raw.lstrip("#")
-        cur.execute("INSERT INTO hashtags (tag) VALUES (%s) ON CONFLICT (tag) DO NOTHING", (tag,))
-        cur.execute("SELECT hashtag_id FROM hashtags WHERE tag = %s", (tag,))
-        row = cur.fetchone()
-        if row:
-            ids.append(int(row[0]))
-    return ids
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO hashtags (tag)
+            SELECT tag
+            FROM unnest(%s::text[]) AS t(tag)
+            ON CONFLICT (tag) DO NOTHING
+            """,
+            (normalized_tags,),
+        )
+        cur.execute(
+            "SELECT hashtag_id, tag FROM hashtags WHERE tag = ANY(%s::text[])",
+            (normalized_tags,),
+        )
+        tag_to_id = {str(tag): int(hashtag_id) for hashtag_id, tag in cur.fetchall()}
+    return [tag_to_id[tag] for tag in normalized_tags if tag in tag_to_id]
 
 
 def _link_video_hashtags(conn: Connection, video_id: str, hashtag_ids: Sequence[int]) -> None:
     if not video_id or not hashtag_ids:
         return
-    cur = conn.cursor()
-    for hid in hashtag_ids:
+    with conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO video_hashtags (video_id, hashtag_id)
-            VALUES (%s, %s)
+            SELECT %s, hashtag_id
+            FROM unnest(%s::int[]) AS h(hashtag_id)
             ON CONFLICT (video_id, hashtag_id) DO NOTHING
             """,
-            (video_id, hid),
+            (video_id, list(hashtag_ids)),
         )
+
+
+def _video_exists(conn: Connection, video_id: str) -> bool:
+    with conn.cursor() as cur:
+        cur.execute("SELECT 1 FROM videos WHERE video_id = %s LIMIT 1", (video_id,))
+        return cur.fetchone() is not None
 
 
 def _upsert_video(
@@ -148,35 +236,35 @@ def _upsert_video(
     if not video_id:
         raise ValueError("video.video_id is required")
 
-    cur = conn.cursor()
-    cur.execute(
-        """
-        INSERT INTO videos (
-            video_id, author_id, url, caption, duration_sec,
-            thumbnail_url, created_at, audio_id
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO videos (
+                video_id, author_id, url, caption, duration_sec,
+                thumbnail_url, created_at, audio_id
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (video_id) DO UPDATE SET
+                author_id = EXCLUDED.author_id,
+                url = EXCLUDED.url,
+                caption = EXCLUDED.caption,
+                duration_sec = EXCLUDED.duration_sec,
+                thumbnail_url = EXCLUDED.thumbnail_url,
+                created_at = EXCLUDED.created_at,
+                audio_id = EXCLUDED.audio_id
+            """,
+            (
+                video_id,
+                author_id,
+                video.get("url"),
+                video.get("caption"),
+                video.get("duration_sec"),
+                video.get("thumbnail_url"),
+                video.get("created_at"),
+                audio_id,
+            ),
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (video_id) DO UPDATE SET
-            author_id = EXCLUDED.author_id,
-            url = EXCLUDED.url,
-            caption = EXCLUDED.caption,
-            duration_sec = EXCLUDED.duration_sec,
-            thumbnail_url = EXCLUDED.thumbnail_url,
-            created_at = EXCLUDED.created_at,
-            audio_id = EXCLUDED.audio_id
-        """,
-        (
-            video_id,
-            author_id,
-            video.get("url"),
-            video.get("caption"),
-            video.get("duration_sec"),
-            video.get("thumbnail_url"),
-            video.get("created_at"),
-            audio_id,
-        ),
-    )
-    return video_id
+    return str(video_id)
 
 
 def _insert_video_snapshot(
@@ -187,35 +275,35 @@ def _insert_video_snapshot(
     scrape_ctx: Optional[ScrapeContext] = None,
     position: Optional[int] = None,
 ) -> int:
-    cur = conn.cursor()
-    cur.execute(
-        """
-        INSERT INTO video_snapshots (
-            video_id, scraped_at, likes, comments_count, shares, plays,
-            scrape_run_id, position
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO video_snapshots (
+                video_id, scraped_at, likes, comments_count, shares, plays,
+                scrape_run_id, position
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (video_id, scraped_at) DO UPDATE SET
+                likes = EXCLUDED.likes,
+                comments_count = EXCLUDED.comments_count,
+                shares = EXCLUDED.shares,
+                plays = EXCLUDED.plays,
+                scrape_run_id = COALESCE(EXCLUDED.scrape_run_id, video_snapshots.scrape_run_id),
+                position = COALESCE(EXCLUDED.position, video_snapshots.position)
+            RETURNING video_snapshot_id
+            """,
+            (
+                video_id,
+                scraped_at,
+                metrics.get("likes"),
+                metrics.get("comments_count"),
+                metrics.get("shares"),
+                metrics.get("plays"),
+                str(scrape_ctx.scrape_run_id) if scrape_ctx else None,
+                position,
+            ),
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (video_id, scraped_at) DO UPDATE SET
-            likes = EXCLUDED.likes,
-            comments_count = EXCLUDED.comments_count,
-            shares = EXCLUDED.shares,
-            plays = EXCLUDED.plays,
-            scrape_run_id = COALESCE(EXCLUDED.scrape_run_id, video_snapshots.scrape_run_id),
-            position = COALESCE(EXCLUDED.position, video_snapshots.position)
-        RETURNING video_snapshot_id
-        """,
-        (
-            video_id,
-            scraped_at,
-            metrics.get("likes"),
-            metrics.get("comments_count"),
-            metrics.get("shares"),
-            metrics.get("plays"),
-            str(scrape_ctx.scrape_run_id) if scrape_ctx else None,
-            position,
-        ),
-    )
-    row = cur.fetchone()
+        row = cur.fetchone()
     return int(row[0])
 
 
@@ -226,28 +314,28 @@ def _insert_author_metric_snapshot(
 ) -> None:
     if not author_snapshot:
         return
-    cur = conn.cursor()
-    cur.execute(
-        """
-        INSERT INTO author_metric_snapshots (
-            author_id, video_id, scraped_at,
-            follower_count, following_count, author_likes_count
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO author_metric_snapshots (
+                author_id, video_id, scraped_at,
+                follower_count, following_count, author_likes_count
+            )
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (author_id, video_id, scraped_at) DO UPDATE SET
+                follower_count = EXCLUDED.follower_count,
+                following_count = EXCLUDED.following_count,
+                author_likes_count = EXCLUDED.author_likes_count
+            """,
+            (
+                author_snapshot.get("author_id"),
+                author_snapshot.get("video_id"),
+                scraped_at,
+                author_snapshot.get("follower_count"),
+                author_snapshot.get("following_count"),
+                author_snapshot.get("author_likes_count"),
+            ),
         )
-        VALUES (%s, %s, %s, %s, %s, %s)
-        ON CONFLICT (author_id, video_id, scraped_at) DO UPDATE SET
-            follower_count = EXCLUDED.follower_count,
-            following_count = EXCLUDED.following_count,
-            author_likes_count = EXCLUDED.author_likes_count
-        """,
-        (
-            author_snapshot.get("author_id"),
-            author_snapshot.get("video_id"),
-            scraped_at,
-            author_snapshot.get("follower_count"),
-            author_snapshot.get("following_count"),
-            author_snapshot.get("author_likes_count"),
-        ),
-    )
 
 
 def _upsert_comments_and_snapshots(
@@ -257,7 +345,6 @@ def _upsert_comments_and_snapshots(
     video_snapshot_id: int,
     scraped_at: datetime,
 ) -> None:
-    cur = conn.cursor()
     for c in comments:
         comment_id = c.get("comment_id") or c.get("id")
         if not comment_id:
@@ -269,81 +356,70 @@ def _upsert_comments_and_snapshots(
             digest = hashlib.sha1(seed.encode("utf-8")).hexdigest()[:24]
             comment_id = f"gen:{digest}"
 
-        cur.execute(
-            """
-            INSERT INTO comments (
-                comment_id, video_id, author_id, username, text, parent_comment_id
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO comments (
+                    comment_id, video_id, author_id, username, text, parent_comment_id
+                )
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (comment_id) DO UPDATE SET
+                    video_id = EXCLUDED.video_id,
+                    author_id = COALESCE(EXCLUDED.author_id, comments.author_id),
+                    username = COALESCE(EXCLUDED.username, comments.username),
+                    text = EXCLUDED.text,
+                    parent_comment_id = COALESCE(EXCLUDED.parent_comment_id, comments.parent_comment_id)
+                """,
+                (
+                    comment_id,
+                    video_id,
+                    c.get("author_id"),
+                    c.get("username"),
+                    c.get("text"),
+                    c.get("parent_comment_id"),
+                ),
             )
-            VALUES (%s, %s, %s, %s, %s, %s)
-            ON CONFLICT (comment_id) DO UPDATE SET
-                video_id = EXCLUDED.video_id,
-                author_id = COALESCE(EXCLUDED.author_id, comments.author_id),
-                username = COALESCE(EXCLUDED.username, comments.username),
-                text = EXCLUDED.text,
-                parent_comment_id = COALESCE(EXCLUDED.parent_comment_id, comments.parent_comment_id)
-            """,
-            (
-                comment_id,
-                video_id,
-                c.get("author_id"),
-                c.get("username"),
-                c.get("text"),
-                c.get("parent_comment_id"),
-            ),
-        )
-
-        cur.execute(
-            """
-            INSERT INTO comment_snapshots (
-                comment_id, video_snapshot_id, scraped_at, likes, reply_count
+            cur.execute(
+                """
+                INSERT INTO comment_snapshots (
+                    comment_id, video_snapshot_id, scraped_at, likes, reply_count
+                )
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (comment_id, video_snapshot_id) DO UPDATE SET
+                    likes = EXCLUDED.likes,
+                    reply_count = EXCLUDED.reply_count
+                """,
+                (
+                    comment_id,
+                    video_snapshot_id,
+                    scraped_at,
+                    c.get("likes"),
+                    c.get("reply_count"),
+                ),
             )
-            VALUES (%s, %s, %s, %s, %s)
-            ON CONFLICT (comment_id, video_snapshot_id) DO UPDATE SET
-                likes = EXCLUDED.likes,
-                reply_count = EXCLUDED.reply_count
-            """,
-            (
-                comment_id,
-                video_snapshot_id,
-                scraped_at,
-                c.get("likes"),
-                c.get("reply_count"),
-            ),
-        )
 
 
-def write_normalized_record(
+def _write_with_connection(
+    conn: Connection,
     normalized: Dict[str, Any],
     *,
-    db_url: Optional[str] = None,
     scrape_ctx: Optional[ScrapeContext] = None,
     position: Optional[int] = None,
     skip_existing: bool = False,
     existing_video_ids: Optional[set[str]] = None,
-) -> None:
-    """
-    Persist a single normalized record into Postgres.
-
-    The expected shape matches the `normalized` block produced by the
-    Selenium post scraper:
-
-    {
-      "author": {...},
-      "video": {...},
-      "authorMetricSnapshot": {...},
-      "comments": [...]
-    }
-    """
+) -> bool:
     author = normalized.get("author") or {}
     video = normalized.get("video") or {}
     author_snapshot = normalized.get("authorMetricSnapshot") or {}
     comments = normalized.get("comments") or []
 
-    video_id = video.get("video_id")
-    if skip_existing and existing_video_ids is not None and video_id is not None:
-        vid_str = str(video_id)
-        if vid_str in existing_video_ids:
-            return
+    raw_video_id = video.get("video_id")
+    video_id = str(raw_video_id) if raw_video_id is not None else None
+    if skip_existing and video_id:
+        if existing_video_ids is not None and video_id in existing_video_ids:
+            return False
+        if existing_video_ids is None and _video_exists(conn, video_id):
+            return False
 
     hashtags = video.get("hashtags") or []
     metrics = {
@@ -359,41 +435,77 @@ def write_normalized_record(
         else scraped_at_raw
     )
 
-    with get_connection(db_url) as conn:
-        _upsert_author(conn, author)
-        audio_id = _upsert_audio(
+    _upsert_author(conn, author)
+    audio_id = _upsert_audio(
+        conn,
+        {
+            "audio_id": video.get("audio_id"),
+            "audio_name": video.get("audio_name"),
+            "audio_author_name": None,
+            "is_original": None,
+        },
+    )
+
+    author_id = author.get("author_id")
+    if not author_id:
+        raise ValueError("normalized.author.author_id is required")
+
+    persisted_video_id = _upsert_video(conn, video, author_id=author_id, audio_id=audio_id)
+    hashtag_ids = _ensure_hashtags(conn, hashtags)
+    _link_video_hashtags(conn, persisted_video_id, hashtag_ids)
+
+    video_snapshot_id = _insert_video_snapshot(
+        conn,
+        video_id=persisted_video_id,
+        metrics=metrics,
+        scraped_at=scraped_at,
+        scrape_ctx=scrape_ctx,
+        position=position,
+    )
+    _insert_author_metric_snapshot(conn, author_snapshot, scraped_at=scraped_at)
+    _upsert_comments_and_snapshots(
+        conn,
+        video_id=persisted_video_id,
+        comments=comments,
+        video_snapshot_id=video_snapshot_id,
+        scraped_at=scraped_at,
+    )
+    return True
+
+
+def write_normalized_record(
+    normalized: Dict[str, Any],
+    *,
+    db_url: Optional[str] = None,
+    conn: Optional[Connection] = None,
+    scrape_ctx: Optional[ScrapeContext] = None,
+    position: Optional[int] = None,
+    skip_existing: bool = False,
+    existing_video_ids: Optional[set[str]] = None,
+) -> bool:
+    """
+    Persist a single normalized record into Postgres.
+
+    Returns True if a write happened, False if the record was skipped.
+    """
+    if conn is not None:
+        return _write_with_connection(
             conn,
-            {
-                "audio_id": video.get("audio_id"),
-                "audio_name": video.get("audio_name"),
-                "audio_author_name": None,
-                "is_original": None,
-            },
-        )
-
-        author_id = author.get("author_id")
-        if not author_id:
-            raise ValueError("normalized.author.author_id is required")
-
-        video_id = _upsert_video(conn, video, author_id=author_id, audio_id=audio_id)
-        hashtag_ids = _ensure_hashtags(conn, hashtags)
-        _link_video_hashtags(conn, video_id, hashtag_ids)
-
-        video_snapshot_id = _insert_video_snapshot(
-            conn,
-            video_id=video_id,
-            metrics=metrics,
-            scraped_at=scraped_at,
+            normalized,
             scrape_ctx=scrape_ctx,
             position=position,
+            skip_existing=skip_existing,
+            existing_video_ids=existing_video_ids,
         )
-        _insert_author_metric_snapshot(conn, author_snapshot, scraped_at=scraped_at)
-        _upsert_comments_and_snapshots(
-            conn,
-            video_id=video_id,
-            comments=comments,
-            video_snapshot_id=video_snapshot_id,
-            scraped_at=scraped_at,
+
+    with get_connection(db_url) as managed_conn:
+        return _write_with_connection(
+            managed_conn,
+            normalized,
+            scrape_ctx=scrape_ctx,
+            position=position,
+            skip_existing=skip_existing,
+            existing_video_ids=existing_video_ids,
         )
 
 
@@ -411,4 +523,3 @@ def dry_run_print_sql(normalized: Dict[str, Any]) -> None:
         f"video={video.get('video_id')} ({video.get('url')}) "
         f"with {len(comments)} comments"
     )
-

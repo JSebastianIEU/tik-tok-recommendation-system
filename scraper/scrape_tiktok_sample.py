@@ -15,6 +15,7 @@ import logging
 import os
 import random
 import sys
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict
@@ -173,6 +174,60 @@ async def iter_videos_keyword(api: TikTokApi, query: str, count: int) -> AsyncIt
     raise RuntimeError(f"Keyword search failed for '{query}': {last_error}")
 
 
+def _comment_to_dict(c: Any, *, parent_comment_id: str | None = None) -> Dict[str, Any]:
+    """Convert TikTokApi Comment to normalized dict."""
+    c_dict = getattr(c, "as_dict", None) or {}
+    user = c_dict.get("user") or {}
+    uid = user.get("uid")
+    text = getattr(c, "text", None) or c_dict.get("text", "")
+    comment_id = getattr(c, "id", None) or c_dict.get("cid")
+    return {
+        "comment_id": str(comment_id) if comment_id else None,
+        "author_id": str(uid) if uid is not None else None,
+        "username": user.get("unique_id"),
+        "text": text or "",
+        "parent_comment_id": parent_comment_id,
+    }
+
+
+async def fetch_comments_for_video(
+    api: TikTokApi,
+    video_id: str,
+    count: int,
+    replies_per_comment: int = 0,
+    min_likes_for_replies: int = 0,
+) -> tuple[list[Dict[str, Any]], int, int]:
+    """Fetch top comments (and optionally replies) for a video via TikTokApi.
+    When min_likes_for_replies > 0, only fetch replies for comments with at least that many likes.
+    """
+    if not video_id or count <= 0:
+        return [], 0, 0
+    comments: list[Dict[str, Any]] = []
+    video_level_errors = 0
+    reply_level_errors = 0
+    try:
+        video_obj = api.video(id=str(video_id))
+        async for c in video_obj.comments(count=count):
+            parent_id = getattr(c, "id", None) or (getattr(c, "as_dict", None) or {}).get("cid")
+            parent_id = str(parent_id) if parent_id else None
+            comments.append(_comment_to_dict(c, parent_comment_id=None))
+
+            if replies_per_comment > 0 and parent_id:
+                likes = getattr(c, "likes_count", None) or (getattr(c, "as_dict", None) or {}).get("digg_count", 0)
+                if min_likes_for_replies > 0 and (likes is None or likes < min_likes_for_replies):
+                    continue
+                try:
+                    async for reply in c.replies(count=replies_per_comment):
+                        comments.append(_comment_to_dict(reply, parent_comment_id=parent_id))
+                except Exception:  # noqa: BLE001
+                    reply_level_errors += 1
+                    logging.warning("reply_fetch_failed video_id=%s parent_comment_id=%s", video_id, parent_id)
+    except Exception as exc:  # noqa: BLE001
+        video_level_errors += 1
+        logging.warning("comment_fetch_failed video_id=%s error=%s", video_id, exc)
+    return comments, video_level_errors, reply_level_errors
+
+
 def _to_iso_datetime(value: Any) -> str | None:
     if value is None:
         return None
@@ -229,7 +284,13 @@ def _build_tiktok_page_url(raw: Dict[str, Any], video_id: Any) -> str | None:
     return None
 
 
-def to_normalized(flat: Dict[str, Any], *, source: str, position: int | None) -> Dict[str, Any]:
+def to_normalized(
+    flat: Dict[str, Any],
+    *,
+    source: str,
+    position: int | None,
+    comments: list[Dict[str, Any]] | None = None,
+) -> Dict[str, Any]:
     """
     Map the flattened TikTokApi record into the shared normalized schema
     expected by scraper.db.writer.write_normalized_record.
@@ -287,11 +348,22 @@ def to_normalized(flat: Dict[str, Any], *, source: str, position: int | None) ->
         "author_likes_count": raw.get("authorStats", {}).get("heartCount"),
     }
 
+    normalized_comments = []
+    if comments:
+        for c in comments:
+            normalized_comments.append({
+                "comment_id": c.get("comment_id") or c.get("id"),
+                "author_id": c.get("author_id"),
+                "username": c.get("username"),
+                "text": c.get("text") or "",
+                "parent_comment_id": c.get("parent_comment_id") or None,
+            })
+
     return {
         "author": normalized_author,
         "video": normalized_video,
         "authorMetricSnapshot": normalized_author_metrics,
-        "comments": [],
+        "comments": normalized_comments,
     }
 
 
@@ -346,6 +418,24 @@ async def main_async() -> int:
         "--skip-existing",
         action="store_true",
         help="Skip DB write for videos already in DB (avoids duplicate storage, saves writes).",
+    )
+    parser.add_argument(
+        "--comments",
+        type=int,
+        default=5,
+        help="Max comments per video to fetch (default 5).",
+    )
+    parser.add_argument(
+        "--replies",
+        type=int,
+        default=5,
+        help="Max replies per comment to fetch (default 5).",
+    )
+    parser.add_argument(
+        "--min-likes-for-replies",
+        type=int,
+        default=10,
+        help="Only fetch replies for comments with at least this many likes (default 10).",
     )
 
     args = parser.parse_args()
@@ -404,46 +494,77 @@ async def main_async() -> int:
             raise SystemExit(f"Unknown mode: {args.mode}")
 
         scrape_ctx = None
-        write_normalized_record = None
-        existing_video_ids: set[str] | None = None
+        db_writer = None
         if db_enabled:
-            from scraper.db.writer import create_scrape_run, write_normalized_record, load_existing_video_ids
+            from scraper.db.writer import BatchedRecordWriter, create_scrape_run
 
             scrape_ctx = create_scrape_run(source_label, db_url=resolved_db_url)
-            if args.skip_existing:
-                existing_video_ids = load_existing_video_ids(resolved_db_url)
-                print(f"Skip-existing: loaded {len(existing_video_ids)} video_ids from DB")
+            commit_every = max(1, int(os.getenv("SCRAPER_DB_COMMIT_EVERY", "50")))
+            db_writer = BatchedRecordWriter(db_url=resolved_db_url, commit_every=commit_every)
         elif not args.dry_run:
             print("DB disabled (no --db-url and no DATABASE_URL). Writing JSONL only.")
 
         count = 0
+        persisted_ok = 0
+        persisted_skipped = 0
+        persist_failed = 0
+        comment_fetch_errors = 0
+        reply_fetch_errors = 0
         delay_every_n = int(os.getenv("TIKTOK_DELAY_EVERY_N", "30"))
         delay_sec = float(os.getenv("TIKTOK_DELAY_SEC", "2"))
 
-        with out_path.open("w", encoding="utf-8") as f:
+        writer_ctx = db_writer if db_writer is not None else None
+        manager = writer_ctx if writer_ctx is not None else nullcontext(None)
+        with out_path.open("w", encoding="utf-8") as f, manager as active_writer:
             try:
                 async for raw in source_iter:
                     flat = flatten_video(raw)
                     f.write(json.dumps(flat, ensure_ascii=False) + "\n")
                     count += 1
 
-                    normalized = to_normalized(flat, source=source_label, position=count)
+                    comments: list[Dict[str, Any]] = []
+                    if args.comments > 0:
+                        video_id = flat.get("id")
+                        if video_id:
+                            comments, video_errs, reply_errs = await fetch_comments_for_video(
+                                api,
+                                str(video_id),
+                                args.comments,
+                                replies_per_comment=args.replies,
+                                min_likes_for_replies=args.min_likes_for_replies,
+                            )
+                            comment_fetch_errors += video_errs
+                            reply_fetch_errors += reply_errs
+                            if delay_sec > 0 and comments:
+                                await asyncio.sleep(delay_sec * 0.5)
+
+                    normalized = to_normalized(
+                        flat,
+                        source=source_label,
+                        position=count,
+                        comments=comments,
+                    )
                     if args.dry_run:
                         _dry_run_print(normalized)
-                    elif db_enabled and write_normalized_record is not None:
+                    elif db_enabled and active_writer is not None:
                         video = normalized.get("video", {})
                         author = normalized.get("author", {})
                         if video.get("url") and author.get("author_id"):
-                            write_normalized_record(
-                                normalized,
-                                db_url=resolved_db_url,
-                                scrape_ctx=scrape_ctx,
-                                position=count,
-                                skip_existing=args.skip_existing,
-                                existing_video_ids=existing_video_ids,
-                            )
-                    else:
-                        pass
+                            try:
+                                wrote = active_writer.write(
+                                    normalized,
+                                    scrape_ctx=scrape_ctx,
+                                    position=count,
+                                    skip_existing=args.skip_existing,
+                                )
+                                if wrote:
+                                    persisted_ok += 1
+                                else:
+                                    persisted_skipped += 1
+                            except Exception as exc:  # noqa: BLE001
+                                persist_failed += 1
+                                active_writer.rollback()
+                                logging.warning("db_persist_failed video_id=%s error=%s", video.get("video_id"), exc)
 
                     if delay_every_n > 0 and count % delay_every_n == 0 and delay_sec > 0:
                         await asyncio.sleep(delay_sec)
@@ -460,6 +581,15 @@ async def main_async() -> int:
                     raise
 
         print(f"Wrote {count} records to {out_path}")
+        if db_enabled:
+            print(
+                "DB summary: "
+                f"persisted_ok={persisted_ok} persisted_skipped={persisted_skipped} persist_failed={persist_failed}"
+            )
+        print(
+            "Comment summary: "
+            f"video_fetch_errors={comment_fetch_errors} reply_fetch_errors={reply_fetch_errors}"
+        )
         return 0
 
 
@@ -469,4 +599,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

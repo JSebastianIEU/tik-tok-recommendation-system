@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS video_snapshots (
 
 CREATE INDEX IF NOT EXISTS idx_video_snapshots_video_id ON video_snapshots(video_id);
 CREATE INDEX IF NOT EXISTS idx_video_snapshots_scraped_at ON video_snapshots(scraped_at);
+CREATE INDEX IF NOT EXISTS idx_video_snapshots_scrape_run_id ON video_snapshots(scrape_run_id);
 
 CREATE TABLE IF NOT EXISTS author_metric_snapshots (
     author_metric_snapshot_id BIGSERIAL PRIMARY KEY,
@@ -83,6 +84,7 @@ CREATE TABLE IF NOT EXISTS comments (
 );
 
 CREATE INDEX IF NOT EXISTS idx_comments_video_id ON comments(video_id);
+CREATE INDEX IF NOT EXISTS idx_comments_parent_comment_id ON comments(parent_comment_id);
 
 CREATE TABLE IF NOT EXISTS comment_snapshots (
     comment_snapshot_id BIGSERIAL PRIMARY KEY,
@@ -95,4 +97,18 @@ CREATE TABLE IF NOT EXISTS comment_snapshots (
 );
 
 CREATE INDEX IF NOT EXISTS idx_comment_snapshots_comment_id ON comment_snapshots(comment_id);
+CREATE INDEX IF NOT EXISTS idx_comment_snapshots_video_snapshot_id ON comment_snapshots(video_snapshot_id);
 
+CREATE TABLE IF NOT EXISTS scrape_source_jobs (
+    source_key TEXT PRIMARY KEY,
+    mode TEXT NOT NULL,
+    name TEXT NOT NULL,
+    status TEXT NOT NULL,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    started_at TIMESTAMPTZ,
+    finished_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_scrape_source_jobs_status ON scrape_source_jobs(status);
