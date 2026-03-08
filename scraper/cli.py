@@ -171,6 +171,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional path for run summary JSON.",
     )
+    p_scrape_all.add_argument(
+        "--proxies-file",
+        default=None,
+        help="Optional proxies file path passed to scrape workers.",
+    )
 
     return parser
 
@@ -235,6 +240,8 @@ def main(argv: list[str] | None = None) -> int:
             argv.append("--no-resume")
         if args.summary_path:
             argv.extend(["--summary-path", args.summary_path])
+        if args.proxies_file:
+            argv.extend(["--proxies-file", args.proxies_file])
         return scrape_all_main(argv)
 
     parser.print_help()

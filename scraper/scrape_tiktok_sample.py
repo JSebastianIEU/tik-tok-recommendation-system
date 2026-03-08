@@ -80,6 +80,42 @@ def load_random_proxy(path: str) -> Dict[str, Any] | None:
     return random.choice(proxies)
 
 
+async def _create_api_session(
+    api: TikTokApi,
+    *,
+    ms_token: str,
+    proxies_file: str | None,
+    max_attempts: int = 5,
+) -> None:
+    for attempt in range(1, max_attempts + 1):
+        proxy_cfg = None
+        if proxies_file:
+            proxy_cfg = load_random_proxy(proxies_file)
+            if proxy_cfg:
+                print(f"[attempt {attempt}/{max_attempts}] Using proxy {proxy_cfg['server']}")
+            else:
+                print(
+                    f"[attempt {attempt}/{max_attempts}] No valid proxies found in {proxies_file}, trying without proxy"
+                )
+        try:
+            headless = os.getenv("TIKTOK_HEADLESS", "false").lower() in ("1", "true", "yes")
+            browser = os.getenv("TIKTOK_BROWSER", "webkit").strip() or "webkit"
+            await api.create_sessions(
+                ms_tokens=[ms_token],
+                num_sessions=1,
+                sleep_after=5,
+                headless=headless,
+                browser=browser,
+                proxies=[proxy_cfg] if proxy_cfg else None,
+                timeout=60000,
+            )
+            return
+        except Exception as e:  # noqa: BLE001
+            print(f"[attempt {attempt}/{max_attempts}] Failed to create session: {e}")
+            if attempt == max_attempts:
+                raise
+
+
 def _resolve_db_url(explicit: str | None) -> str | None:
     raw = (explicit or os.getenv("DATABASE_URL") or "").strip()
     return raw or None
@@ -196,15 +232,16 @@ async def fetch_comments_for_video(
     count: int,
     replies_per_comment: int = 0,
     min_likes_for_replies: int = 0,
-) -> tuple[list[Dict[str, Any]], int, int]:
+) -> tuple[list[Dict[str, Any]], int, int, bool]:
     """Fetch top comments (and optionally replies) for a video via TikTokApi.
     When min_likes_for_replies > 0, only fetch replies for comments with at least that many likes.
     """
     if not video_id or count <= 0:
-        return [], 0, 0
+        return [], 0, 0, False
     comments: list[Dict[str, Any]] = []
     video_level_errors = 0
     reply_level_errors = 0
+    session_invalid = False
     try:
         video_obj = api.video(id=str(video_id))
         async for c in video_obj.comments(count=count):
@@ -224,8 +261,14 @@ async def fetch_comments_for_video(
                     logging.warning("reply_fetch_failed video_id=%s parent_comment_id=%s", video_id, parent_id)
     except Exception as exc:  # noqa: BLE001
         video_level_errors += 1
+        msg = str(exc).lower()
+        session_invalid = (
+            "no sessions created" in msg
+            or "no valid sessions" in msg
+            or "session" in msg and "closed" in msg
+        )
         logging.warning("comment_fetch_failed video_id=%s error=%s", video_id, exc)
-    return comments, video_level_errors, reply_level_errors
+    return comments, video_level_errors, reply_level_errors, session_invalid
 
 
 def _to_iso_datetime(value: Any) -> str | None:
@@ -447,36 +490,12 @@ async def main_async() -> int:
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     async with TikTokApi() as api:
-        max_attempts = 5
-
-        for attempt in range(1, max_attempts + 1):
-            proxy_cfg = None
-            if args.proxies_file:
-                proxy_cfg = load_random_proxy(args.proxies_file)
-                if proxy_cfg:
-                    print(f"[attempt {attempt}/{max_attempts}] Using proxy {proxy_cfg['server']}")
-                else:
-                    print(
-                        f"[attempt {attempt}/{max_attempts}] No valid proxies found in {args.proxies_file}, trying without proxy"
-                    )
-
-            try:
-                headless = os.getenv("TIKTOK_HEADLESS", "false").lower() in ("1", "true", "yes")
-                browser = os.getenv("TIKTOK_BROWSER", "webkit").strip() or "webkit"
-                await api.create_sessions(
-                    ms_tokens=[ms_token],
-                    num_sessions=1,
-                    sleep_after=5,
-                    headless=headless,
-                    browser=browser,
-                    proxies=[proxy_cfg] if proxy_cfg else None,
-                    timeout=60000,
-                )
-                break
-            except Exception as e:  # noqa: BLE001
-                print(f"[attempt {attempt}/{max_attempts}] Failed to create session: {e}")
-                if attempt == max_attempts:
-                    raise
+        await _create_api_session(
+            api,
+            ms_token=ms_token,
+            proxies_file=args.proxies_file,
+            max_attempts=5,
+        )
 
         if args.mode == "trending":
             source_label = args.source or "trending"
@@ -510,6 +529,8 @@ async def main_async() -> int:
         persist_failed = 0
         comment_fetch_errors = 0
         reply_fetch_errors = 0
+        session_recoveries = 0
+        max_session_recoveries = max(1, int(os.getenv("TIKTOK_MAX_SESSION_RECOVERIES", "3")))
         delay_every_n = int(os.getenv("TIKTOK_DELAY_EVERY_N", "30"))
         delay_sec = float(os.getenv("TIKTOK_DELAY_SEC", "2"))
 
@@ -526,13 +547,35 @@ async def main_async() -> int:
                     if args.comments > 0:
                         video_id = flat.get("id")
                         if video_id:
-                            comments, video_errs, reply_errs = await fetch_comments_for_video(
+                            comments, video_errs, reply_errs, session_invalid = await fetch_comments_for_video(
                                 api,
                                 str(video_id),
                                 args.comments,
                                 replies_per_comment=args.replies,
                                 min_likes_for_replies=args.min_likes_for_replies,
                             )
+                            if session_invalid and session_recoveries < max_session_recoveries:
+                                session_recoveries += 1
+                                logging.warning(
+                                    "session_recovery_attempt=%s video_id=%s",
+                                    session_recoveries,
+                                    video_id,
+                                )
+                                await _create_api_session(
+                                    api,
+                                    ms_token=ms_token,
+                                    proxies_file=args.proxies_file,
+                                    max_attempts=3,
+                                )
+                                comments, retry_video_errs, retry_reply_errs, _ = await fetch_comments_for_video(
+                                    api,
+                                    str(video_id),
+                                    args.comments,
+                                    replies_per_comment=args.replies,
+                                    min_likes_for_replies=args.min_likes_for_replies,
+                                )
+                                video_errs += retry_video_errs
+                                reply_errs += retry_reply_errs
                             comment_fetch_errors += video_errs
                             reply_fetch_errors += reply_errs
                             if delay_sec > 0 and comments:

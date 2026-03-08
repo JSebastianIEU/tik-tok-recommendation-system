@@ -356,6 +356,23 @@ def _upsert_comments_and_snapshots(
             digest = hashlib.sha1(seed.encode("utf-8")).hexdigest()[:24]
             comment_id = f"gen:{digest}"
 
+        comment_author_id = c.get("author_id")
+        comment_username = c.get("username")
+        if comment_author_id:
+            # Comment authors are often not the same as the video author.
+            # Upsert a minimal author row first to satisfy FK constraints.
+            _upsert_author(
+                conn,
+                {
+                    "author_id": str(comment_author_id),
+                    "username": comment_username,
+                    "display_name": None,
+                    "bio": None,
+                    "avatar_url": None,
+                    "verified": None,
+                },
+            )
+
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -373,7 +390,7 @@ def _upsert_comments_and_snapshots(
                 (
                     comment_id,
                     video_id,
-                    c.get("author_id"),
+                    str(comment_author_id) if comment_author_id is not None else None,
                     c.get("username"),
                     c.get("text"),
                     c.get("parent_comment_id"),

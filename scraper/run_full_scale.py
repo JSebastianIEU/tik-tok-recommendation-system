@@ -114,8 +114,9 @@ def _run_scrape(
     comments: int = 0,
     replies: int = 5,
     min_likes_for_replies: int = 10,
-) -> int:
-    """Run scrape_tiktok_sample for one source job. Returns exit code."""
+    proxies_file: str | None = None,
+) -> tuple[int, int]:
+    """Run scrape_tiktok_sample for one source job. Returns (exit_code, rows_written)."""
     cmd = [
         sys.executable,
         "-m",
@@ -133,10 +134,19 @@ def _run_scrape(
         cmd.extend(["--replies", str(replies)])
     if min_likes_for_replies > 0:
         cmd.extend(["--min-likes-for-replies", str(min_likes_for_replies)])
+    if proxies_file:
+        cmd.extend(["--proxies-file", proxies_file])
 
     cmd.extend([job.mode, "--name", job.name, "--count", str(job.count)])
     result = subprocess.run(cmd, env=env, cwd=str(ROOT))
-    return result.returncode
+    rows_written = 0
+    try:
+        if job.output_path.exists():
+            with job.output_path.open("r", encoding="utf-8") as handle:
+                rows_written = sum(1 for line in handle if line.strip())
+    except Exception:
+        rows_written = 0
+    return result.returncode, rows_written
 
 
 def _ensure_job_state_table(db_url: str) -> None:
@@ -259,6 +269,23 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Optional path for run summary JSON (default: output_dir/full_scale_summary_<timestamp>.json).",
     )
+    parser.add_argument(
+        "--proxies-file",
+        default=None,
+        help="Optional proxies file path passed to scrape workers.",
+    )
+    parser.add_argument(
+        "--retry-empty",
+        type=int,
+        default=2,
+        help="Retry attempts when a source returns 0 rows due to blocking (default: 2).",
+    )
+    parser.add_argument(
+        "--retry-delay",
+        type=float,
+        default=20.0,
+        help="Seconds to wait before retrying an empty source (default: 20).",
+    )
     args = parser.parse_args(argv)
 
     cfg_path = Path(args.config)
@@ -332,21 +359,42 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\n[{job.mode}] {job.name} count={job.count} -> {job.output_path}")
         _mark_job_running(db_url, job)
         started_source = time.time()
-        code = _run_scrape(
-            job,
-            db_url=db_url,
-            env=env,
-            skip_existing=args.skip_existing,
-            comments=args.comments,
-            replies=args.replies,
-            min_likes_for_replies=args.min_likes_for_replies,
-        )
+        attempts = max(1, int(args.retry_empty) + 1)
+        code = 1
+        rows_written = 0
+        for attempt in range(1, attempts + 1):
+            code, rows_written = _run_scrape(
+                job,
+                db_url=db_url,
+                env=env,
+                skip_existing=args.skip_existing,
+                comments=args.comments,
+                replies=args.replies,
+                min_likes_for_replies=args.min_likes_for_replies,
+                proxies_file=args.proxies_file,
+            )
+            if code == 0 and rows_written > 0:
+                break
+            if attempt < attempts:
+                print(
+                    f"[retry] {job.key} attempt {attempt}/{attempts - 1} yielded rows={rows_written}, retrying..."
+                )
+                time.sleep(max(0.0, float(args.retry_delay)))
         duration_sec = round(time.time() - started_source, 2)
         executed += 1
         if code != 0:
             failed += 1
             _mark_job_finished(db_url, job, status="failed", last_error=f"exit_code={code}")
             status = "failed"
+        elif rows_written == 0:
+            failed += 1
+            _mark_job_finished(
+                db_url,
+                job,
+                status="failed",
+                last_error="empty_result_set_after_retries",
+            )
+            status = "failed_empty"
         else:
             _mark_job_finished(db_url, job, status="done")
             status = "done"
@@ -359,6 +407,7 @@ def main(argv: list[str] | None = None) -> int:
                 "output_path": str(job.output_path),
                 "status": status,
                 "return_code": code,
+                "rows_written": rows_written,
                 "duration_sec": duration_sec,
             }
         )
