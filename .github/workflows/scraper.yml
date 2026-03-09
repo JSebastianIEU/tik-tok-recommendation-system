@@ -20,11 +20,11 @@ on:
       comments:
         description: "Comments per video"
         required: true
-        default: "0"
+        default: "5"
       replies:
         description: "Replies per comment"
         required: true
-        default: "0"
+        default: "2"
       delay:
         description: "Delay between sources (seconds)"
         required: true
@@ -33,6 +33,16 @@ on:
         description: "Retries when source returns 0 rows"
         required: true
         default: "2"
+      max_consecutive_empty:
+        description: "Abort after N consecutive empty sources (0 disables)"
+        required: true
+        default: "5"
+  schedule:
+    - cron: "0 7 * * *"
+
+concurrency:
+  group: scraper-pipeline
+  cancel-in-progress: false
 
 jobs:
   scrape:
@@ -43,12 +53,35 @@ jobs:
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       MS_TOKEN: ${{ secrets.MS_TOKEN }}
+      SCRAPER_SCHEDULE_ENABLED: ${{ vars.SCRAPER_SCHEDULE_ENABLED || 'true' }}
+      SCRAPER_CONFIG_PATH: ${{ vars.SCRAPER_CONFIG_PATH || 'scraper/configs/full_scale.yaml' }}
+      SCRAPER_SKIP_EXISTING: ${{ vars.SCRAPER_SKIP_EXISTING || 'true' }}
+      SCRAPER_NO_RESUME: ${{ vars.SCRAPER_NO_RESUME || 'false' }}
+      SCRAPER_COMMENTS: ${{ vars.SCRAPER_COMMENTS || '5' }}
+      SCRAPER_REPLIES: ${{ vars.SCRAPER_REPLIES || '2' }}
+      SCRAPER_DELAY: ${{ vars.SCRAPER_DELAY || '15' }}
+      SCRAPER_RETRY_EMPTY: ${{ vars.SCRAPER_RETRY_EMPTY || '2' }}
+      SCRAPER_MAX_CONSECUTIVE_EMPTY: ${{ vars.SCRAPER_MAX_CONSECUTIVE_EMPTY || '5' }}
       TIKTOK_HEADLESS: ${{ vars.TIKTOK_HEADLESS || 'false' }}
       TIKTOK_BROWSER: ${{ vars.TIKTOK_BROWSER || 'webkit' }}
       SCRAPER_DB_COMMIT_EVERY: ${{ vars.SCRAPER_DB_COMMIT_EVERY || '50' }}
       TIKTOK_MAX_SESSION_RECOVERIES: ${{ vars.TIKTOK_MAX_SESSION_RECOVERIES || '3' }}
+      INPUT_CONFIG_PATH: ${{ github.event.inputs.config_path }}
+      INPUT_SKIP_EXISTING: ${{ github.event.inputs.skip_existing }}
+      INPUT_NO_RESUME: ${{ github.event.inputs.no_resume }}
+      INPUT_COMMENTS: ${{ github.event.inputs.comments }}
+      INPUT_REPLIES: ${{ github.event.inputs.replies }}
+      INPUT_DELAY: ${{ github.event.inputs.delay }}
+      INPUT_RETRY_EMPTY: ${{ github.event.inputs.retry_empty }}
+      INPUT_MAX_CONSECUTIVE_EMPTY: ${{ github.event.inputs.max_consecutive_empty }}
 
     steps:
+      - name: Skip if schedule disabled
+        if: github.event_name == 'schedule' && env.SCRAPER_SCHEDULE_ENABLED != 'true'
+        run: |
+          echo "Scheduled scraping is disabled (set repository variable SCRAPER_SCHEDULE_ENABLED=true to enable)."
+          exit 0
+
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -67,6 +100,27 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r scraper/requirements.txt
           python -m playwright install webkit
+
+      - name: Resolve run parameters
+        id: params
+        run: |
+          CONFIG_PATH="${INPUT_CONFIG_PATH:-$SCRAPER_CONFIG_PATH}"
+          SKIP_EXISTING="${INPUT_SKIP_EXISTING:-$SCRAPER_SKIP_EXISTING}"
+          NO_RESUME="${INPUT_NO_RESUME:-$SCRAPER_NO_RESUME}"
+          COMMENTS="${INPUT_COMMENTS:-$SCRAPER_COMMENTS}"
+          REPLIES="${INPUT_REPLIES:-$SCRAPER_REPLIES}"
+          DELAY="${INPUT_DELAY:-$SCRAPER_DELAY}"
+          RETRY_EMPTY="${INPUT_RETRY_EMPTY:-$SCRAPER_RETRY_EMPTY}"
+          MAX_CONSECUTIVE_EMPTY="${INPUT_MAX_CONSECUTIVE_EMPTY:-$SCRAPER_MAX_CONSECUTIVE_EMPTY}"
+
+          echo "config_path=$CONFIG_PATH" >> "$GITHUB_OUTPUT"
+          echo "skip_existing=$SKIP_EXISTING" >> "$GITHUB_OUTPUT"
+          echo "no_resume=$NO_RESUME" >> "$GITHUB_OUTPUT"
+          echo "comments=$COMMENTS" >> "$GITHUB_OUTPUT"
+          echo "replies=$REPLIES" >> "$GITHUB_OUTPUT"
+          echo "delay=$DELAY" >> "$GITHUB_OUTPUT"
+          echo "retry_empty=$RETRY_EMPTY" >> "$GITHUB_OUTPUT"
+          echo "max_consecutive_empty=$MAX_CONSECUTIVE_EMPTY" >> "$GITHUB_OUTPUT"
 
       - name: Write optional proxies file
         id: proxies
@@ -87,17 +141,18 @@ jobs:
       - name: Run scraper
         run: |
           set -euo pipefail
-          CMD=(python -m scraper scrape-all "${{ github.event.inputs.config_path }}" \
-            --comments "${{ github.event.inputs.comments }}" \
-            --replies "${{ github.event.inputs.replies }}" \
-            --delay "${{ github.event.inputs.delay }}" \
-            --retry-empty "${{ github.event.inputs.retry_empty }}" \
+          CMD=(python -m scraper scrape-all "${{ steps.params.outputs.config_path }}" \
+            --comments "${{ steps.params.outputs.comments }}" \
+            --replies "${{ steps.params.outputs.replies }}" \
+            --delay "${{ steps.params.outputs.delay }}" \
+            --retry-empty "${{ steps.params.outputs.retry_empty }}" \
+            --max-consecutive-empty "${{ steps.params.outputs.max_consecutive_empty }}" \
             --summary-path "/tmp/full_scale_summary.json")
 
-          if [ "${{ github.event.inputs.skip_existing }}" = "true" ]; then
+          if [ "${{ steps.params.outputs.skip_existing }}" = "true" ]; then
             CMD+=(--skip-existing)
           fi
-          if [ "${{ github.event.inputs.no_resume }}" = "true" ]; then
+          if [ "${{ steps.params.outputs.no_resume }}" = "true" ]; then
             CMD+=(--no-resume)
           fi
           if [ -n "${{ steps.proxies.outputs.path }}" ]; then

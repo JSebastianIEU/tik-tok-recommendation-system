@@ -128,6 +128,54 @@ def test_main_marks_empty_results_as_failed(monkeypatch, tmp_path: Path):
     assert payload["sources"][0]["rows_written"] == 0
 
 
+def test_main_aborts_after_max_consecutive_empty(monkeypatch, tmp_path: Path):
+    cfg = tmp_path / "cfg.yaml"
+    cfg.write_text(
+        "hashtags: [{name: fitness, count: 10}, {name: cooking, count: 10}]\nkeywords: []\n",
+        encoding="utf-8",
+    )
+    summary_path = tmp_path / "summary.json"
+
+    monkeypatch.setenv("MS_TOKEN", "token")
+    monkeypatch.setattr("scraper.run_full_scale._resolve_db_url", lambda *_: "postgresql://db")
+    monkeypatch.setattr("scraper.run_full_scale._ensure_job_state_table", lambda *_: None)
+    monkeypatch.setattr("scraper.run_full_scale._load_completed_jobs", lambda *_: set())
+    monkeypatch.setattr("scraper.run_full_scale._mark_job_running", lambda *_: None)
+    monkeypatch.setattr("scraper.run_full_scale._mark_job_finished", lambda *_a, **_k: None)
+
+    executed: list[str] = []
+
+    def _fake_run_scrape(job, **_kwargs):
+        executed.append(job.key)
+        job.output_path.write_text("", encoding="utf-8")
+        return 0, 0
+
+    monkeypatch.setattr("scraper.run_full_scale._run_scrape", _fake_run_scrape)
+
+    exit_code = run_full_scale_main(
+        [
+            str(cfg),
+            "--retry-empty",
+            "0",
+            "--retry-delay",
+            "0",
+            "--delay",
+            "0",
+            "--summary-path",
+            str(summary_path),
+            "--max-consecutive-empty",
+            "1",
+            "--no-resume",
+        ]
+    )
+
+    assert exit_code == 1
+    assert executed == ["hashtag:fitness"]
+    payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert payload["aborted_early"] is True
+    assert payload["abort_reason"] == "aborted_after_1_consecutive_empty_sources"
+
+
 def test_fetch_comments_flags_session_invalid(monkeypatch):
     pytest.importorskip("TikTokApi")
     from scraper import scrape_tiktok_sample as sts

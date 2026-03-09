@@ -176,6 +176,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional proxies file path passed to scrape workers.",
     )
+    p_scrape_all.add_argument(
+        "--max-consecutive-empty",
+        type=int,
+        default=5,
+        help="Abort run after N consecutive empty-result sources (default 5, 0 disables).",
+    )
 
     return parser
 
@@ -242,6 +248,8 @@ def main(argv: list[str] | None = None) -> int:
             argv.extend(["--summary-path", args.summary_path])
         if args.proxies_file:
             argv.extend(["--proxies-file", args.proxies_file])
+        if args.max_consecutive_empty != 5:
+            argv.extend(["--max-consecutive-empty", str(args.max_consecutive_empty)])
         return scrape_all_main(argv)
 
     parser.print_help()

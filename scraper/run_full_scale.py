@@ -286,6 +286,12 @@ def main(argv: list[str] | None = None) -> int:
         default=20.0,
         help="Seconds to wait before retrying an empty source (default: 20).",
     )
+    parser.add_argument(
+        "--max-consecutive-empty",
+        type=int,
+        default=5,
+        help="Abort run after this many consecutive empty-result source failures (default: 5). Use 0 to disable.",
+    )
     args = parser.parse_args(argv)
 
     cfg_path = Path(args.config)
@@ -333,6 +339,9 @@ def main(argv: list[str] | None = None) -> int:
     failed = 0
     skipped = 0
     executed = 0
+    aborted_early = False
+    abort_reason: str | None = None
+    consecutive_empty = 0
     source_results: list[dict[str, Any]] = []
 
     for idx, job in enumerate(jobs):
@@ -386,6 +395,7 @@ def main(argv: list[str] | None = None) -> int:
             failed += 1
             _mark_job_finished(db_url, job, status="failed", last_error=f"exit_code={code}")
             status = "failed"
+            consecutive_empty = 0
         elif rows_written == 0:
             failed += 1
             _mark_job_finished(
@@ -395,9 +405,11 @@ def main(argv: list[str] | None = None) -> int:
                 last_error="empty_result_set_after_retries",
             )
             status = "failed_empty"
+            consecutive_empty += 1
         else:
             _mark_job_finished(db_url, job, status="done")
             status = "done"
+            consecutive_empty = 0
         source_results.append(
             {
                 "key": job.key,
@@ -411,6 +423,15 @@ def main(argv: list[str] | None = None) -> int:
                 "duration_sec": duration_sec,
             }
         )
+        if args.max_consecutive_empty > 0 and consecutive_empty >= args.max_consecutive_empty:
+            aborted_early = True
+            abort_reason = (
+                f"aborted_after_{consecutive_empty}_consecutive_empty_sources"
+            )
+            print(
+                f"[abort] stopping early after {consecutive_empty} consecutive empty sources."
+            )
+            break
 
     ended_at = datetime.now(timezone.utc)
     summary = {
@@ -423,6 +444,8 @@ def main(argv: list[str] | None = None) -> int:
         "jobs_skipped_done": skipped,
         "jobs_failed": failed,
         "jobs_succeeded": executed - failed,
+        "aborted_early": aborted_early,
+        "abort_reason": abort_reason,
         "sources": source_results,
     }
     summary_path.parent.mkdir(parents=True, exist_ok=True)
