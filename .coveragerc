@@ -1,0 +1,14 @@
+[run]
+branch = True
+source = scraper
+
+[report]
+show_missing = True
+skip_covered = False
+omit =
+    scraper/selenium_utils.py
+    scraper/__main__.py
+    scraper/cli.py
+    scraper/pipeline.py
+    scraper/scrape_tiktok_sample.py
+    scraper/tiktok_post_scraper.py
