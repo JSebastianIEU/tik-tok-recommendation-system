@@ -1,0 +1,91 @@
+# Full-scale scraping config: hashtags + keywords only (no users/trending)
+# Requires: DATABASE_URL (Supabase recommended) or db_url below, MS_TOKEN
+#
+# - Supabase: set DATABASE_URL in .env (recommended for team persistence)
+# - Local: db_url below (or DATABASE_URL) → Docker Postgres
+# - Use --skip-existing to avoid re-scraping videos already in the DB
+# - --comments 5, --replies 5, --min-likes-for-replies 10 (only fetch replies for popular comments)
+
+hashtags:
+  - name: fitness
+    count: 300
+  - name: cooking
+    count: 300
+  - name: tech
+    count: 300
+  - name: travel
+    count: 300
+  - name: music
+    count: 300
+  - name: comedy
+    count: 300
+  - name: dance
+    count: 300
+  - name: fashion
+    count: 300
+  - name: food
+    count: 300
+  - name: gaming
+    count: 300
+  - name: beauty
+    count: 300
+  - name: vlog
+    count: 300
+  - name: diy
+    count: 300
+  - name: pets
+    count: 300
+  - name: workout
+    count: 300
+  - name: lifestyle
+    count: 300
+  - name: tutorial
+    count: 300
+  - name: viral
+    count: 300
+  - name: motivation
+    count: 300
+
+keywords:
+  - name: "morning routine"
+    count: 200
+  - name: "recipe tutorial"
+    count: 200
+  - name: "product review"
+    count: 200
+  - name: "life hack"
+    count: 200
+  - name: "makeup tutorial"
+    count: 200
+  - name: "workout routine"
+    count: 200
+  - name: "unboxing"
+    count: 200
+  - name: "day in my life"
+    count: 200
+  - name: "asmr"
+    count: 200
+  - name: "comedy skit"
+    count: 200
+  - name: "cooking tips"
+    count: 200
+  - name: "travel vlog"
+    count: 200
+  - name: "tech review"
+    count: 200
+  - name: "fashion haul"
+    count: 200
+  - name: "gaming clip"
+    count: 200
+  - name: "pet video"
+    count: 200
+  - name: "dance challenge"
+    count: 200
+  - name: "skincare routine"
+    count: 200
+  - name: "home decor"
+    count: 200
+
+output_dir: "scraper/data/raw"
+# Use DATABASE_URL env (Supabase) for persistent team storage; fallback for local dev
+db_url: "postgresql://tiktok:tiktok@localhost:5433/tiktok"

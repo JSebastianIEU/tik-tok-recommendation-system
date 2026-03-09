@@ -1,0 +1,36 @@
+﻿keywords:
+  - "relationship advice"
+  - "toxic relationship"
+  - "breakup story"
+  - "red flags in men"
+  - "red flags in women"
+  - "dating advice"
+  - "situationship"
+  - "love language"
+  - "heartbreak"
+  - "couples therapy"
+hashtags:
+  - "#datingtok"
+  - "#relationshipadvice"
+  - "#toxicrelationship"
+  - "#redflags"
+  - "#breakup"
+  - "#situationship"
+  - "#lovetok"
+  - "#couplegoals"
+  - "#heartbroken"
+  - "#datingadvice"
+per_query_video_limit: 40
+max_comments_per_video: 300
+comment_sort: "top"
+modes_enabled:
+  - "keyword"
+  - "hashtag"
+concurrency: 2
+headless: true
+db_url: null
+output_raw_jsonl:
+  enabled: true
+  path: "../data/raw/omar_mekawi_relationships_dating.jsonl"
+source_label: "member3_omar_mekawi_relationships_dating"
+

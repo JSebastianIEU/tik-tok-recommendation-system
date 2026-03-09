@@ -1,0 +1,174 @@
+name: Scraper Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      config_path:
+        description: "Scraper config path"
+        required: true
+        default: "scraper/configs/full_scale.yaml"
+      skip_existing:
+        description: "Skip already persisted videos"
+        required: true
+        type: boolean
+        default: true
+      no_resume:
+        description: "Ignore checkpoint table and rerun all sources"
+        required: true
+        type: boolean
+        default: false
+      comments:
+        description: "Comments per video"
+        required: true
+        default: "5"
+      replies:
+        description: "Replies per comment"
+        required: true
+        default: "2"
+      delay:
+        description: "Delay between sources (seconds)"
+        required: true
+        default: "15"
+      retry_empty:
+        description: "Retries when source returns 0 rows"
+        required: true
+        default: "2"
+      max_consecutive_empty:
+        description: "Abort after N consecutive empty sources (0 disables)"
+        required: true
+        default: "5"
+  schedule:
+    - cron: "0 7 * * *"
+
+concurrency:
+  group: scraper-pipeline
+  cancel-in-progress: false
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    permissions:
+      contents: read
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      MS_TOKEN: ${{ secrets.MS_TOKEN }}
+      SCRAPER_SCHEDULE_ENABLED: ${{ vars.SCRAPER_SCHEDULE_ENABLED || 'true' }}
+      SCRAPER_CONFIG_PATH: ${{ vars.SCRAPER_CONFIG_PATH || 'scraper/configs/full_scale.yaml' }}
+      SCRAPER_SKIP_EXISTING: ${{ vars.SCRAPER_SKIP_EXISTING || 'true' }}
+      SCRAPER_NO_RESUME: ${{ vars.SCRAPER_NO_RESUME || 'false' }}
+      SCRAPER_COMMENTS: ${{ vars.SCRAPER_COMMENTS || '5' }}
+      SCRAPER_REPLIES: ${{ vars.SCRAPER_REPLIES || '2' }}
+      SCRAPER_DELAY: ${{ vars.SCRAPER_DELAY || '15' }}
+      SCRAPER_RETRY_EMPTY: ${{ vars.SCRAPER_RETRY_EMPTY || '2' }}
+      SCRAPER_MAX_CONSECUTIVE_EMPTY: ${{ vars.SCRAPER_MAX_CONSECUTIVE_EMPTY || '5' }}
+      TIKTOK_HEADLESS: ${{ vars.TIKTOK_HEADLESS || 'false' }}
+      TIKTOK_BROWSER: ${{ vars.TIKTOK_BROWSER || 'webkit' }}
+      SCRAPER_DB_COMMIT_EVERY: ${{ vars.SCRAPER_DB_COMMIT_EVERY || '50' }}
+      TIKTOK_MAX_SESSION_RECOVERIES: ${{ vars.TIKTOK_MAX_SESSION_RECOVERIES || '3' }}
+      INPUT_CONFIG_PATH: ${{ github.event.inputs.config_path }}
+      INPUT_SKIP_EXISTING: ${{ github.event.inputs.skip_existing }}
+      INPUT_NO_RESUME: ${{ github.event.inputs.no_resume }}
+      INPUT_COMMENTS: ${{ github.event.inputs.comments }}
+      INPUT_REPLIES: ${{ github.event.inputs.replies }}
+      INPUT_DELAY: ${{ github.event.inputs.delay }}
+      INPUT_RETRY_EMPTY: ${{ github.event.inputs.retry_empty }}
+      INPUT_MAX_CONSECUTIVE_EMPTY: ${{ github.event.inputs.max_consecutive_empty }}
+
+    steps:
+      - name: Skip if schedule disabled
+        if: github.event_name == 'schedule' && env.SCRAPER_SCHEDULE_ENABLED != 'true'
+        run: |
+          echo "Scheduled scraping is disabled (set repository variable SCRAPER_SCHEDULE_ENABLED=true to enable)."
+          exit 0
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Validate required secrets
+        run: |
+          test -n "$DATABASE_URL" || (echo "Missing secret DATABASE_URL" && exit 1)
+          test -n "$MS_TOKEN" || (echo "Missing secret MS_TOKEN" && exit 1)
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r scraper/requirements.txt
+          python -m playwright install webkit
+
+      - name: Resolve run parameters
+        id: params
+        run: |
+          CONFIG_PATH="${INPUT_CONFIG_PATH:-$SCRAPER_CONFIG_PATH}"
+          SKIP_EXISTING="${INPUT_SKIP_EXISTING:-$SCRAPER_SKIP_EXISTING}"
+          NO_RESUME="${INPUT_NO_RESUME:-$SCRAPER_NO_RESUME}"
+          COMMENTS="${INPUT_COMMENTS:-$SCRAPER_COMMENTS}"
+          REPLIES="${INPUT_REPLIES:-$SCRAPER_REPLIES}"
+          DELAY="${INPUT_DELAY:-$SCRAPER_DELAY}"
+          RETRY_EMPTY="${INPUT_RETRY_EMPTY:-$SCRAPER_RETRY_EMPTY}"
+          MAX_CONSECUTIVE_EMPTY="${INPUT_MAX_CONSECUTIVE_EMPTY:-$SCRAPER_MAX_CONSECUTIVE_EMPTY}"
+
+          echo "config_path=$CONFIG_PATH" >> "$GITHUB_OUTPUT"
+          echo "skip_existing=$SKIP_EXISTING" >> "$GITHUB_OUTPUT"
+          echo "no_resume=$NO_RESUME" >> "$GITHUB_OUTPUT"
+          echo "comments=$COMMENTS" >> "$GITHUB_OUTPUT"
+          echo "replies=$REPLIES" >> "$GITHUB_OUTPUT"
+          echo "delay=$DELAY" >> "$GITHUB_OUTPUT"
+          echo "retry_empty=$RETRY_EMPTY" >> "$GITHUB_OUTPUT"
+          echo "max_consecutive_empty=$MAX_CONSECUTIVE_EMPTY" >> "$GITHUB_OUTPUT"
+
+      - name: Write optional proxies file
+        id: proxies
+        env:
+          SCRAPER_PROXIES: ${{ secrets.SCRAPER_PROXIES }}
+        run: |
+          if [ -n "$SCRAPER_PROXIES" ]; then
+            printf "%s\n" "$SCRAPER_PROXIES" > /tmp/scraper_proxies.txt
+            echo "path=/tmp/scraper_proxies.txt" >> "$GITHUB_OUTPUT"
+          else
+            echo "path=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Init DB schema
+        run: |
+          python -m scraper init-db
+
+      - name: Run scraper
+        run: |
+          set -euo pipefail
+          CMD=(python -m scraper scrape-all "${{ steps.params.outputs.config_path }}" \
+            --comments "${{ steps.params.outputs.comments }}" \
+            --replies "${{ steps.params.outputs.replies }}" \
+            --delay "${{ steps.params.outputs.delay }}" \
+            --retry-empty "${{ steps.params.outputs.retry_empty }}" \
+            --max-consecutive-empty "${{ steps.params.outputs.max_consecutive_empty }}" \
+            --summary-path "/tmp/full_scale_summary.json")
+
+          if [ "${{ steps.params.outputs.skip_existing }}" = "true" ]; then
+            CMD+=(--skip-existing)
+          fi
+          if [ "${{ steps.params.outputs.no_resume }}" = "true" ]; then
+            CMD+=(--no-resume)
+          fi
+          if [ -n "${{ steps.proxies.outputs.path }}" ]; then
+            CMD+=(--proxies-file "${{ steps.proxies.outputs.path }}")
+          fi
+
+          printf 'Running command: %q ' "${CMD[@]}"
+          echo
+          "${CMD[@]}"
+
+      - name: Upload summaries
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scraper-summaries-${{ github.run_id }}
+          if-no-files-found: ignore
+          path: |
+            /tmp/full_scale_summary.json
+            scraper/data/raw/*summary*.json

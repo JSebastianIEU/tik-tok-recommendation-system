@@ -1,0 +1,35 @@
+keywords:
+  - "gym transformation"
+  - "weight loss journey"
+  - "bulking diet"
+  - "cutting phase"
+  - "fitness motivation"
+  - "discipline mindset"
+  - "daily routine success"
+  - "morning routine 5am"
+  - "glow up"
+  - "body transformation"
+hashtags:
+  - "#gymtok"
+  - "#fitnessjourney"
+  - "#weightloss"
+  - "#selfimprovement"
+  - "#discipline"
+  - "#transformation"
+  - "#gymmotivation"
+  - "#mindset"
+  - "#bulking"
+  - "#cutting"
+per_query_video_limit: 40
+max_comments_per_video: 300
+comment_sort: "top"
+modes_enabled:
+  - "keyword"
+  - "hashtag"
+concurrency: 2
+headless: true
+db_url: null
+output_raw_jsonl:
+  enabled: true
+  path: "../data/raw/juan_sebastian_fitness_self_improvement.jsonl"
+source_label: "member1_juan_sebastian_fitness_self_improvement"

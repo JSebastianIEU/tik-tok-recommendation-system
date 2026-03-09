@@ -1,0 +1,36 @@
+﻿keywords:
+  - "investing for beginners"
+  - "stock market crash"
+  - "crypto news"
+  - "passive income ideas"
+  - "ETF investing"
+  - "day trading strategy"
+  - "recession 2025"
+  - "financial freedom"
+  - "real estate investing"
+  - "side hustle ideas"
+hashtags:
+  - "#investing"
+  - "#stockmarket"
+  - "#crypto"
+  - "#financialfreedom"
+  - "#moneytok"
+  - "#sidehustle"
+  - "#etf"
+  - "#recession"
+  - "#passiveincome"
+  - "#wealthbuilding"
+per_query_video_limit: 40
+max_comments_per_video: 300
+comment_sort: "top"
+modes_enabled:
+  - "keyword"
+  - "hashtag"
+concurrency: 2
+headless: true
+db_url: null
+output_raw_jsonl:
+  enabled: true
+  path: "../data/raw/jad_chebly_finance_investing.jsonl"
+source_label: "member2_jad_chebly_finance_investing"
+
