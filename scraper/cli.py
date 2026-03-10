@@ -182,6 +182,18 @@ def build_parser() -> argparse.ArgumentParser:
         default=5,
         help="Abort run after N consecutive empty-result sources (default 5, 0 disables).",
     )
+    p_scrape_all.add_argument(
+        "--retry-empty",
+        type=int,
+        default=2,
+        help="Retry attempts when a source returns 0 rows due to blocking (default 2).",
+    )
+    p_scrape_all.add_argument(
+        "--retry-delay",
+        type=float,
+        default=20.0,
+        help="Seconds to wait before retrying an empty source (default 20).",
+    )
 
     return parser
 
@@ -250,6 +262,10 @@ def main(argv: list[str] | None = None) -> int:
             argv.extend(["--proxies-file", args.proxies_file])
         if args.max_consecutive_empty != 5:
             argv.extend(["--max-consecutive-empty", str(args.max_consecutive_empty)])
+        if args.retry_empty != 2:
+            argv.extend(["--retry-empty", str(args.retry_empty)])
+        if args.retry_delay != 20.0:
+            argv.extend(["--retry-delay", str(args.retry_delay)])
         return scrape_all_main(argv)
 
     parser.print_help()

@@ -9,7 +9,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, AsyncIterator, Iterable, Optional
+from typing import Any, Iterable, Optional
 from urllib.parse import quote_plus, urlparse
 
 from selenium.webdriver.common.by import By

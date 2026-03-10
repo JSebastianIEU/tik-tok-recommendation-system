@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import time
-from typing import Optional
 
 from selenium.webdriver.remote.webdriver import WebDriver
 from selenium.webdriver.common.by import By
@@ -118,4 +117,3 @@ def click_shadow_button_by_text(driver: WebDriver, text: str, timeout: int = 8) 
         return bool(clicked)
     except Exception:
         return False
-
