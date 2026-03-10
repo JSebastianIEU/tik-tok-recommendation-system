@@ -49,6 +49,9 @@ jobs:
     runs-on: ubuntu-24.04
     container:
       image: mcr.microsoft.com/playwright/python:v1.55.0-noble
+    defaults:
+      run:
+        shell: bash
     timeout-minutes: 240
     permissions:
       contents: read
