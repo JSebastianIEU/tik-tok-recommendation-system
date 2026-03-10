@@ -47,6 +47,8 @@ concurrency:
 jobs:
   scrape:
     runs-on: ubuntu-24.04
+    container:
+      image: mcr.microsoft.com/playwright/python:v1.55.0-noble
     timeout-minutes: 240
     permissions:
       contents: read
@@ -95,11 +97,18 @@ jobs:
           test -n "$DATABASE_URL" || (echo "Missing secret DATABASE_URL" && exit 1)
           test -n "$MS_TOKEN" || (echo "Missing secret MS_TOKEN" && exit 1)
 
+      - name: Debug workflow/runtime
+        run: |
+          echo "ref=${GITHUB_REF}"
+          echo "sha=${GITHUB_SHA}"
+          python -V
+          python -m playwright --version
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r scraper/requirements.txt
-          python -m playwright install --with-deps --force webkit
+          python -m playwright install --force webkit
 
       - name: Preflight browser runtime
         run: |
