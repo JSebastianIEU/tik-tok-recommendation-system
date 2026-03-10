@@ -167,6 +167,41 @@ Notes:
 - If your network is IPv4-only and direct host is IPv6-only, use Supabase Session Pooler URI instead of direct DB host.
 - Run `python -m scraper init-db` against Supabase before restore if schema is not present.
 
+### Team Supabase Setup (shared DB, local runs)
+
+Use this flow when multiple teammates run the scraper locally and all write into the same Supabase project.
+
+1. Share secrets securely (do not commit to git):
+   - `DATABASE_URL` (prefer Supabase Session Pooler URI)
+   - `MS_TOKEN` (each teammate can use their own token)
+2. Each teammate creates local env file (`scraper/.env`):
+   ```env
+   DATABASE_URL=postgresql://postgres:<PASSWORD>@<POOLER_HOST>:6543/postgres?sslmode=require
+   MS_TOKEN=<your_ms_token>
+   TIKTOK_BROWSER=webkit
+   TIKTOK_HEADLESS=false
+   ```
+3. Initialize schema once (one teammate only):
+   ```bash
+   python -m scraper init-db
+   ```
+4. Run assigned sources locally and write to shared Supabase:
+   ```bash
+   python -m scraper scrape-all scraper/configs/full_scale.yaml --skip-existing
+   ```
+5. Coordinate source ownership to reduce overlap (split hashtags/keywords per teammate).
+6. Verify ingest:
+   ```sql
+   SELECT COUNT(*) AS videos FROM videos;
+   SELECT COUNT(*) AS comments FROM comments;
+   ```
+
+Notes:
+
+- Keep `--skip-existing` enabled to avoid duplicate writes.
+- Use `--no-resume` only for intentional full reruns/debugging.
+- If direct DB host fails from local network, switch to Supabase Session Pooler connection string.
+
 ### Option B: Local Docker (solo dev)
 
 ```bash
