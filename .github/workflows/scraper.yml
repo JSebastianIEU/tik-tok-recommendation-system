@@ -141,13 +141,19 @@ jobs:
       - name: Run scraper
         run: |
           set -euo pipefail
+          HELP_TEXT="$(python -m scraper scrape-all -h 2>&1 || true)"
           CMD=(python -m scraper scrape-all "${{ steps.params.outputs.config_path }}" \
             --comments "${{ steps.params.outputs.comments }}" \
             --replies "${{ steps.params.outputs.replies }}" \
             --delay "${{ steps.params.outputs.delay }}" \
-            --retry-empty "${{ steps.params.outputs.retry_empty }}" \
             --max-consecutive-empty "${{ steps.params.outputs.max_consecutive_empty }}" \
             --summary-path "/tmp/full_scale_summary.json")
+
+          if printf '%s' "$HELP_TEXT" | grep -q -- '--retry-empty'; then
+            CMD+=(--retry-empty "${{ steps.params.outputs.retry_empty }}")
+          else
+            echo "Warning: scrape-all CLI does not support --retry-empty on this ref; continuing without it."
+          fi
 
           if [ "${{ steps.params.outputs.skip_existing }}" = "true" ]; then
             CMD+=(--skip-existing)
