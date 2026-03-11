@@ -134,6 +134,74 @@ Scrape **hashtags and keywords** at scale and persist to **Supabase** (or any Po
 Data persists in Supabase. Teammates use the same `DATABASE_URL` to share data.
 Each run writes a JSON summary file in `scraper/data/raw/` and tracks source-level checkpoint state in DB (`scrape_source_jobs`) so reruns can resume.
 
+### Send data to Supabase (quick reference)
+
+#### 1) Send new scraped data directly to Supabase
+
+Set your Supabase Postgres URL, then run scraper commands normally:
+
+```bash
+export DATABASE_URL="postgresql://postgres:<PASSWORD>@db.<PROJECT_REF>.supabase.co:5432/postgres"
+export MS_TOKEN="<your_ms_token>"
+python -m scraper init-db
+python -m scraper scrape-all scraper/configs/full_scale.yaml --skip-existing
+```
+
+Anything persisted by the scraper writer is inserted into Supabase tables.
+
+#### 2) Backfill existing Docker Postgres data into Supabase
+
+If you already scraped into a local Docker Postgres DB, dump then restore into Supabase:
+
+```bash
+# Export from local Docker Postgres
+docker exec tiktok-postgres pg_dump -U tiktok tiktok > backup.sql
+
+# Import into Supabase Postgres
+/opt/homebrew/opt/libpq/bin/psql "postgresql://postgres:<PASSWORD>@db.<PROJECT_REF>.supabase.co:5432/postgres" < backup.sql
+```
+
+Notes:
+
+- `pg_dump` is read-only on source DB (it copies; it does not delete source data).
+- If your network is IPv4-only and direct host is IPv6-only, use Supabase Session Pooler URI instead of direct DB host.
+- Run `python -m scraper init-db` against Supabase before restore if schema is not present.
+
+### Team Supabase Setup (shared DB, local runs)
+
+Use this flow when multiple teammates run the scraper locally and all write into the same Supabase project.
+
+1. Share secrets securely (do not commit to git):
+   - `DATABASE_URL` (prefer Supabase Session Pooler URI)
+   - `MS_TOKEN` (each teammate can use their own token)
+2. Each teammate creates local env file (`scraper/.env`):
+   ```env
+   DATABASE_URL=postgresql://postgres:<PASSWORD>@<POOLER_HOST>:6543/postgres?sslmode=require
+   MS_TOKEN=<your_ms_token>
+   TIKTOK_BROWSER=webkit
+   TIKTOK_HEADLESS=false
+   ```
+3. Initialize schema once (one teammate only):
+   ```bash
+   python -m scraper init-db
+   ```
+4. Run assigned sources locally and write to shared Supabase:
+   ```bash
+   python -m scraper scrape-all scraper/configs/full_scale.yaml --skip-existing
+   ```
+5. Coordinate source ownership to reduce overlap (split hashtags/keywords per teammate).
+6. Verify ingest:
+   ```sql
+   SELECT COUNT(*) AS videos FROM videos;
+   SELECT COUNT(*) AS comments FROM comments;
+   ```
+
+Notes:
+
+- Keep `--skip-existing` enabled to avoid duplicate writes.
+- Use `--no-resume` only for intentional full reruns/debugging.
+- If direct DB host fails from local network, switch to Supabase Session Pooler connection string.
+
 ### Option B: Local Docker (solo dev)
 
 ```bash
@@ -155,6 +223,44 @@ python -m scraper scrape-all scraper/configs/full_scale.yaml --skip-existing
 - **Bot detection**: Scraper uses `headless=false` and `webkit` by default. If issues persist, try `TIKTOK_BROWSER=chromium` or `playwright install webkit`.
 - **DB config precedence**: CLI `--db-url` > `DATABASE_URL` env > config `db_url`.
 - **DB commit batching**: tune with `SCRAPER_DB_COMMIT_EVERY` (default `50`).
+
+## Local Run Quickstart (Recommended)
+
+Use this when you want to run scraping on your own machine (more stable than CI for browser-based TikTok scraping).
+
+1. Create and activate a virtualenv:
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate
+   ```
+2. Install dependencies:
+   ```bash
+   pip install -r scraper/requirements.txt
+   python -m playwright install --with-deps webkit
+   ```
+3. Set required environment variables:
+   ```bash
+   export DATABASE_URL="postgresql://postgres:<PASSWORD>@db.<PROJECT_REF>.supabase.co:5432/postgres"
+   export MS_TOKEN="<your_ms_token>"
+   ```
+4. Initialize DB schema once:
+   ```bash
+   python -m scraper init-db
+   ```
+5. Run full-scale scraping:
+   ```bash
+   python -m scraper scrape-all scraper/configs/full_scale.yaml --skip-existing --no-resume --comments 5 --replies 2 --delay 15
+   ```
+
+Notes:
+
+- If `python` is not found, use `python3` for all commands.
+- `--no-resume` forces all sources to run even if previously completed.
+- Omit `--no-resume` to reuse checkpoint state and skip completed sources.
+- If TikTok blocks requests, try:
+  - `export TIKTOK_BROWSER=webkit`
+  - `export TIKTOK_HEADLESS=false`
+  - add proxies via `--proxies-file <path>`
 
 ## Optional PostgreSQL Mode (pipeline)
 

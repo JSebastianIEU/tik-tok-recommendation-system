@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import logging
+import os
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
-from psycopg import Connection
+from psycopg import Connection, InterfaceError, OperationalError
 
 from .client import connect, get_connection
 
@@ -31,6 +33,7 @@ class BatchedRecordWriter:
     def __init__(self, *, db_url: Optional[str] = None, commit_every: int = 50) -> None:
         self._db_url = db_url
         self._commit_every = max(1, int(commit_every))
+        self._write_retries = max(0, int(os.getenv("SCRAPER_DB_WRITE_RETRIES", "1")))
         self._conn: Optional[Connection] = None
         self._pending = 0
 
@@ -38,16 +41,35 @@ class BatchedRecordWriter:
         self._conn = connect(self._db_url)
         return self
 
+    def _close_conn(self) -> None:
+        if self._conn is None:
+            return
+        try:
+            self._conn.close()
+        except Exception:  # noqa: BLE001
+            logging.warning("db_close_failed", exc_info=True)
+
+    def _reconnect(self) -> None:
+        self._close_conn()
+        self._conn = connect(self._db_url)
+        self._pending = 0
+
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
         if self._conn is None:
             return
         try:
             if exc:
-                self._conn.rollback()
+                try:
+                    self._conn.rollback()
+                except Exception:  # noqa: BLE001
+                    logging.warning("db_rollback_failed_on_exit", exc_info=True)
             elif self._pending > 0:
-                self._conn.commit()
+                try:
+                    self._conn.commit()
+                except Exception:  # noqa: BLE001
+                    logging.warning("db_commit_failed_on_exit", exc_info=True)
         finally:
-            self._conn.close()
+            self._close_conn()
             self._conn = None
             self._pending = 0
 
@@ -61,24 +83,42 @@ class BatchedRecordWriter:
     ) -> bool:
         if self._conn is None:
             raise RuntimeError("BatchedRecordWriter must be used as a context manager.")
-        wrote = write_normalized_record(
-            normalized,
-            conn=self._conn,
-            scrape_ctx=scrape_ctx,
-            position=position,
-            skip_existing=skip_existing,
-        )
-        if wrote:
-            self._pending += 1
-            if self._pending >= self._commit_every:
-                self._conn.commit()
-                self._pending = 0
-        return wrote
+        attempts = self._write_retries + 1
+        for attempt in range(1, attempts + 1):
+            try:
+                wrote = write_normalized_record(
+                    normalized,
+                    conn=self._conn,
+                    scrape_ctx=scrape_ctx,
+                    position=position,
+                    skip_existing=skip_existing,
+                )
+                if wrote:
+                    self._pending += 1
+                    if self._pending >= self._commit_every:
+                        self._conn.commit()
+                        self._pending = 0
+                return wrote
+            except (OperationalError, InterfaceError):
+                if attempt >= attempts:
+                    raise
+                logging.warning(
+                    "db_write_retry attempt=%s/%s due_to_connection_error",
+                    attempt,
+                    attempts - 1,
+                )
+                self._reconnect()
+        # Unreachable, but keeps static analyzers happy.
+        return False
 
     def rollback(self) -> None:
         if self._conn is None:
             return
-        self._conn.rollback()
+        try:
+            self._conn.rollback()
+        except Exception:  # noqa: BLE001
+            logging.warning("db_rollback_failed", exc_info=True)
+            self._reconnect()
         self._pending = 0
 
 

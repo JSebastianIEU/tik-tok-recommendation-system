@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Dict, Iterator, List, Sequence, Tuple
+from typing import Dict, Iterator, Sequence, Tuple
 from urllib.parse import urlparse, urlunparse
 
 import psycopg

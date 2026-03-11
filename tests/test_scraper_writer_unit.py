@@ -37,16 +37,27 @@ class _Cursor:
 
 
 class _Conn:
+    def __init__(self, *, rollback_error: Exception | None = None):
+        self.commits = 0
+        self.closed = 0
+        self.rollbacks = 0
+        self._rollback_error = rollback_error
+
     def cursor(self):
         return _Cursor()
 
     def commit(self):
+        self.commits += 1
         return None
 
     def rollback(self):
+        self.rollbacks += 1
+        if self._rollback_error is not None:
+            raise self._rollback_error
         return None
 
     def close(self):
+        self.closed += 1
         return None
 
 
@@ -136,3 +147,35 @@ def test_write_normalized_record_uses_managed_connection(monkeypatch):
 
     monkeypatch.setattr(writer, "get_connection", lambda _db=None: _Ctx())
     assert writer.write_normalized_record(_sample_normalized(), db_url="postgresql://x") is True
+
+
+def test_batched_writer_reconnects_and_retries_on_operational_error(monkeypatch):
+    conn1 = _Conn()
+    conn2 = _Conn()
+    conns = iter([conn1, conn2])
+    monkeypatch.setattr(writer, "connect", lambda _db=None: next(conns))
+
+    state = {"n": 0}
+
+    def _flaky_write(*_a, **_k):
+        state["n"] += 1
+        if state["n"] == 1:
+            raise writer.OperationalError("transient ssl eof")
+        return True
+
+    monkeypatch.setattr(writer, "write_normalized_record", _flaky_write)
+    with writer.BatchedRecordWriter(db_url="postgresql://x", commit_every=10) as bw:
+        assert bw.write(_sample_normalized()) is True
+    assert conn1.closed >= 1
+    assert state["n"] == 2
+
+
+def test_batched_writer_rollback_recovers_from_lost_connection(monkeypatch):
+    bad_conn = _Conn(rollback_error=writer.OperationalError("connection is lost"))
+    good_conn = _Conn()
+    conns = iter([bad_conn, good_conn])
+    monkeypatch.setattr(writer, "connect", lambda _db=None: next(conns))
+
+    with writer.BatchedRecordWriter(db_url="postgresql://x", commit_every=10) as bw:
+        bw.rollback()
+        assert bw._conn is good_conn

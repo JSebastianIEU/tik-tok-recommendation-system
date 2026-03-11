@@ -16,7 +16,7 @@ on:
         description: "Ignore checkpoint table and rerun all sources"
         required: true
         type: boolean
-        default: false
+        default: true
       comments:
         description: "Comments per video"
         required: true
@@ -46,7 +46,12 @@ concurrency:
 
 jobs:
   scrape:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    container:
+      image: mcr.microsoft.com/playwright/python:v1.55.0-noble
+    defaults:
+      run:
+        shell: bash
     timeout-minutes: 240
     permissions:
       contents: read
@@ -56,13 +61,13 @@ jobs:
       SCRAPER_SCHEDULE_ENABLED: ${{ vars.SCRAPER_SCHEDULE_ENABLED || 'true' }}
       SCRAPER_CONFIG_PATH: ${{ vars.SCRAPER_CONFIG_PATH || 'scraper/configs/full_scale.yaml' }}
       SCRAPER_SKIP_EXISTING: ${{ vars.SCRAPER_SKIP_EXISTING || 'true' }}
-      SCRAPER_NO_RESUME: ${{ vars.SCRAPER_NO_RESUME || 'false' }}
+      SCRAPER_NO_RESUME: ${{ vars.SCRAPER_NO_RESUME || 'true' }}
       SCRAPER_COMMENTS: ${{ vars.SCRAPER_COMMENTS || '5' }}
       SCRAPER_REPLIES: ${{ vars.SCRAPER_REPLIES || '2' }}
       SCRAPER_DELAY: ${{ vars.SCRAPER_DELAY || '15' }}
       SCRAPER_RETRY_EMPTY: ${{ vars.SCRAPER_RETRY_EMPTY || '2' }}
       SCRAPER_MAX_CONSECUTIVE_EMPTY: ${{ vars.SCRAPER_MAX_CONSECUTIVE_EMPTY || '5' }}
-      TIKTOK_HEADLESS: ${{ vars.TIKTOK_HEADLESS || 'false' }}
+      TIKTOK_HEADLESS: "true"
       TIKTOK_BROWSER: ${{ vars.TIKTOK_BROWSER || 'webkit' }}
       SCRAPER_DB_COMMIT_EVERY: ${{ vars.SCRAPER_DB_COMMIT_EVERY || '50' }}
       TIKTOK_MAX_SESSION_RECOVERIES: ${{ vars.TIKTOK_MAX_SESSION_RECOVERIES || '3' }}
@@ -85,21 +90,47 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
       - name: Validate required secrets
         run: |
           test -n "$DATABASE_URL" || (echo "Missing secret DATABASE_URL" && exit 1)
           test -n "$MS_TOKEN" || (echo "Missing secret MS_TOKEN" && exit 1)
 
+      - name: Debug workflow/runtime
+        run: |
+          echo "ref=${GITHUB_REF}"
+          echo "sha=${GITHUB_SHA}"
+          python -V
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r scraper/requirements.txt
-          python -m playwright install webkit
+          python -m playwright install --force webkit
+
+      - name: Debug playwright runtime
+        run: |
+          python -m playwright --version
+          python - <<'PY'
+          import playwright
+          print("playwright module import ok:", playwright.__file__)
+          PY
+
+      - name: Preflight browser runtime
+        run: |
+          python - <<'PY'
+          import asyncio
+          from playwright.async_api import async_playwright
+
+          async def main() -> None:
+              async with async_playwright() as p:
+                  browser = await p.webkit.launch(headless=True)
+                  page = await browser.new_page()
+                  await page.goto("https://example.com", wait_until="domcontentloaded")
+                  await browser.close()
+
+          asyncio.run(main())
+          print("Playwright WebKit preflight passed.")
+          PY
 
       - name: Resolve run parameters
         id: params
@@ -141,13 +172,19 @@ jobs:
       - name: Run scraper
         run: |
           set -euo pipefail
+          HELP_TEXT="$(python -m scraper scrape-all -h 2>&1 || true)"
           CMD=(python -m scraper scrape-all "${{ steps.params.outputs.config_path }}" \
             --comments "${{ steps.params.outputs.comments }}" \
             --replies "${{ steps.params.outputs.replies }}" \
             --delay "${{ steps.params.outputs.delay }}" \
-            --retry-empty "${{ steps.params.outputs.retry_empty }}" \
             --max-consecutive-empty "${{ steps.params.outputs.max_consecutive_empty }}" \
             --summary-path "/tmp/full_scale_summary.json")
+
+          if printf '%s' "$HELP_TEXT" | grep -q -- '--retry-empty'; then
+            CMD+=(--retry-empty "${{ steps.params.outputs.retry_empty }}")
+          else
+            echo "Warning: scrape-all CLI does not support --retry-empty on this ref; continuing without it."
+          fi
 
           if [ "${{ steps.params.outputs.skip_existing }}" = "true" ]; then
             CMD+=(--skip-existing)

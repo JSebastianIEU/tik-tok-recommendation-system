@@ -9,9 +9,8 @@ ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT / ".env")
 load_dotenv(ROOT / "scraper" / ".env")
 
-from scraper.cli import main
-
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    from scraper.cli import main
 
+    raise SystemExit(main())
