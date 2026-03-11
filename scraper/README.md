@@ -1,8 +1,9 @@
-## TikTok Scraper (JSON-Only First)
+## TikTok Scraper
 
-This scraper can now run **without Docker, PostgreSQL, or `psycopg`**.
+This scraper supports both:
 
-Default team configs are set to `db_url: null`, so each member generates JSONL datasets only.
+- JSON-only collection (local files)
+- Persistent Postgres/Supabase storage (recommended for team workflows)
 
 ## What You Get
 
@@ -113,6 +114,18 @@ python -m scraper merge-json \
 
 Scrape **hashtags and keywords** at scale and persist to **Supabase** (or any Postgres). No user scraping (avoids bot detection).
 
+### Recommended operating modes
+
+For stability and better recovery, run in two phases:
+
+1. Video index mode (primary pipeline): collect videos + metadata reliably.
+2. Comment enrichment mode (secondary pipeline): enrich comments for already stored `video_id`s.
+
+This repo now includes both commands:
+
+- `scrape-all` for full source traversal.
+- `scrape-comments` for comment-only enrichment from existing DB videos.
+
 ### Option A: Supabase (recommended for persistent team storage)
 
 1. **Create project** at [supabase.com](https://supabase.com) → New project
@@ -201,6 +214,9 @@ Notes:
 - Keep `--skip-existing` enabled to avoid duplicate writes.
 - Use `--no-resume` only for intentional full reruns/debugging.
 - If direct DB host fails from local network, switch to Supabase Session Pooler connection string.
+- CI workflow defaults to `comments=0` and `replies=0` for stability. Run local/manual enrichment when you need comment depth.
+- Use GitHub workflow `.github/workflows/scraper-comments.yml` for manual comment-only enrichment runs.
+- `scraper-comments.yml` is also scheduled daily at `09:00 UTC` by default; disable with repository variable `SCRAPER_COMMENTS_SCHEDULE_ENABLED=false`.
 
 ### Option B: Local Docker (solo dev)
 
@@ -275,7 +291,49 @@ If later you want DB persistence for the Selenium pipeline:
 
 - `python -m scraper run --config <path>`
 - `python -m scraper scrape-all <full_scale.yaml>` – hashtags + keywords into Supabase/Postgres (`--skip-existing` recommended)
+- `python -m scraper scrape-comments --limit 300 --comments 5 --replies 2` – enrich comments for videos already stored in DB
+- `python -m scraper scrape-comments --max-attempts-per-video 5 --retry-backoff-base-sec 900 --stale-running-minutes 60` – tune retry/exhaustion behavior for comment enrichment jobs
+- `python -m scraper scrape-comments --max-existing-comments 2 --summary-path /tmp/comment_summary.json` – include low-coverage videos and write structured summary JSON
+- `python -m scraper export-data --dataset full --limit 1000` – retrieve pre-joined datasets (`full|videos|comments|authors`)
 - `python -m scraper merge-json --input <file> --input <file> --output <file>`
 - Optional DB mode:
   - `python -m scraper init-db --db-url <url>`
   - `python -m scraper merge --target-db <url> --source-db <url> ...`
+
+`scrape-comments` uses `comment_enrichment_jobs` in Postgres/Supabase to track `pending/running/failed/exhausted/done` per `video_id`. This makes reruns deterministic and safe across teammates.
+
+Workflow quality gates for comment enrichment:
+
+- `max_video_error_rate`: fails run if `video_fetch_errors / processed` is above configured threshold.
+- `min_comments_written`: fails run if written comment volume is too low (applies only when `processed > 0`).
+- `summary artifact`: `/tmp/comment_enrichment_summary.json` is uploaded on every run for debugging/trend tracking.
+
+## Data Retrieval API (Pre-Joined Reads)
+
+Use retrieval functions/CLI when you need model-ready data views from DB without writing ad-hoc SQL.
+
+Datasets:
+
+- `full`: 1 row per video with nested `comments` JSON array.
+- `videos`: 1 row per video (+ author + latest snapshot + hashtags).
+- `comments`: 1 row per comment (+ parent video + comment author + latest comment snapshot).
+- `authors`: 1 row per author (+ aggregated video/comment summaries).
+
+Safety defaults:
+
+- Default `--limit` is `1000`.
+- Hard cap is `10000` rows/page.
+- Full-table retrieval requires explicit `--all`.
+
+Examples:
+
+```bash
+# Page through videos (safe default)
+python -m scraper export-data --dataset videos --limit 1000 --out /tmp/videos.jsonl
+
+# Incremental comments export since a timestamp
+python -m scraper export-data --dataset comments --since 2026-03-01T00:00:00Z --format csv --out /tmp/comments.csv
+
+# Explicit full export (keyset pagination loop)
+python -m scraper export-data --dataset full --all --limit 1000 --out /tmp/full.jsonl
+```

@@ -20,11 +20,11 @@ on:
       comments:
         description: "Comments per video"
         required: true
-        default: "5"
+        default: "0"
       replies:
         description: "Replies per comment"
         required: true
-        default: "2"
+        default: "0"
       delay:
         description: "Delay between sources (seconds)"
         required: true
@@ -62,8 +62,8 @@ jobs:
       SCRAPER_CONFIG_PATH: ${{ vars.SCRAPER_CONFIG_PATH || 'scraper/configs/full_scale.yaml' }}
       SCRAPER_SKIP_EXISTING: ${{ vars.SCRAPER_SKIP_EXISTING || 'true' }}
       SCRAPER_NO_RESUME: ${{ vars.SCRAPER_NO_RESUME || 'true' }}
-      SCRAPER_COMMENTS: ${{ vars.SCRAPER_COMMENTS || '5' }}
-      SCRAPER_REPLIES: ${{ vars.SCRAPER_REPLIES || '2' }}
+      SCRAPER_COMMENTS: ${{ vars.SCRAPER_COMMENTS || '0' }}
+      SCRAPER_REPLIES: ${{ vars.SCRAPER_REPLIES || '0' }}
       SCRAPER_DELAY: ${{ vars.SCRAPER_DELAY || '15' }}
       SCRAPER_RETRY_EMPTY: ${{ vars.SCRAPER_RETRY_EMPTY || '2' }}
       SCRAPER_MAX_CONSECUTIVE_EMPTY: ${{ vars.SCRAPER_MAX_CONSECUTIVE_EMPTY || '5' }}
@@ -71,6 +71,8 @@ jobs:
       TIKTOK_BROWSER: ${{ vars.TIKTOK_BROWSER || 'webkit' }}
       SCRAPER_DB_COMMIT_EVERY: ${{ vars.SCRAPER_DB_COMMIT_EVERY || '50' }}
       TIKTOK_MAX_SESSION_RECOVERIES: ${{ vars.TIKTOK_MAX_SESSION_RECOVERIES || '3' }}
+      TIKTOK_COMMENT_CIRCUIT_MIN_ATTEMPTS: ${{ vars.TIKTOK_COMMENT_CIRCUIT_MIN_ATTEMPTS || '12' }}
+      TIKTOK_COMMENT_CIRCUIT_FAIL_RATE: ${{ vars.TIKTOK_COMMENT_CIRCUIT_FAIL_RATE || '0.60' }}
       INPUT_CONFIG_PATH: ${{ github.event.inputs.config_path }}
       INPUT_SKIP_EXISTING: ${{ github.event.inputs.skip_existing }}
       INPUT_NO_RESUME: ${{ github.event.inputs.no_resume }}

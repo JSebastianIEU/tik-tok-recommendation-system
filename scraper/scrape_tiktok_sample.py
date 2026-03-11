@@ -26,6 +26,20 @@ from TikTokApi import TikTokApi
 # Reduce TikTokApi noise (status 10201, etc.)
 logging.getLogger("TikTokApi").setLevel(logging.WARNING)
 
+
+def _is_probable_bot_block_error(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    markers = (
+        "empty response",
+        "status_code': 4",
+        "status_code\": 4",
+        "captcha",
+        "rate limit",
+        "too many requests",
+    )
+    return any(m in msg for m in markers)
+
+
 def get_ms_token(explicit: str | None) -> str:
     token = explicit or os.environ.get("MS_TOKEN")
     if not token:
@@ -238,37 +252,48 @@ async def fetch_comments_for_video(
     """
     if not video_id or count <= 0:
         return [], 0, 0, False
-    comments: list[Dict[str, Any]] = []
-    video_level_errors = 0
-    reply_level_errors = 0
-    session_invalid = False
-    try:
-        video_obj = api.video(id=str(video_id))
-        async for c in video_obj.comments(count=count):
-            parent_id = getattr(c, "id", None) or (getattr(c, "as_dict", None) or {}).get("cid")
-            parent_id = str(parent_id) if parent_id else None
-            comments.append(_comment_to_dict(c, parent_comment_id=None))
+    attempts = max(1, int(os.getenv("TIKTOK_COMMENT_FETCH_ATTEMPTS", "2")))
+    base_backoff = max(0.0, float(os.getenv("TIKTOK_COMMENT_BACKOFF_SEC", "1.0")))
 
-            if replies_per_comment > 0 and parent_id:
-                likes = getattr(c, "likes_count", None) or (getattr(c, "as_dict", None) or {}).get("digg_count", 0)
-                if min_likes_for_replies > 0 and (likes is None or likes < min_likes_for_replies):
-                    continue
-                try:
-                    async for reply in c.replies(count=replies_per_comment):
-                        comments.append(_comment_to_dict(reply, parent_comment_id=parent_id))
-                except Exception:  # noqa: BLE001
-                    reply_level_errors += 1
-                    logging.warning("reply_fetch_failed video_id=%s parent_comment_id=%s", video_id, parent_id)
-    except Exception as exc:  # noqa: BLE001
-        video_level_errors += 1
-        msg = str(exc).lower()
-        session_invalid = (
-            "no sessions created" in msg
-            or "no valid sessions" in msg
-            or "session" in msg and "closed" in msg
-        )
-        logging.warning("comment_fetch_failed video_id=%s error=%s", video_id, exc)
-    return comments, video_level_errors, reply_level_errors, session_invalid
+    for attempt in range(1, attempts + 1):
+        comments: list[Dict[str, Any]] = []
+        video_level_errors = 0
+        reply_level_errors = 0
+        session_invalid = False
+        try:
+            video_obj = api.video(id=str(video_id))
+            async for c in video_obj.comments(count=count):
+                parent_id = getattr(c, "id", None) or (getattr(c, "as_dict", None) or {}).get("cid")
+                parent_id = str(parent_id) if parent_id else None
+                comments.append(_comment_to_dict(c, parent_comment_id=None))
+
+                if replies_per_comment > 0 and parent_id:
+                    likes = getattr(c, "likes_count", None) or (getattr(c, "as_dict", None) or {}).get("digg_count", 0)
+                    if min_likes_for_replies > 0 and (likes is None or likes < min_likes_for_replies):
+                        continue
+                    try:
+                        async for reply in c.replies(count=replies_per_comment):
+                            comments.append(_comment_to_dict(reply, parent_comment_id=parent_id))
+                    except Exception:  # noqa: BLE001
+                        reply_level_errors += 1
+                        logging.warning("reply_fetch_failed video_id=%s parent_comment_id=%s", video_id, parent_id)
+            return comments, 0, reply_level_errors, False
+        except Exception as exc:  # noqa: BLE001
+            video_level_errors = 1
+            msg = str(exc).lower()
+            session_invalid = (
+                "no sessions created" in msg
+                or "no valid sessions" in msg
+                or ("session" in msg and "closed" in msg)
+            )
+            should_retry = attempt < attempts and (_is_probable_bot_block_error(exc) or session_invalid)
+            if should_retry:
+                await asyncio.sleep(base_backoff * attempt)
+                continue
+            logging.warning("comment_fetch_failed video_id=%s error=%s", video_id, exc)
+            return [], video_level_errors, reply_level_errors, session_invalid
+
+    return [], 1, 0, False
 
 
 def _to_iso_datetime(value: Any) -> str | None:
@@ -529,10 +554,15 @@ async def main_async() -> int:
         persist_failed = 0
         comment_fetch_errors = 0
         reply_fetch_errors = 0
+        comment_fetch_attempts = 0
+        comment_fetch_successes = 0
+        comment_circuit_open = False
         session_recoveries = 0
         max_session_recoveries = max(1, int(os.getenv("TIKTOK_MAX_SESSION_RECOVERIES", "3")))
         delay_every_n = int(os.getenv("TIKTOK_DELAY_EVERY_N", "30"))
         delay_sec = float(os.getenv("TIKTOK_DELAY_SEC", "2"))
+        comment_circuit_min_attempts = max(1, int(os.getenv("TIKTOK_COMMENT_CIRCUIT_MIN_ATTEMPTS", "40")))
+        comment_circuit_fail_rate = min(1.0, max(0.0, float(os.getenv("TIKTOK_COMMENT_CIRCUIT_FAIL_RATE", "0.85"))))
 
         writer_ctx = db_writer if db_writer is not None else None
         manager = writer_ctx if writer_ctx is not None else nullcontext(None)
@@ -544,9 +574,10 @@ async def main_async() -> int:
                     count += 1
 
                     comments: list[Dict[str, Any]] = []
-                    if args.comments > 0:
+                    if args.comments > 0 and not comment_circuit_open:
                         video_id = flat.get("id")
                         if video_id:
+                            comment_fetch_attempts += 1
                             comments, video_errs, reply_errs, session_invalid = await fetch_comments_for_video(
                                 api,
                                 str(video_id),
@@ -578,8 +609,21 @@ async def main_async() -> int:
                                 reply_errs += retry_reply_errs
                             comment_fetch_errors += video_errs
                             reply_fetch_errors += reply_errs
+                            if video_errs == 0:
+                                comment_fetch_successes += 1
                             if delay_sec > 0 and comments:
                                 await asyncio.sleep(delay_sec * 0.5)
+                            if comment_fetch_attempts >= comment_circuit_min_attempts:
+                                fail_rate = comment_fetch_errors / comment_fetch_attempts
+                                if fail_rate >= comment_circuit_fail_rate:
+                                    comment_circuit_open = True
+                                    logging.warning(
+                                        "comment_circuit_open source=%s attempts=%s errors=%s fail_rate=%.2f",
+                                        source_label,
+                                        comment_fetch_attempts,
+                                        comment_fetch_errors,
+                                        fail_rate,
+                                    )
 
                     normalized = to_normalized(
                         flat,
@@ -631,7 +675,11 @@ async def main_async() -> int:
             )
         print(
             "Comment summary: "
-            f"video_fetch_errors={comment_fetch_errors} reply_fetch_errors={reply_fetch_errors}"
+            f"video_fetch_errors={comment_fetch_errors} "
+            f"reply_fetch_errors={reply_fetch_errors} "
+            f"fetch_attempts={comment_fetch_attempts} "
+            f"fetch_successes={comment_fetch_successes} "
+            f"circuit_open={comment_circuit_open}"
         )
         return 0
 

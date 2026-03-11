@@ -112,3 +112,17 @@ CREATE TABLE IF NOT EXISTS scrape_source_jobs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_scrape_source_jobs_status ON scrape_source_jobs(status);
+
+CREATE TABLE IF NOT EXISTS comment_enrichment_jobs (
+    video_id TEXT PRIMARY KEY REFERENCES videos(video_id) ON DELETE CASCADE,
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    last_attempt_at TIMESTAMPTZ,
+    next_retry_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_comment_enrichment_jobs_status ON comment_enrichment_jobs(status);
+CREATE INDEX IF NOT EXISTS idx_comment_enrichment_jobs_next_retry ON comment_enrichment_jobs(next_retry_at);

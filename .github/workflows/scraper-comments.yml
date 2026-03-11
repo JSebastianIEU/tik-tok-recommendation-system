@@ -1,0 +1,236 @@
+name: Scraper Comment Enrichment
+
+on:
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Candidate videos to process"
+        required: true
+        default: "300"
+      include_existing:
+        description: "Include videos that already have comments"
+        required: true
+        type: boolean
+        default: false
+      max_existing_comments:
+        description: "When include_existing=false, include videos with <= N existing comments"
+        required: true
+        default: "0"
+      comments:
+        description: "Comments per video"
+        required: true
+        default: "5"
+      replies:
+        description: "Replies per comment"
+        required: true
+        default: "2"
+      delay:
+        description: "Delay between videos (seconds)"
+        required: true
+        default: "0.5"
+      max_attempts_per_video:
+        description: "Max attempts per video before exhausted"
+        required: true
+        default: "5"
+      retry_backoff_base_sec:
+        description: "Base retry backoff seconds"
+        required: true
+        default: "900"
+      stale_running_minutes:
+        description: "Recover running jobs older than this many minutes"
+        required: true
+        default: "60"
+      max_video_error_rate:
+        description: "Fail if video_fetch_errors/processed exceeds this rate (0-1)"
+        required: true
+        default: "0.95"
+      min_comments_written:
+        description: "Fail if comments_written below this threshold"
+        required: true
+        default: "1"
+  schedule:
+    - cron: "0 9 * * *"
+
+concurrency:
+  group: scraper-comments
+  cancel-in-progress: false
+
+jobs:
+  enrich-comments:
+    runs-on: ubuntu-24.04
+    container:
+      image: mcr.microsoft.com/playwright/python:v1.55.0-noble
+    defaults:
+      run:
+        shell: bash
+    timeout-minutes: 240
+    permissions:
+      contents: read
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      MS_TOKEN: ${{ secrets.MS_TOKEN }}
+      SCRAPER_COMMENTS_SCHEDULE_ENABLED: ${{ vars.SCRAPER_COMMENTS_SCHEDULE_ENABLED || 'true' }}
+      SCRAPER_COMMENTS_LIMIT: ${{ vars.SCRAPER_COMMENTS_LIMIT || '300' }}
+      SCRAPER_COMMENTS_COUNT: ${{ vars.SCRAPER_COMMENTS_COUNT || '5' }}
+      SCRAPER_REPLIES_COUNT: ${{ vars.SCRAPER_REPLIES_COUNT || '2' }}
+      SCRAPER_COMMENTS_DELAY: ${{ vars.SCRAPER_COMMENTS_DELAY || '0.5' }}
+      SCRAPER_COMMENTS_MAX_ATTEMPTS_PER_VIDEO: ${{ vars.SCRAPER_COMMENTS_MAX_ATTEMPTS_PER_VIDEO || '5' }}
+      SCRAPER_COMMENTS_RETRY_BACKOFF_BASE_SEC: ${{ vars.SCRAPER_COMMENTS_RETRY_BACKOFF_BASE_SEC || '900' }}
+      SCRAPER_COMMENTS_STALE_RUNNING_MINUTES: ${{ vars.SCRAPER_COMMENTS_STALE_RUNNING_MINUTES || '60' }}
+      SCRAPER_COMMENTS_MAX_EXISTING_COMMENTS: ${{ vars.SCRAPER_COMMENTS_MAX_EXISTING_COMMENTS || '0' }}
+      SCRAPER_COMMENTS_MAX_VIDEO_ERROR_RATE: ${{ vars.SCRAPER_COMMENTS_MAX_VIDEO_ERROR_RATE || '0.95' }}
+      SCRAPER_COMMENTS_MIN_COMMENTS_WRITTEN: ${{ vars.SCRAPER_COMMENTS_MIN_COMMENTS_WRITTEN || '1' }}
+      TIKTOK_HEADLESS: "true"
+      TIKTOK_BROWSER: ${{ vars.TIKTOK_BROWSER || 'webkit' }}
+      SCRAPER_DB_COMMIT_EVERY: ${{ vars.SCRAPER_DB_COMMIT_EVERY || '50' }}
+      TIKTOK_MAX_SESSION_RECOVERIES: ${{ vars.TIKTOK_MAX_SESSION_RECOVERIES || '3' }}
+      INPUT_LIMIT: ${{ github.event.inputs.limit }}
+      INPUT_INCLUDE_EXISTING: ${{ github.event.inputs.include_existing }}
+      INPUT_MAX_EXISTING_COMMENTS: ${{ github.event.inputs.max_existing_comments }}
+      INPUT_COMMENTS: ${{ github.event.inputs.comments }}
+      INPUT_REPLIES: ${{ github.event.inputs.replies }}
+      INPUT_DELAY: ${{ github.event.inputs.delay }}
+      INPUT_MAX_ATTEMPTS_PER_VIDEO: ${{ github.event.inputs.max_attempts_per_video }}
+      INPUT_RETRY_BACKOFF_BASE_SEC: ${{ github.event.inputs.retry_backoff_base_sec }}
+      INPUT_STALE_RUNNING_MINUTES: ${{ github.event.inputs.stale_running_minutes }}
+      INPUT_MAX_VIDEO_ERROR_RATE: ${{ github.event.inputs.max_video_error_rate }}
+      INPUT_MIN_COMMENTS_WRITTEN: ${{ github.event.inputs.min_comments_written }}
+
+    steps:
+      - name: Skip if schedule disabled
+        if: github.event_name == 'schedule' && env.SCRAPER_COMMENTS_SCHEDULE_ENABLED != 'true'
+        run: |
+          echo "Scheduled comment enrichment is disabled (set repository variable SCRAPER_COMMENTS_SCHEDULE_ENABLED=true to enable)."
+          exit 0
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate required secrets
+        run: |
+          test -n "$DATABASE_URL" || (echo "Missing secret DATABASE_URL" && exit 1)
+          test -n "$MS_TOKEN" || (echo "Missing secret MS_TOKEN" && exit 1)
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r scraper/requirements.txt
+          python -m playwright install --force webkit
+
+      - name: Resolve run parameters
+        id: params
+        run: |
+          LIMIT="${INPUT_LIMIT:-$SCRAPER_COMMENTS_LIMIT}"
+          INCLUDE_EXISTING="${INPUT_INCLUDE_EXISTING:-false}"
+          MAX_EXISTING_COMMENTS="${INPUT_MAX_EXISTING_COMMENTS:-$SCRAPER_COMMENTS_MAX_EXISTING_COMMENTS}"
+          COMMENTS="${INPUT_COMMENTS:-$SCRAPER_COMMENTS_COUNT}"
+          REPLIES="${INPUT_REPLIES:-$SCRAPER_REPLIES_COUNT}"
+          DELAY="${INPUT_DELAY:-$SCRAPER_COMMENTS_DELAY}"
+          MAX_ATTEMPTS_PER_VIDEO="${INPUT_MAX_ATTEMPTS_PER_VIDEO:-$SCRAPER_COMMENTS_MAX_ATTEMPTS_PER_VIDEO}"
+          RETRY_BACKOFF_BASE_SEC="${INPUT_RETRY_BACKOFF_BASE_SEC:-$SCRAPER_COMMENTS_RETRY_BACKOFF_BASE_SEC}"
+          STALE_RUNNING_MINUTES="${INPUT_STALE_RUNNING_MINUTES:-$SCRAPER_COMMENTS_STALE_RUNNING_MINUTES}"
+          MAX_VIDEO_ERROR_RATE="${INPUT_MAX_VIDEO_ERROR_RATE:-$SCRAPER_COMMENTS_MAX_VIDEO_ERROR_RATE}"
+          MIN_COMMENTS_WRITTEN="${INPUT_MIN_COMMENTS_WRITTEN:-$SCRAPER_COMMENTS_MIN_COMMENTS_WRITTEN}"
+
+          echo "limit=$LIMIT" >> "$GITHUB_OUTPUT"
+          echo "include_existing=$INCLUDE_EXISTING" >> "$GITHUB_OUTPUT"
+          echo "max_existing_comments=$MAX_EXISTING_COMMENTS" >> "$GITHUB_OUTPUT"
+          echo "comments=$COMMENTS" >> "$GITHUB_OUTPUT"
+          echo "replies=$REPLIES" >> "$GITHUB_OUTPUT"
+          echo "delay=$DELAY" >> "$GITHUB_OUTPUT"
+          echo "max_attempts_per_video=$MAX_ATTEMPTS_PER_VIDEO" >> "$GITHUB_OUTPUT"
+          echo "retry_backoff_base_sec=$RETRY_BACKOFF_BASE_SEC" >> "$GITHUB_OUTPUT"
+          echo "stale_running_minutes=$STALE_RUNNING_MINUTES" >> "$GITHUB_OUTPUT"
+          echo "max_video_error_rate=$MAX_VIDEO_ERROR_RATE" >> "$GITHUB_OUTPUT"
+          echo "min_comments_written=$MIN_COMMENTS_WRITTEN" >> "$GITHUB_OUTPUT"
+
+      - name: Write optional proxies file
+        id: proxies
+        env:
+          SCRAPER_PROXIES: ${{ secrets.SCRAPER_PROXIES }}
+        run: |
+          if [ -n "$SCRAPER_PROXIES" ]; then
+            printf "%s\n" "$SCRAPER_PROXIES" > /tmp/scraper_proxies.txt
+            echo "path=/tmp/scraper_proxies.txt" >> "$GITHUB_OUTPUT"
+          else
+            echo "path=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run comment enrichment
+        run: |
+          set -euo pipefail
+          CMD=(python -m scraper scrape-comments \
+            --limit "${{ steps.params.outputs.limit }}" \
+            --comments "${{ steps.params.outputs.comments }}" \
+            --replies "${{ steps.params.outputs.replies }}" \
+            --delay "${{ steps.params.outputs.delay }}" \
+            --max-attempts-per-video "${{ steps.params.outputs.max_attempts_per_video }}" \
+            --retry-backoff-base-sec "${{ steps.params.outputs.retry_backoff_base_sec }}" \
+            --stale-running-minutes "${{ steps.params.outputs.stale_running_minutes }}" \
+            --max-existing-comments "${{ steps.params.outputs.max_existing_comments }}" \
+            --summary-path "/tmp/comment_enrichment_summary.json")
+
+          if [ "${{ steps.params.outputs.include_existing }}" = "true" ]; then
+            CMD+=(--include-existing)
+          fi
+          if [ -n "${{ steps.proxies.outputs.path }}" ]; then
+            CMD+=(--proxies-file "${{ steps.proxies.outputs.path }}")
+          fi
+
+          printf 'Running command: %q ' "${CMD[@]}"
+          echo
+          "${CMD[@]}"
+
+      - name: Evaluate comment enrichment quality gates
+        run: |
+          set -euo pipefail
+          test -f /tmp/comment_enrichment_summary.json || (echo "Missing /tmp/comment_enrichment_summary.json" && exit 1)
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          p = Path("/tmp/comment_enrichment_summary.json")
+          summary = json.loads(p.read_text(encoding="utf-8"))
+
+          processed = int(summary.get("processed", 0))
+          video_fetch_errors = int(summary.get("video_fetch_errors", 0))
+          comments_written = int(summary.get("comments_written", 0))
+
+          max_video_error_rate = float(os.getenv("MAX_VIDEO_ERROR_RATE", "0.95"))
+          min_comments_written = int(os.getenv("MIN_COMMENTS_WRITTEN", "1"))
+
+          error_rate = (video_fetch_errors / processed) if processed > 0 else 0.0
+          print(
+              f"Quality gates: processed={processed} video_fetch_errors={video_fetch_errors} "
+              f"error_rate={error_rate:.4f} comments_written={comments_written}"
+          )
+
+          failures = []
+          if processed > 0 and error_rate > max_video_error_rate:
+              failures.append(
+                  f"video error rate {error_rate:.4f} exceeded max {max_video_error_rate:.4f}"
+              )
+          if processed > 0 and comments_written < min_comments_written:
+              failures.append(
+                  f"comments_written {comments_written} below minimum {min_comments_written}"
+              )
+
+          if failures:
+              for f in failures:
+                  print(f"QUALITY_GATE_FAIL: {f}")
+              raise SystemExit(1)
+
+          print("Quality gates passed.")
+          PY
+        env:
+          MAX_VIDEO_ERROR_RATE: ${{ steps.params.outputs.max_video_error_rate }}
+          MIN_COMMENTS_WRITTEN: ${{ steps.params.outputs.min_comments_written }}
+
+      - name: Upload comment summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scraper-comment-summary-${{ github.run_id }}
+          if-no-files-found: ignore
+          path: /tmp/comment_enrichment_summary.json
