@@ -201,6 +201,18 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 
+# EDA artifacts
+eda/extracts/bronze/*
+!eda/extracts/bronze/.gitkeep
+eda/extracts/silver/*
+!eda/extracts/silver/.gitkeep
+eda/reports/latest/*
+!eda/reports/latest/.gitkeep
+!eda/reports/latest/figures/
+eda/reports/latest/figures/*
+!eda/reports/latest/figures/.gitkeep
+eda/metadata/runs.jsonl
+
 # Marimo
 marimo/_static/
 marimo/_lsp/

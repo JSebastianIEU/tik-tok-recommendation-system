@@ -1,0 +1,18 @@
+datasets:
+  - name: videos
+    limit: 1000
+    since: null
+    all_pages: false
+    format: jsonl
+
+  - name: comments
+    limit: 1000
+    since: null
+    all_pages: false
+    format: jsonl
+
+  - name: authors
+    limit: 1000
+    since: null
+    all_pages: false
+    format: csv

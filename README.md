@@ -9,6 +9,7 @@ This repo is a lightweight scaffold for TikTok-style recommendation experiments.
 ## Layout
 
 - `data/mock/` � small mocked JSONL dataset for experiments.
+- `eda/` � reproducible EDA workspace (plans, extracts, notebooks, reports).
 - `src/common/` � shared schemas, validation utilities, constants.
 - `src/data/` � stubs for data generation/ingestion helpers (no scrapers).
 - `src/retrieval/` � retrieval skeleton (index + search abstractions).
@@ -37,6 +38,10 @@ This repo is a lightweight scaffold for TikTok-style recommendation experiments.
 4) Try a placeholder retrieval query:
    ```bash
    make query
+   ```
+5) Bootstrap an EDA extract run from the scraper DB:
+   ```bash
+   python3 scripts/eda_bootstrap.py --plan eda/configs/plan.example.yaml
    ```
 
 ## Notes

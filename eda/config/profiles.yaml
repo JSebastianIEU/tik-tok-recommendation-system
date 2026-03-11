@@ -1,0 +1,10 @@
+profiles:
+  dev:
+    db_env_var: DATABASE_URL
+    default_since: null
+  staging:
+    db_env_var: DATABASE_URL_STAGING
+    default_since: null
+  prod:
+    db_env_var: DATABASE_URL_PROD
+    default_since: null
