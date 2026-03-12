@@ -236,6 +236,10 @@ python -m scraper scrape-all scraper/configs/full_scale.yaml --skip-existing
 - **Resume behavior**: `scrape-all` resumes by default and skips completed sources; use `--no-resume` to force rerun.
 - **Summary output**: set `--summary-path` to control where run metrics JSON is written.
 - **Customize**: Edit `scraper/configs/full_scale.yaml` for hashtags, keywords, counts.
+- **Config compatibility**: `scrape-all` now supports both:
+  - full-scale style (`hashtags/keywords` as `{name, count}` objects)
+  - member style (`hashtags/keywords` as string lists with `per_query_video_limit`)
+- **Config-driven runtime knobs** (overridable by CLI flags): `comments`, `replies`, `min_likes_for_replies`, `delay`, `retry_empty`, `retry_delay`, `max_consecutive_empty`, `skip_existing`, `no_resume`, `modes_enabled`.
 - **Bot detection**: Scraper uses `headless=false` and `webkit` by default. If issues persist, try `TIKTOK_BROWSER=chromium` or `playwright install webkit`.
 - **DB config precedence**: CLI `--db-url` > `DATABASE_URL` env > config `db_url`.
 - **DB commit batching**: tune with `SCRAPER_DB_COMMIT_EVERY` (default `50`).

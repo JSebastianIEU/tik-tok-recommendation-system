@@ -249,9 +249,28 @@ async def _discover_keyword_with_api(
     if search is None:
         raise RuntimeError("TikTokApi search is not available.")
 
+    search_type_fn = getattr(search, "search_type", None)
+    if callable(search_type_fn):
+        try:
+            rows = await _collect_video_dicts(
+                search_type_fn(keyword, "item", count=limit),
+                limit=limit,
+            )
+            if rows:
+                return rows
+        except Exception as exc:  # noqa: BLE001
+            last_error: Exception | None = exc
+        else:
+            last_error = None
+    else:
+        last_error = None
+
     videos_fn = getattr(search, "videos", None)
     if not callable(videos_fn):
-        raise RuntimeError("TikTokApi search.videos is not available.")
+        raise RuntimeError(
+            "TikTokApi search.videos and search.search_type are not available. "
+            "Keyword search may require a different TikTokApi version."
+        )
 
     variants = [
         lambda: videos_fn(keyword, count=limit),
@@ -260,7 +279,6 @@ async def _discover_keyword_with_api(
         lambda: videos_fn(keywords=keyword, count=limit),
     ]
 
-    last_error: Exception | None = None
     for factory in variants:
         try:
             rows = await _collect_video_dicts(factory(), limit=limit)

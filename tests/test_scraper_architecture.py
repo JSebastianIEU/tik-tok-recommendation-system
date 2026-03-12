@@ -68,6 +68,18 @@ def test_build_jobs_creates_expected_sources(tmp_path: Path):
     assert jobs[1].output_path.name == "full_scale_keyword_morning_routine.jsonl"
 
 
+def test_build_jobs_honors_member_style_defaults_and_modes(tmp_path: Path):
+    config = {
+        "hashtags": ["fitness", "cooking"],
+        "keywords": ["morning routine"],
+        "per_query_video_limit": 40,
+        "modes_enabled": ["keyword"],
+    }
+    jobs = _build_jobs(config, tmp_path)
+    assert [job.key for job in jobs] == ["keyword:morning routine"]
+    assert jobs[0].count == 40
+
+
 def test_cli_parser_supports_scrape_comments():
     parser = cli.build_parser()
     args = parser.parse_args(

@@ -140,26 +140,26 @@ def build_parser() -> argparse.ArgumentParser:
     p_scrape_all.add_argument(
         "--delay",
         type=float,
-        default=5,
-        help="Seconds between sources (default: 5).",
+        default=None,
+        help="Seconds between sources (default from config, fallback 5).",
     )
     p_scrape_all.add_argument(
         "--comments",
         type=int,
-        default=5,
-        help="Max comments per video to fetch (default 5).",
+        default=None,
+        help="Max comments per video to fetch (default from config, fallback 5).",
     )
     p_scrape_all.add_argument(
         "--replies",
         type=int,
-        default=5,
-        help="Max replies per comment to fetch (default 5).",
+        default=None,
+        help="Max replies per comment to fetch (default from config, fallback 5).",
     )
     p_scrape_all.add_argument(
         "--min-likes-for-replies",
         type=int,
-        default=10,
-        help="Only fetch replies for comments with at least this many likes (default 10).",
+        default=None,
+        help="Only fetch replies for comments with at least this many likes (default from config, fallback 10).",
     )
     p_scrape_all.add_argument(
         "--no-resume",
@@ -179,20 +179,20 @@ def build_parser() -> argparse.ArgumentParser:
     p_scrape_all.add_argument(
         "--max-consecutive-empty",
         type=int,
-        default=5,
-        help="Abort run after N consecutive empty-result sources (default 5, 0 disables).",
+        default=None,
+        help="Abort run after N consecutive empty-result sources (default from config, fallback 5; 0 disables).",
     )
     p_scrape_all.add_argument(
         "--retry-empty",
         type=int,
-        default=2,
-        help="Retry attempts when a source returns 0 rows due to blocking (default 2).",
+        default=None,
+        help="Retry attempts when a source returns 0 rows due to blocking (default from config, fallback 2).",
     )
     p_scrape_all.add_argument(
         "--retry-delay",
         type=float,
-        default=20.0,
-        help="Seconds to wait before retrying an empty source (default 20).",
+        default=None,
+        help="Seconds to wait before retrying an empty source (default from config, fallback 20).",
     )
 
     p_scrape_comments = subparsers.add_parser(
@@ -342,13 +342,13 @@ def main(argv: list[str] | None = None) -> int:
             argv.append("--init-db")
         if args.skip_existing:
             argv.append("--skip-existing")
-        if args.delay != 5:
+        if args.delay is not None:
             argv.extend(["--delay", str(args.delay)])
-        if args.comments != 5:
+        if args.comments is not None:
             argv.extend(["--comments", str(args.comments)])
-        if args.replies != 5:
+        if args.replies is not None:
             argv.extend(["--replies", str(args.replies)])
-        if args.min_likes_for_replies != 10:
+        if args.min_likes_for_replies is not None:
             argv.extend(["--min-likes-for-replies", str(args.min_likes_for_replies)])
         if args.no_resume:
             argv.append("--no-resume")
@@ -356,11 +356,11 @@ def main(argv: list[str] | None = None) -> int:
             argv.extend(["--summary-path", args.summary_path])
         if args.proxies_file:
             argv.extend(["--proxies-file", args.proxies_file])
-        if args.max_consecutive_empty != 5:
+        if args.max_consecutive_empty is not None:
             argv.extend(["--max-consecutive-empty", str(args.max_consecutive_empty)])
-        if args.retry_empty != 2:
+        if args.retry_empty is not None:
             argv.extend(["--retry-empty", str(args.retry_empty)])
-        if args.retry_delay != 20.0:
+        if args.retry_delay is not None:
             argv.extend(["--retry-delay", str(args.retry_delay)])
         return scrape_all_main(argv)
 
