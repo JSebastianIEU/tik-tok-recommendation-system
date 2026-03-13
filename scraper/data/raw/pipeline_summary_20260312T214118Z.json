@@ -1,0 +1,16 @@
+{
+  "scrape_run_id": "json_only",
+  "total_queries": 20,
+  "discovered_total": 400,
+  "unique_videos": 383,
+  "scraped_ok": 383,
+  "scraped_failed": 0,
+  "persisted_ok": 383,
+  "persisted_skipped": 0,
+  "persist_failed": 0,
+  "comments_written": 0,
+  "unique_authors": 368,
+  "started_at": "2026-03-12T21:41:18.584071+00:00",
+  "ended_at": "2026-03-12T23:12:39.837508+00:00",
+  "duration_sec": 5481
+}
