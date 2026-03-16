@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 import pickle
 
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -19,6 +19,7 @@ class RetrievalIndex:
 
     def __init__(self) -> None:
         self._posts: List[TikTokPost] = []
+        self._posts_by_id: Dict[str, TikTokPost] = {}
         self._vectorizer: Optional[TfidfVectorizer] = None
         self._matrix: Optional[csr_matrix] = None
 
@@ -34,6 +35,7 @@ class RetrievalIndex:
         - Stop word filtering per language
         """
         self._posts = posts
+        self._posts_by_id = {post.video_id: post for post in posts}
 
         # Combine all textual fields into a single document per post
         corpus = []
@@ -97,6 +99,7 @@ class RetrievalIndex:
 
         index = cls()
         index._posts = [TikTokPost.model_validate(post_dict) for post_dict in index_data["posts"]]
+        index._posts_by_id = {post.video_id: post for post in index._posts}
         index._vectorizer = index_data["vectorizer"]
         index._matrix = index_data["matrix"]
 
@@ -106,6 +109,10 @@ class RetrievalIndex:
     def get_posts(self) -> List[TikTokPost]:
         """Return all posts in the index."""
         return self._posts
+
+    def get_post(self, video_id: str) -> Optional[TikTokPost]:
+        """Return one post by video_id if present."""
+        return self._posts_by_id.get(video_id)
 
     def get_matrix(self) -> Optional[csr_matrix]:
         """Return the TF-IDF feature matrix."""

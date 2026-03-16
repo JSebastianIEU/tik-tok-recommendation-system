@@ -176,6 +176,62 @@ def test_main_aborts_after_max_consecutive_empty(monkeypatch, tmp_path: Path):
     assert payload["abort_reason"] == "aborted_after_1_consecutive_empty_sources"
 
 
+def test_main_uses_config_defaults_when_cli_omits(monkeypatch, tmp_path: Path):
+    cfg = tmp_path / "cfg.yaml"
+    cfg.write_text(
+        "\n".join(
+            [
+                "hashtags: [{name: fitness}]",
+                "keywords: []",
+                "per_query_video_limit: 40",
+                "comments: 7",
+                "replies: 3",
+                "min_likes_for_replies: 15",
+                "retry_empty: 0",
+                "retry_delay: 0",
+                "delay: 0",
+                "skip_existing: true",
+                "no_resume: true",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    summary_path = tmp_path / "summary.json"
+
+    monkeypatch.setenv("MS_TOKEN", "token")
+    monkeypatch.setattr("scraper.run_full_scale._resolve_db_url", lambda *_: "postgresql://db")
+    monkeypatch.setattr("scraper.run_full_scale._ensure_job_state_table", lambda *_: None)
+    monkeypatch.setattr("scraper.run_full_scale._load_completed_jobs", lambda *_: set())
+    monkeypatch.setattr("scraper.run_full_scale._mark_job_running", lambda *_: None)
+    monkeypatch.setattr("scraper.run_full_scale._mark_job_finished", lambda *_a, **_k: None)
+
+    seen: dict[str, int | bool | None] = {}
+
+    def _fake_run_scrape(job, **kwargs):
+        seen["count"] = job.count
+        seen["comments"] = kwargs.get("comments")
+        seen["replies"] = kwargs.get("replies")
+        seen["min_likes_for_replies"] = kwargs.get("min_likes_for_replies")
+        seen["skip_existing"] = kwargs.get("skip_existing")
+        job.output_path.write_text('{"ok":1}\n', encoding="utf-8")
+        return 0, 1
+
+    monkeypatch.setattr("scraper.run_full_scale._run_scrape", _fake_run_scrape)
+
+    exit_code = run_full_scale_main([str(cfg), "--summary-path", str(summary_path)])
+
+    assert exit_code == 0
+    assert seen["count"] == 40
+    assert seen["comments"] == 7
+    assert seen["replies"] == 3
+    assert seen["min_likes_for_replies"] == 15
+    assert seen["skip_existing"] is True
+    payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert payload["resume_enabled"] is False
+    assert payload["jobs_succeeded"] == 1
+
+
 def test_fetch_comments_flags_session_invalid(monkeypatch):
     pytest.importorskip("TikTokApi")
     from scraper import scrape_tiktok_sample as sts

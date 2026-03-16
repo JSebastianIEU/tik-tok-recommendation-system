@@ -81,6 +81,9 @@ Top 10 results:
 
 **Options:**
 - `--topk N`: Return top N results (default: 10)
+- `--language <code>`: Filter by language (e.g., `en`)
+- `--min-likes N`: Filter by likes threshold
+- `--min-score F`: Drop low-relevance results below score threshold (default: `0.0`)
 - `--json`: Output results as JSON
 
 ```bash
@@ -106,7 +109,9 @@ results = search(index, query="yoga tips", topk=5)
 #     "video_url": "https://...",
 #     "score": 0.8234,
 #     "caption": "10-min evening stretch",
-#     "hashtags": ["#yoga", "#stretch", "#wellness"]
+#     "hashtags": ["#yoga", "#stretch", "#wellness"],
+#     "likes": 12345,
+#     "language": "en"
 #   },
 #   ...
 # ]

@@ -149,6 +149,28 @@ def test_write_normalized_record_uses_managed_connection(monkeypatch):
     assert writer.write_normalized_record(_sample_normalized(), db_url="postgresql://x") is True
 
 
+def test_write_comments_for_existing_video_uses_snapshot_path(monkeypatch):
+    conn = _Conn()
+    calls = {"snapshot": 0, "comments": 0}
+
+    monkeypatch.setattr(writer, "_video_exists", lambda *_a, **_k: True)
+    monkeypatch.setattr(writer, "_insert_video_snapshot", lambda *_a, **_k: 777)
+
+    def _capture_comments(*_a, **_k):
+        calls["comments"] += 1
+
+    monkeypatch.setattr(writer, "_upsert_comments_and_snapshots", _capture_comments)
+
+    count = writer.write_comments_for_existing_video(
+        "v1",
+        [{"comment_id": "c1", "text": "t"}],
+        conn=conn,
+        scraped_at=datetime.now(timezone.utc),
+    )
+    assert count == 1
+    assert calls["comments"] == 1
+
+
 def test_batched_writer_reconnects_and_retries_on_operational_error(monkeypatch):
     conn1 = _Conn()
     conn2 = _Conn()

@@ -28,12 +28,20 @@ import json
 
 from src.common.constants import ROOT
 from src.retrieval.index import RetrievalIndex
-from src.retrieval.search import search
+from src.retrieval.search import filtered_search
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Query the TikTok retrieval index")
     parser.add_argument("query", nargs="+", help="Search query text")
     parser.add_argument("--topk", type=int, default=10, help="Number of results to return")
+    parser.add_argument("--language", type=str, default=None, help="Filter results by language code")
+    parser.add_argument("--min-likes", type=int, default=None, help="Filter results by minimum likes")
+    parser.add_argument(
+        "--min-score",
+        type=float,
+        default=0.0,
+        help="Minimum TF-IDF cosine score to include (default: 0.0).",
+    )
     parser.add_argument("--json", action="store_true", help="Output results as JSON")
 
     args = parser.parse_args()
@@ -54,7 +62,14 @@ def main() -> int:
     print(f"\nQuery: '{query_text}'")
     print(f"Top {args.topk} results:\n")
 
-    results = search(index, query=query_text, topk=args.topk)
+    results = filtered_search(
+        index,
+        query=query_text,
+        topk=args.topk,
+        language=args.language,
+        min_likes=args.min_likes,
+        min_score=args.min_score,
+    )
 
     if args.json:
         # Output as JSON

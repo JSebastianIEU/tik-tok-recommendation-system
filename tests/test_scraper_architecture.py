@@ -9,6 +9,7 @@ pytest.importorskip("yaml")
 pytest.importorskip("selenium")
 
 from scraper.config import PipelineConfig
+from scraper import cli
 from scraper.pipeline import _resolve_db_url as resolve_pipeline_db_url
 from scraper.run_full_scale import _build_jobs, _resolve_db_url as resolve_full_scale_db_url
 
@@ -65,3 +66,75 @@ def test_build_jobs_creates_expected_sources(tmp_path: Path):
     assert jobs[1].key == "keyword:morning routine"
     assert jobs[0].output_path.name == "full_scale_hashtag_fitness_life.jsonl"
     assert jobs[1].output_path.name == "full_scale_keyword_morning_routine.jsonl"
+
+
+def test_build_jobs_honors_member_style_defaults_and_modes(tmp_path: Path):
+    config = {
+        "hashtags": ["fitness", "cooking"],
+        "keywords": ["morning routine"],
+        "per_query_video_limit": 40,
+        "modes_enabled": ["keyword"],
+    }
+    jobs = _build_jobs(config, tmp_path)
+    assert [job.key for job in jobs] == ["keyword:morning routine"]
+    assert jobs[0].count == 40
+
+
+def test_cli_parser_supports_scrape_comments():
+    parser = cli.build_parser()
+    args = parser.parse_args(
+        [
+            "scrape-comments",
+            "--limit",
+            "10",
+            "--comments",
+            "3",
+            "--replies",
+            "1",
+            "--max-attempts-per-video",
+            "4",
+            "--retry-backoff-base-sec",
+            "120",
+            "--stale-running-minutes",
+            "15",
+            "--max-existing-comments",
+            "2",
+            "--summary-path",
+            "/tmp/comment_summary.json",
+        ]
+    )
+    assert args.command == "scrape-comments"
+    assert args.limit == 10
+    assert args.comments == 3
+    assert args.replies == 1
+    assert args.max_attempts_per_video == 4
+    assert args.retry_backoff_base_sec == 120
+    assert args.stale_running_minutes == 15
+    assert args.max_existing_comments == 2
+    assert args.summary_path == "/tmp/comment_summary.json"
+
+
+def test_cli_parser_supports_export_data():
+    parser = cli.build_parser()
+    args = parser.parse_args(
+        [
+            "export-data",
+            "--dataset",
+            "comments",
+            "--limit",
+            "200",
+            "--since",
+            "2026-03-01T00:00:00Z",
+            "--all",
+            "--format",
+            "csv",
+            "--out",
+            "/tmp/comments.csv",
+        ]
+    )
+    assert args.command == "export-data"
+    assert args.dataset == "comments"
+    assert args.limit == 200
+    assert args.since == "2026-03-01T00:00:00Z"
+    assert args.all is True
+    assert args.format == "csv"

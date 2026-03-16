@@ -140,26 +140,26 @@ def build_parser() -> argparse.ArgumentParser:
     p_scrape_all.add_argument(
         "--delay",
         type=float,
-        default=5,
-        help="Seconds between sources (default: 5).",
+        default=None,
+        help="Seconds between sources (default from config, fallback 5).",
     )
     p_scrape_all.add_argument(
         "--comments",
         type=int,
-        default=5,
-        help="Max comments per video to fetch (default 5).",
+        default=None,
+        help="Max comments per video to fetch (default from config, fallback 5).",
     )
     p_scrape_all.add_argument(
         "--replies",
         type=int,
-        default=5,
-        help="Max replies per comment to fetch (default 5).",
+        default=None,
+        help="Max replies per comment to fetch (default from config, fallback 5).",
     )
     p_scrape_all.add_argument(
         "--min-likes-for-replies",
         type=int,
-        default=10,
-        help="Only fetch replies for comments with at least this many likes (default 10).",
+        default=None,
+        help="Only fetch replies for comments with at least this many likes (default from config, fallback 10).",
     )
     p_scrape_all.add_argument(
         "--no-resume",
@@ -179,21 +179,117 @@ def build_parser() -> argparse.ArgumentParser:
     p_scrape_all.add_argument(
         "--max-consecutive-empty",
         type=int,
-        default=5,
-        help="Abort run after N consecutive empty-result sources (default 5, 0 disables).",
+        default=None,
+        help="Abort run after N consecutive empty-result sources (default from config, fallback 5; 0 disables).",
     )
     p_scrape_all.add_argument(
         "--retry-empty",
         type=int,
-        default=2,
-        help="Retry attempts when a source returns 0 rows due to blocking (default 2).",
+        default=None,
+        help="Retry attempts when a source returns 0 rows due to blocking (default from config, fallback 2).",
     )
     p_scrape_all.add_argument(
         "--retry-delay",
         type=float,
-        default=20.0,
-        help="Seconds to wait before retrying an empty source (default 20).",
+        default=None,
+        help="Seconds to wait before retrying an empty source (default from config, fallback 20).",
     )
+
+    p_scrape_comments = subparsers.add_parser(
+        "scrape-comments",
+        help="Enrich comments for already-scraped videos in Postgres/Supabase.",
+    )
+    p_scrape_comments.add_argument("--db-url", default=None, help="Optional DB URL override.")
+    p_scrape_comments.add_argument("--ms-token", dest="ms_token", default=None, help="MS_TOKEN override.")
+    p_scrape_comments.add_argument(
+        "--limit",
+        type=int,
+        default=300,
+        help="Number of candidate videos to process (default: 300).",
+    )
+    p_scrape_comments.add_argument(
+        "--include-existing",
+        action="store_true",
+        help="Include videos that already have comments (default: only missing comments).",
+    )
+    p_scrape_comments.add_argument(
+        "--max-existing-comments",
+        type=int,
+        default=0,
+        help="When include-existing is false, also seed videos with <= N existing comments (default: 0).",
+    )
+    p_scrape_comments.add_argument(
+        "--comments",
+        type=int,
+        default=5,
+        help="Max comments per video to fetch (default: 5).",
+    )
+    p_scrape_comments.add_argument(
+        "--replies",
+        type=int,
+        default=2,
+        help="Max replies per comment to fetch (default: 2).",
+    )
+    p_scrape_comments.add_argument(
+        "--min-likes-for-replies",
+        type=int,
+        default=10,
+        help="Only fetch replies for comments with at least this many likes (default: 10).",
+    )
+    p_scrape_comments.add_argument(
+        "--delay",
+        type=float,
+        default=0.5,
+        help="Delay in seconds between videos (default: 0.5).",
+    )
+    p_scrape_comments.add_argument(
+        "--max-attempts-per-video",
+        type=int,
+        default=5,
+        help="Maximum enrichment attempts per video before marking exhausted (default: 5).",
+    )
+    p_scrape_comments.add_argument(
+        "--retry-backoff-base-sec",
+        type=float,
+        default=900.0,
+        help="Base backoff in seconds for failed videos (exponential, default: 900).",
+    )
+    p_scrape_comments.add_argument(
+        "--stale-running-minutes",
+        type=int,
+        default=60,
+        help="Recover jobs stuck in running state older than this many minutes (default: 60).",
+    )
+    p_scrape_comments.add_argument(
+        "--proxies-file",
+        default=None,
+        help="Optional proxies file path passed to TikTokApi session creation.",
+    )
+    p_scrape_comments.add_argument(
+        "--summary-path",
+        default=None,
+        help="Optional JSON summary path for comment enrichment run.",
+    )
+
+    p_export_data = subparsers.add_parser(
+        "export-data",
+        help="Retrieve pre-joined datasets from Postgres/Supabase.",
+    )
+    p_export_data.add_argument(
+        "--dataset",
+        choices=["full", "videos", "comments", "authors"],
+        default="full",
+        help="Dataset domain to retrieve (default: full).",
+    )
+    p_export_data.add_argument("--db-url", default=None, help="Optional DB URL override.")
+    p_export_data.add_argument("--limit", type=int, default=1000, help="Rows per page (default: 1000).")
+    p_export_data.add_argument("--offset", type=int, default=0, help="Offset for pagination (default: 0).")
+    p_export_data.add_argument("--since", default=None, help="ISO-8601 lower bound timestamp.")
+    p_export_data.add_argument("--cursor-created-at", default=None, help="Keyset cursor timestamp.")
+    p_export_data.add_argument("--cursor-id", default=None, help="Keyset cursor id.")
+    p_export_data.add_argument("--all", action="store_true", help="Fetch all pages via keyset pagination.")
+    p_export_data.add_argument("--out", default=None, help="Optional output file path.")
+    p_export_data.add_argument("--format", choices=["jsonl", "csv"], default="jsonl", help="Output format.")
 
     return parser
 
@@ -246,13 +342,13 @@ def main(argv: list[str] | None = None) -> int:
             argv.append("--init-db")
         if args.skip_existing:
             argv.append("--skip-existing")
-        if args.delay != 5:
+        if args.delay is not None:
             argv.extend(["--delay", str(args.delay)])
-        if args.comments != 5:
+        if args.comments is not None:
             argv.extend(["--comments", str(args.comments)])
-        if args.replies != 5:
+        if args.replies is not None:
             argv.extend(["--replies", str(args.replies)])
-        if args.min_likes_for_replies != 10:
+        if args.min_likes_for_replies is not None:
             argv.extend(["--min-likes-for-replies", str(args.min_likes_for_replies)])
         if args.no_resume:
             argv.append("--no-resume")
@@ -260,13 +356,71 @@ def main(argv: list[str] | None = None) -> int:
             argv.extend(["--summary-path", args.summary_path])
         if args.proxies_file:
             argv.extend(["--proxies-file", args.proxies_file])
-        if args.max_consecutive_empty != 5:
+        if args.max_consecutive_empty is not None:
             argv.extend(["--max-consecutive-empty", str(args.max_consecutive_empty)])
-        if args.retry_empty != 2:
+        if args.retry_empty is not None:
             argv.extend(["--retry-empty", str(args.retry_empty)])
-        if args.retry_delay != 20.0:
+        if args.retry_delay is not None:
             argv.extend(["--retry-delay", str(args.retry_delay)])
         return scrape_all_main(argv)
+
+    if args.command == "scrape-comments":
+        from scraper.comment_enrichment import main as scrape_comments_main
+
+        argv = []
+        if args.db_url:
+            argv.extend(["--db-url", args.db_url])
+        if args.ms_token:
+            argv.extend(["--ms-token", args.ms_token])
+        if args.limit != 300:
+            argv.extend(["--limit", str(args.limit)])
+        if args.include_existing:
+            argv.append("--include-existing")
+        if args.max_existing_comments != 0:
+            argv.extend(["--max-existing-comments", str(args.max_existing_comments)])
+        if args.comments != 5:
+            argv.extend(["--comments", str(args.comments)])
+        if args.replies != 2:
+            argv.extend(["--replies", str(args.replies)])
+        if args.min_likes_for_replies != 10:
+            argv.extend(["--min-likes-for-replies", str(args.min_likes_for_replies)])
+        if args.delay != 0.5:
+            argv.extend(["--delay", str(args.delay)])
+        if args.max_attempts_per_video != 5:
+            argv.extend(["--max-attempts-per-video", str(args.max_attempts_per_video)])
+        if args.retry_backoff_base_sec != 900.0:
+            argv.extend(["--retry-backoff-base-sec", str(args.retry_backoff_base_sec)])
+        if args.stale_running_minutes != 60:
+            argv.extend(["--stale-running-minutes", str(args.stale_running_minutes)])
+        if args.proxies_file:
+            argv.extend(["--proxies-file", args.proxies_file])
+        if args.summary_path:
+            argv.extend(["--summary-path", args.summary_path])
+        return scrape_comments_main(argv)
+
+    if args.command == "export-data":
+        from scraper.data_requests import main as export_data_main
+
+        argv = ["--dataset", args.dataset]
+        if args.db_url:
+            argv.extend(["--db-url", args.db_url])
+        if args.limit != 1000:
+            argv.extend(["--limit", str(args.limit)])
+        if args.offset != 0:
+            argv.extend(["--offset", str(args.offset)])
+        if args.since:
+            argv.extend(["--since", args.since])
+        if args.cursor_created_at:
+            argv.extend(["--cursor-created-at", args.cursor_created_at])
+        if args.cursor_id:
+            argv.extend(["--cursor-id", args.cursor_id])
+        if args.all:
+            argv.append("--all")
+        if args.out:
+            argv.extend(["--out", args.out])
+        if args.format != "jsonl":
+            argv.extend(["--format", args.format])
+        return export_data_main(argv)
 
     parser.print_help()
     return 1

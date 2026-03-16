@@ -566,6 +566,55 @@ def write_normalized_record(
         )
 
 
+def write_comments_for_existing_video(
+    video_id: str,
+    comments: Iterable[Dict[str, Any]],
+    *,
+    db_url: Optional[str] = None,
+    conn: Optional[Connection] = None,
+    scraped_at: Optional[datetime] = None,
+) -> int:
+    """
+    Persist comments for a video that already exists in DB.
+
+    Returns the number of comment rows attempted for upsert.
+    """
+    if not video_id:
+        return 0
+    comments_list = list(comments)
+    if not comments_list:
+        return 0
+
+    effective_scraped_at = scraped_at or datetime.utcnow()
+    metrics = {"likes": None, "comments_count": None, "shares": None, "plays": None}
+
+    def _write(target_conn: Connection) -> int:
+        if not _video_exists(target_conn, video_id):
+            return 0
+        video_snapshot_id = _insert_video_snapshot(
+            target_conn,
+            video_id=video_id,
+            metrics=metrics,
+            scraped_at=effective_scraped_at,
+            scrape_ctx=None,
+            position=None,
+        )
+        _upsert_comments_and_snapshots(
+            target_conn,
+            video_id=video_id,
+            comments=comments_list,
+            video_snapshot_id=video_snapshot_id,
+            scraped_at=effective_scraped_at,
+        )
+        return len(comments_list)
+
+    if conn is not None:
+        return _write(conn)
+
+    with get_connection(db_url) as managed_conn:
+        return _write(managed_conn)
+
+
 def dry_run_print_sql(normalized: Dict[str, Any]) -> None:
     """
     Helper for development: print a high-level summary of what would be written.

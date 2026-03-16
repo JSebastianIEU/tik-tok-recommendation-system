@@ -23,6 +23,8 @@ from typing import Any
 
 import psycopg
 
+from scraper.config import VALID_MODES
+
 # Ensure project root is on path
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -58,6 +60,94 @@ def _resolve_db_url(args_db_url: str | None, config: dict[str, Any]) -> str | No
     return raw or None
 
 
+def _resolve_int_option(
+    cli_value: int | None,
+    config: dict[str, Any],
+    key: str,
+    *,
+    default: int,
+    min_value: int = 0,
+) -> int:
+    value = cli_value if cli_value is not None else config.get(key, default)
+    if not isinstance(value, int):
+        raise ValueError(f"Config '{key}' must be an integer.")
+    if value < min_value:
+        raise ValueError(f"Config '{key}' must be >= {min_value}.")
+    return value
+
+
+def _resolve_float_option(
+    cli_value: float | None,
+    config: dict[str, Any],
+    key: str,
+    *,
+    default: float,
+    min_value: float = 0.0,
+) -> float:
+    value = cli_value if cli_value is not None else config.get(key, default)
+    if not isinstance(value, (int, float)):
+        raise ValueError(f"Config '{key}' must be numeric.")
+    as_float = float(value)
+    if as_float < min_value:
+        raise ValueError(f"Config '{key}' must be >= {min_value}.")
+    return as_float
+
+
+def _resolve_bool_option(
+    cli_value: bool | None,
+    config: dict[str, Any],
+    key: str,
+    *,
+    default: bool,
+) -> bool:
+    value = cli_value if cli_value is not None else config.get(key, default)
+    if not isinstance(value, bool):
+        raise ValueError(f"Config '{key}' must be boolean.")
+    return value
+
+
+def _normalized_modes(config: dict[str, Any]) -> set[str]:
+    raw = config.get("modes_enabled")
+    if raw is None:
+        return set(VALID_MODES)
+    if not isinstance(raw, list):
+        raise ValueError("Config 'modes_enabled' must be a list of strings.")
+    out: set[str] = set()
+    for item in raw:
+        if not isinstance(item, str):
+            raise ValueError("Config 'modes_enabled' must contain only strings.")
+        mode = item.strip().lower()
+        if mode not in VALID_MODES:
+            raise ValueError(
+                f"Invalid mode '{item}'. Valid values: {', '.join(sorted(VALID_MODES))}"
+            )
+        out.add(mode)
+    return out or set(VALID_MODES)
+
+
+def _item_name_and_count(
+    item: Any,
+    *,
+    mode: str,
+    default_count: int,
+) -> tuple[str, int] | None:
+    if isinstance(item, dict):
+        name = str(item.get("name") or "").strip()
+        raw_count = item.get("count", default_count)
+        try:
+            count = int(raw_count)
+        except (TypeError, ValueError):
+            raise ValueError(f"Invalid count for {mode} source '{name}': {raw_count!r}") from None
+    else:
+        name = str(item).strip()
+        count = default_count
+    if not name:
+        return None
+    if count < 1:
+        raise ValueError(f"Source '{mode}:{name}' has invalid count={count}. Must be >= 1.")
+    return name, count
+
+
 def _safe_name(value: str, limit: int | None = None) -> str:
     cleaned = value.replace(" ", "_").replace("#", "")
     return cleaned[:limit] if limit else cleaned
@@ -65,43 +155,43 @@ def _safe_name(value: str, limit: int | None = None) -> str:
 
 def _build_jobs(config: dict[str, Any], output_dir: Path) -> list[SourceJob]:
     jobs: list[SourceJob] = []
-    for item in config.get("hashtags") or []:
-        if isinstance(item, dict):
-            name = str(item.get("name") or "").strip()
-            count = int(item.get("count", 100))
-        else:
-            name = str(item).strip()
-            count = 100
-        if not name:
-            continue
-        safe = _safe_name(name)
-        jobs.append(
-            SourceJob(
-                mode="hashtag",
-                name=name,
-                count=count,
-                output_path=output_dir / f"full_scale_hashtag_{safe}.jsonl",
-            )
-        )
+    enabled_modes = _normalized_modes(config)
+    default_count = int(config.get("default_count", 100))
+    default_per_query = int(config.get("per_query_video_limit", default_count))
+    default_hashtag_count = int(config.get("default_hashtag_count", default_per_query))
+    default_keyword_count = int(config.get("default_keyword_count", default_per_query))
 
-    for item in config.get("keywords") or []:
-        if isinstance(item, dict):
-            name = str(item.get("name") or "").strip()
-            count = int(item.get("count", 100))
-        else:
-            name = str(item).strip()
-            count = 100
-        if not name:
-            continue
-        safe = _safe_name(name, limit=30)
-        jobs.append(
-            SourceJob(
-                mode="keyword",
-                name=name,
-                count=count,
-                output_path=output_dir / f"full_scale_keyword_{safe}.jsonl",
+    if "hashtag" in enabled_modes:
+        for item in config.get("hashtags") or []:
+            parsed = _item_name_and_count(item, mode="hashtag", default_count=default_hashtag_count)
+            if parsed is None:
+                continue
+            name, count = parsed
+            safe = _safe_name(name)
+            jobs.append(
+                SourceJob(
+                    mode="hashtag",
+                    name=name,
+                    count=count,
+                    output_path=output_dir / f"full_scale_hashtag_{safe}.jsonl",
+                )
             )
-        )
+
+    if "keyword" in enabled_modes:
+        for item in config.get("keywords") or []:
+            parsed = _item_name_and_count(item, mode="keyword", default_count=default_keyword_count)
+            if parsed is None:
+                continue
+            name, count = parsed
+            safe = _safe_name(name, limit=30)
+            jobs.append(
+                SourceJob(
+                    mode="keyword",
+                    name=name,
+                    count=count,
+                    output_path=output_dir / f"full_scale_keyword_{safe}.jsonl",
+                )
+            )
     return jobs
 
 
@@ -233,35 +323,37 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--skip-existing",
         action="store_true",
-        help="Skip DB write for videos already in DB (avoids duplicate storage).",
+        default=None,
+        help="Skip DB write for videos already in DB (default from config.skip_existing, fallback false).",
     )
     parser.add_argument(
         "--delay",
         type=float,
-        default=DEFAULT_DELAY_BETWEEN_SOURCES,
-        help=f"Seconds to wait between sources (default: {DEFAULT_DELAY_BETWEEN_SOURCES}).",
+        default=None,
+        help=f"Seconds to wait between sources (default from config.delay, fallback {DEFAULT_DELAY_BETWEEN_SOURCES}).",
     )
     parser.add_argument(
         "--comments",
         type=int,
-        default=5,
-        help="Max comments per video to fetch (default 5).",
+        default=None,
+        help="Max comments per video to fetch (default from config.comments, fallback 5).",
     )
     parser.add_argument(
         "--replies",
         type=int,
-        default=5,
-        help="Max replies per comment to fetch (default 5).",
+        default=None,
+        help="Max replies per comment to fetch (default from config.replies, fallback 5).",
     )
     parser.add_argument(
         "--min-likes-for-replies",
         type=int,
-        default=10,
-        help="Only fetch replies for comments with at least this many likes (default 10).",
+        default=None,
+        help="Only fetch replies for comments with at least this many likes (default from config.min_likes_for_replies, fallback 10).",
     )
     parser.add_argument(
         "--no-resume",
         action="store_true",
+        default=None,
         help="Disable checkpoint resume and run all sources regardless of previous status.",
     )
     parser.add_argument(
@@ -272,25 +364,25 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--proxies-file",
         default=None,
-        help="Optional proxies file path passed to scrape workers.",
+        help="Optional proxies file path passed to scrape workers (default from config.proxies_file).",
     )
     parser.add_argument(
         "--retry-empty",
         type=int,
-        default=2,
-        help="Retry attempts when a source returns 0 rows due to blocking (default: 2).",
+        default=None,
+        help="Retry attempts when a source returns 0 rows due to blocking (default from config.retry_empty, fallback 2).",
     )
     parser.add_argument(
         "--retry-delay",
         type=float,
-        default=20.0,
-        help="Seconds to wait before retrying an empty source (default: 20).",
+        default=None,
+        help="Seconds to wait before retrying an empty source (default from config.retry_delay, fallback 20).",
     )
     parser.add_argument(
         "--max-consecutive-empty",
         type=int,
-        default=5,
-        help="Abort run after this many consecutive empty-result source failures (default: 5). Use 0 to disable.",
+        default=None,
+        help="Abort run after this many consecutive empty-result source failures (default from config.max_consecutive_empty, fallback 5). Use 0 to disable.",
     )
     args = parser.parse_args(argv)
 
@@ -320,6 +412,30 @@ def main(argv: list[str] | None = None) -> int:
 
     output_dir = Path(config.get("output_dir", "scraper/data/raw"))
     output_dir.mkdir(parents=True, exist_ok=True)
+    proxies_file = args.proxies_file or config.get("proxies_file")
+    if proxies_file is not None and not isinstance(proxies_file, str):
+        raise ValueError("Config 'proxies_file' must be a string when provided.")
+    skip_existing = _resolve_bool_option(args.skip_existing, config, "skip_existing", default=False)
+    no_resume = _resolve_bool_option(args.no_resume, config, "no_resume", default=False)
+    comments = _resolve_int_option(args.comments, config, "comments", default=5, min_value=0)
+    replies = _resolve_int_option(args.replies, config, "replies", default=5, min_value=0)
+    min_likes_for_replies = _resolve_int_option(
+        args.min_likes_for_replies,
+        config,
+        "min_likes_for_replies",
+        default=10,
+        min_value=0,
+    )
+    retry_empty = _resolve_int_option(args.retry_empty, config, "retry_empty", default=2, min_value=0)
+    retry_delay = _resolve_float_option(args.retry_delay, config, "retry_delay", default=20.0, min_value=0.0)
+    max_consecutive_empty = _resolve_int_option(
+        args.max_consecutive_empty,
+        config,
+        "max_consecutive_empty",
+        default=5,
+        min_value=0,
+    )
+    delay = _resolve_float_option(args.delay, config, "delay", default=DEFAULT_DELAY_BETWEEN_SOURCES, min_value=0.0)
 
     if args.init_db:
         from scraper.db.schema import apply_schema
@@ -328,13 +444,11 @@ def main(argv: list[str] | None = None) -> int:
         print("Schema applied.")
 
     _ensure_job_state_table(db_url)
-    resume_enabled = not args.no_resume
+    resume_enabled = not no_resume
     completed_keys = _load_completed_jobs(db_url) if resume_enabled else set()
 
     started_at = datetime.now(timezone.utc)
     summary_path = Path(args.summary_path).resolve() if args.summary_path else _default_summary_path(output_dir, started_at)
-    delay = max(0.0, float(args.delay))
-
     jobs = _build_jobs(config, output_dir)
     failed = 0
     skipped = 0
@@ -368,7 +482,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\n[{job.mode}] {job.name} count={job.count} -> {job.output_path}")
         _mark_job_running(db_url, job)
         started_source = time.time()
-        attempts = max(1, int(args.retry_empty) + 1)
+        attempts = max(1, int(retry_empty) + 1)
         code = 1
         rows_written = 0
         for attempt in range(1, attempts + 1):
@@ -376,11 +490,11 @@ def main(argv: list[str] | None = None) -> int:
                 job,
                 db_url=db_url,
                 env=env,
-                skip_existing=args.skip_existing,
-                comments=args.comments,
-                replies=args.replies,
-                min_likes_for_replies=args.min_likes_for_replies,
-                proxies_file=args.proxies_file,
+                skip_existing=skip_existing,
+                comments=comments,
+                replies=replies,
+                min_likes_for_replies=min_likes_for_replies,
+                proxies_file=proxies_file,
             )
             if code == 0 and rows_written > 0:
                 break
@@ -388,7 +502,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(
                     f"[retry] {job.key} attempt {attempt}/{attempts - 1} yielded rows={rows_written}, retrying..."
                 )
-                time.sleep(max(0.0, float(args.retry_delay)))
+                time.sleep(retry_delay)
         duration_sec = round(time.time() - started_source, 2)
         executed += 1
         if code != 0:
@@ -423,7 +537,7 @@ def main(argv: list[str] | None = None) -> int:
                 "duration_sec": duration_sec,
             }
         )
-        if args.max_consecutive_empty > 0 and consecutive_empty >= args.max_consecutive_empty:
+        if max_consecutive_empty > 0 and consecutive_empty >= max_consecutive_empty:
             aborted_early = True
             abort_reason = (
                 f"aborted_after_{consecutive_empty}_consecutive_empty_sources"
