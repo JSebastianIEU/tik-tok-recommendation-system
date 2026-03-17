@@ -21,6 +21,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from scraper.db.comment_lineage import ensure_comment_lineage_columns
+
 import psycopg
 
 from scraper.config import VALID_MODES
@@ -204,7 +206,6 @@ def _run_scrape(
     comments: int = 0,
     replies: int = 5,
     min_likes_for_replies: int = 10,
-    proxies_file: str | None = None,
 ) -> tuple[int, int]:
     """Run scrape_tiktok_sample for one source job. Returns (exit_code, rows_written)."""
     cmd = [
@@ -224,9 +225,6 @@ def _run_scrape(
         cmd.extend(["--replies", str(replies)])
     if min_likes_for_replies > 0:
         cmd.extend(["--min-likes-for-replies", str(min_likes_for_replies)])
-    if proxies_file:
-        cmd.extend(["--proxies-file", proxies_file])
-
     cmd.extend([job.mode, "--name", job.name, "--count", str(job.count)])
     result = subprocess.run(cmd, env=env, cwd=str(ROOT))
     rows_written = 0
@@ -362,11 +360,6 @@ def main(argv: list[str] | None = None) -> int:
         help="Optional path for run summary JSON (default: output_dir/full_scale_summary_<timestamp>.json).",
     )
     parser.add_argument(
-        "--proxies-file",
-        default=None,
-        help="Optional proxies file path passed to scrape workers (default from config.proxies_file).",
-    )
-    parser.add_argument(
         "--retry-empty",
         type=int,
         default=None,
@@ -412,9 +405,6 @@ def main(argv: list[str] | None = None) -> int:
 
     output_dir = Path(config.get("output_dir", "scraper/data/raw"))
     output_dir.mkdir(parents=True, exist_ok=True)
-    proxies_file = args.proxies_file or config.get("proxies_file")
-    if proxies_file is not None and not isinstance(proxies_file, str):
-        raise ValueError("Config 'proxies_file' must be a string when provided.")
     skip_existing = _resolve_bool_option(args.skip_existing, config, "skip_existing", default=False)
     no_resume = _resolve_bool_option(args.no_resume, config, "no_resume", default=False)
     comments = _resolve_int_option(args.comments, config, "comments", default=5, min_value=0)
@@ -443,6 +433,7 @@ def main(argv: list[str] | None = None) -> int:
         apply_schema(db_url=db_url)
         print("Schema applied.")
 
+    ensure_comment_lineage_columns(db_url=db_url)
     _ensure_job_state_table(db_url)
     resume_enabled = not no_resume
     completed_keys = _load_completed_jobs(db_url) if resume_enabled else set()
@@ -494,7 +485,6 @@ def main(argv: list[str] | None = None) -> int:
                 comments=comments,
                 replies=replies,
                 min_likes_for_replies=min_likes_for_replies,
-                proxies_file=proxies_file,
             )
             if code == 0 and rows_written > 0:
                 break

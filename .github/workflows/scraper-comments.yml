@@ -144,18 +144,6 @@ jobs:
           echo "max_video_error_rate=$MAX_VIDEO_ERROR_RATE" >> "$GITHUB_OUTPUT"
           echo "min_comments_written=$MIN_COMMENTS_WRITTEN" >> "$GITHUB_OUTPUT"
 
-      - name: Write optional proxies file
-        id: proxies
-        env:
-          SCRAPER_PROXIES: ${{ secrets.SCRAPER_PROXIES }}
-        run: |
-          if [ -n "$SCRAPER_PROXIES" ]; then
-            printf "%s\n" "$SCRAPER_PROXIES" > /tmp/scraper_proxies.txt
-            echo "path=/tmp/scraper_proxies.txt" >> "$GITHUB_OUTPUT"
-          else
-            echo "path=" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Run comment enrichment
         run: |
           set -euo pipefail
@@ -173,10 +161,6 @@ jobs:
           if [ "${{ steps.params.outputs.include_existing }}" = "true" ]; then
             CMD+=(--include-existing)
           fi
-          if [ -n "${{ steps.proxies.outputs.path }}" ]; then
-            CMD+=(--proxies-file "${{ steps.proxies.outputs.path }}")
-          fi
-
           printf 'Running command: %q ' "${CMD[@]}"
           echo
           "${CMD[@]}"

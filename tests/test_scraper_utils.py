@@ -76,16 +76,13 @@ modes_enabled: ["keyword", "hashtag"]
 output_raw_jsonl:
   enabled: true
   path: "raw/out.jsonl"
-proxies_file: "proxies.txt"
 """,
         encoding="utf-8",
     )
-    (tmp_path / "proxies.txt").write_text("http://127.0.0.1:8080\n", encoding="utf-8")
     loaded = scraper_config.load_pipeline_config(cfg)
     assert loaded.keywords == ["k1"]
     assert loaded.hashtags == ["h1"]
     assert loaded.output_raw_jsonl is True
-    assert loaded.proxies_file and loaded.proxies_file.endswith("proxies.txt")
 
 
 def test_read_structured_config_json(tmp_path: Path):
@@ -189,12 +186,6 @@ def test_pipeline_helpers_cover_edge_cases(tmp_path: Path):
         limit=10,
     )
     assert len(candidates) == 1
-
-    assert pipeline._parse_proxy_line("http://127.0.0.1:8080") == {"server": "http://127.0.0.1:8080"}
-    assert pipeline._parse_proxy_line("bad") is None
-    proxies = tmp_path / "proxies.txt"
-    proxies.write_text("http://127.0.0.1:8080\n", encoding="utf-8")
-    assert pipeline._load_random_proxy(str(proxies)) is not None
 
     class Obj:
         def as_dict(self):

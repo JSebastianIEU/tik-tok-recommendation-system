@@ -73,7 +73,6 @@ def test_run_scrape_returns_rows_written(monkeypatch, tmp_path: Path):
         job,
         db_url="postgresql://db",
         env={"DATABASE_URL": "postgresql://db"},
-        proxies_file="/tmp/proxies.txt",
     )
     assert code == 0
     assert rows == 2
@@ -86,6 +85,7 @@ def test_main_marks_empty_results_as_failed(monkeypatch, tmp_path: Path):
 
     monkeypatch.setenv("MS_TOKEN", "token")
     monkeypatch.setattr("scraper.run_full_scale._resolve_db_url", lambda *_: "postgresql://db")
+    monkeypatch.setattr("scraper.run_full_scale.ensure_comment_lineage_columns", lambda **_kwargs: None)
     monkeypatch.setattr("scraper.run_full_scale._ensure_job_state_table", lambda *_: None)
     monkeypatch.setattr("scraper.run_full_scale._load_completed_jobs", lambda *_: set())
     monkeypatch.setattr("scraper.run_full_scale._mark_job_running", lambda *_: None)
@@ -138,6 +138,7 @@ def test_main_aborts_after_max_consecutive_empty(monkeypatch, tmp_path: Path):
 
     monkeypatch.setenv("MS_TOKEN", "token")
     monkeypatch.setattr("scraper.run_full_scale._resolve_db_url", lambda *_: "postgresql://db")
+    monkeypatch.setattr("scraper.run_full_scale.ensure_comment_lineage_columns", lambda **_kwargs: None)
     monkeypatch.setattr("scraper.run_full_scale._ensure_job_state_table", lambda *_: None)
     monkeypatch.setattr("scraper.run_full_scale._load_completed_jobs", lambda *_: set())
     monkeypatch.setattr("scraper.run_full_scale._mark_job_running", lambda *_: None)
@@ -201,6 +202,7 @@ def test_main_uses_config_defaults_when_cli_omits(monkeypatch, tmp_path: Path):
 
     monkeypatch.setenv("MS_TOKEN", "token")
     monkeypatch.setattr("scraper.run_full_scale._resolve_db_url", lambda *_: "postgresql://db")
+    monkeypatch.setattr("scraper.run_full_scale.ensure_comment_lineage_columns", lambda **_kwargs: None)
     monkeypatch.setattr("scraper.run_full_scale._ensure_job_state_table", lambda *_: None)
     monkeypatch.setattr("scraper.run_full_scale._load_completed_jobs", lambda *_: set())
     monkeypatch.setattr("scraper.run_full_scale._mark_job_running", lambda *_: None)

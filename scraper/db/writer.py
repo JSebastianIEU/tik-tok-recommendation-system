@@ -385,6 +385,33 @@ def _upsert_comments_and_snapshots(
     video_snapshot_id: int,
     scraped_at: datetime,
 ) -> None:
+    lineage_cache: dict[str, tuple[str, int]] = {}
+
+    def _lineage_for_parent(parent_comment_id: str | None) -> tuple[str | None, int]:
+        if not parent_comment_id:
+            return None, 0
+        cached = lineage_cache.get(parent_comment_id)
+        if cached is not None:
+            root_comment_id, parent_level = cached
+            return root_comment_id, parent_level + 1
+        with conn.cursor() as lineage_cur:
+            lineage_cur.execute(
+                """
+                SELECT root_comment_id, comment_level
+                FROM comments
+                WHERE comment_id = %s
+                LIMIT 1
+                """,
+                (parent_comment_id,),
+            )
+            row = lineage_cur.fetchone()
+        if not row:
+            return parent_comment_id, 1
+        root_comment_id = row[0] or parent_comment_id
+        parent_level = int(row[1] or 0)
+        lineage_cache[parent_comment_id] = (str(root_comment_id), parent_level)
+        return str(root_comment_id), parent_level + 1
+
     for c in comments:
         comment_id = c.get("comment_id") or c.get("id")
         if not comment_id:
@@ -395,6 +422,25 @@ def _upsert_comments_and_snapshots(
             seed = f"{video_id}|{username}|{parent_id}|{text[:256]}"
             digest = hashlib.sha1(seed.encode("utf-8")).hexdigest()[:24]
             comment_id = f"gen:{digest}"
+        comment_id = str(comment_id)
+        parent_comment_id = c.get("parent_comment_id")
+        parent_comment_id = str(parent_comment_id) if parent_comment_id else None
+        explicit_level = c.get("comment_level")
+        explicit_root = c.get("root_comment_id")
+        parsed_explicit_level: int | None = None
+        if explicit_level is not None:
+            try:
+                parsed_explicit_level = int(explicit_level)
+            except (TypeError, ValueError):
+                parsed_explicit_level = None
+        if parsed_explicit_level is not None and parsed_explicit_level >= 0:
+            comment_level = parsed_explicit_level
+            root_comment_id = str(explicit_root) if explicit_root else (comment_id if comment_level == 0 else parent_comment_id)
+        else:
+            root_comment_id, comment_level = _lineage_for_parent(parent_comment_id)
+            if parent_comment_id is None:
+                root_comment_id = comment_id
+                comment_level = 0
 
         comment_author_id = c.get("author_id")
         comment_username = c.get("username")
@@ -417,15 +463,18 @@ def _upsert_comments_and_snapshots(
             cur.execute(
                 """
                 INSERT INTO comments (
-                    comment_id, video_id, author_id, username, text, parent_comment_id
+                    comment_id, video_id, author_id, username, text,
+                    parent_comment_id, root_comment_id, comment_level
                 )
-                VALUES (%s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (comment_id) DO UPDATE SET
                     video_id = EXCLUDED.video_id,
                     author_id = COALESCE(EXCLUDED.author_id, comments.author_id),
                     username = COALESCE(EXCLUDED.username, comments.username),
                     text = EXCLUDED.text,
-                    parent_comment_id = COALESCE(EXCLUDED.parent_comment_id, comments.parent_comment_id)
+                    parent_comment_id = COALESCE(EXCLUDED.parent_comment_id, comments.parent_comment_id),
+                    root_comment_id = COALESCE(EXCLUDED.root_comment_id, comments.root_comment_id),
+                    comment_level = EXCLUDED.comment_level
                 """,
                 (
                     comment_id,
@@ -433,9 +482,12 @@ def _upsert_comments_and_snapshots(
                     str(comment_author_id) if comment_author_id is not None else None,
                     c.get("username"),
                     c.get("text"),
-                    c.get("parent_comment_id"),
+                    parent_comment_id,
+                    root_comment_id,
+                    int(comment_level),
                 ),
             )
+            lineage_cache[comment_id] = (str(root_comment_id or comment_id), int(comment_level))
             cur.execute(
                 """
                 INSERT INTO comment_snapshots (

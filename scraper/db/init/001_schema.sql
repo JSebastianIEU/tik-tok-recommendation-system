@@ -80,11 +80,67 @@ CREATE TABLE IF NOT EXISTS comments (
     author_id TEXT REFERENCES authors(author_id),
     username TEXT,
     text TEXT NOT NULL,
-    parent_comment_id TEXT REFERENCES comments(comment_id)
+    parent_comment_id TEXT REFERENCES comments(comment_id),
+    root_comment_id TEXT,
+    comment_level SMALLINT NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_comments_video_id ON comments(video_id);
 CREATE INDEX IF NOT EXISTS idx_comments_parent_comment_id ON comments(parent_comment_id);
+
+ALTER TABLE comments ADD COLUMN IF NOT EXISTS root_comment_id TEXT;
+ALTER TABLE comments ADD COLUMN IF NOT EXISTS comment_level SMALLINT NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS idx_comments_root_comment_id ON comments(root_comment_id);
+CREATE INDEX IF NOT EXISTS idx_comments_comment_level ON comments(comment_level);
+
+WITH RECURSIVE comment_lineage AS (
+    SELECT
+        c.comment_id,
+        c.parent_comment_id,
+        c.comment_id AS root_comment_id,
+        0::SMALLINT AS comment_level
+    FROM comments c
+    WHERE c.parent_comment_id IS NULL
+    UNION ALL
+    SELECT
+        child.comment_id,
+        child.parent_comment_id,
+        lineage.root_comment_id,
+        (lineage.comment_level + 1)::SMALLINT AS comment_level
+    FROM comments child
+    JOIN comment_lineage lineage ON child.parent_comment_id = lineage.comment_id
+    WHERE lineage.comment_level < 32
+),
+resolved_lineage AS (
+    SELECT
+        c.comment_id,
+        COALESCE(
+            l.root_comment_id,
+            CASE
+                WHEN c.parent_comment_id IS NULL THEN c.comment_id
+                ELSE c.parent_comment_id
+            END
+        ) AS root_comment_id,
+        COALESCE(
+            l.comment_level,
+            CASE
+                WHEN c.parent_comment_id IS NULL THEN 0
+                ELSE 1
+            END
+        )::SMALLINT AS comment_level
+    FROM comments c
+    LEFT JOIN comment_lineage l ON l.comment_id = c.comment_id
+)
+UPDATE comments c
+SET
+    root_comment_id = r.root_comment_id,
+    comment_level = r.comment_level
+FROM resolved_lineage r
+WHERE c.comment_id = r.comment_id
+  AND (
+      c.root_comment_id IS DISTINCT FROM r.root_comment_id
+      OR c.comment_level IS DISTINCT FROM r.comment_level
+  );
 
 CREATE TABLE IF NOT EXISTS comment_snapshots (
     comment_snapshot_id BIGSERIAL PRIMARY KEY,

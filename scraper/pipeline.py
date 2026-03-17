@@ -3,14 +3,13 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import random
 import time
 from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
-from urllib.parse import quote_plus, urlparse
+from urllib.parse import quote_plus
 
 from selenium.webdriver.common.by import By
 
@@ -155,48 +154,6 @@ def _to_candidates(
     return candidates
 
 
-def _parse_proxy_line(line: str) -> dict[str, str] | None:
-    line = line.strip()
-    if not line or line.startswith("#"):
-        return None
-
-    scheme = "http"
-    host_port = line
-    if "://" in line:
-        parsed = urlparse(line)
-        if not parsed.netloc:
-            return None
-        scheme = parsed.scheme or "http"
-        host_port = parsed.netloc
-
-    if ":" not in host_port:
-        return None
-    host, port_str = host_port.split(":", 1)
-    if not host or not port_str:
-        return None
-    try:
-        int(port_str)
-    except ValueError:
-        return None
-    return {"server": f"{scheme}://{host}:{port_str}"}
-
-
-def _load_random_proxy(path: str | None) -> dict[str, str] | None:
-    if not path:
-        return None
-    p = Path(path)
-    if not p.exists():
-        return None
-    proxies: list[dict[str, str]] = []
-    for line in p.read_text(encoding="utf-8").splitlines():
-        parsed = _parse_proxy_line(line)
-        if parsed:
-            proxies.append(parsed)
-    if not proxies:
-        return None
-    return random.choice(proxies)
-
-
 def _video_as_dict(video: Any) -> dict[str, Any] | None:
     if isinstance(video, dict):
         return video
@@ -301,7 +258,6 @@ async def _discover_query_with_tiktokapi_async(
     limit: int,
     ms_token: str,
     browser: str,
-    proxies_file: str | None,
 ) -> list[dict[str, Any]]:
     if TikTokApi is None:
         raise RuntimeError("TikTokApi is not installed.")
@@ -309,14 +265,12 @@ async def _discover_query_with_tiktokapi_async(
     async with TikTokApi() as api:
         attempts = 3
         for attempt in range(1, attempts + 1):
-            proxy_cfg = _load_random_proxy(proxies_file)
             try:
                 await api.create_sessions(
                     ms_tokens=[ms_token],
                     num_sessions=1,
                     sleep_after=3,
                     browser=browser,
-                    proxies=[proxy_cfg] if proxy_cfg else None,
                     timeout=60000,
                 )
                 break
@@ -343,7 +297,6 @@ def _discover_query_with_tiktokapi(
     limit: int,
     ms_token: str,
     browser: str,
-    proxies_file: str | None,
 ) -> list[dict[str, Any]]:
     return asyncio.run(
         _discover_query_with_tiktokapi_async(
@@ -352,7 +305,6 @@ def _discover_query_with_tiktokapi(
             limit=limit,
             ms_token=ms_token,
             browser=browser,
-            proxies_file=proxies_file,
         )
     )
 
@@ -437,7 +389,6 @@ def _discover_query_candidates(
                 limit=config.per_query_video_limit,
                 ms_token=ms_token,
                 browser=config.tiktok_browser,
-                proxies_file=config.proxies_file,
             )
         except Exception as exc:  # noqa: BLE001
             _log(f"[discover] TikTokApi fallback for {mode}:{query} ({exc})")
