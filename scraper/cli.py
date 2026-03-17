@@ -73,6 +73,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional path to schema SQL (defaults to scraper/db/init/001_schema.sql).",
     )
 
+    p_backfill_comment_lineage = subparsers.add_parser(
+        "backfill-comment-lineage",
+        help="Backfill comment lineage fields (root_comment_id/comment_level).",
+    )
+    p_backfill_comment_lineage.add_argument(
+        "--db-url",
+        default=None,
+        help="Optional DB URL override (falls back to DATABASE_URL env var).",
+    )
+
     p_merge = subparsers.add_parser("merge", help="Merge one or more source DBs into a target DB")
     p_merge.add_argument(
         "--target-db",
@@ -172,11 +182,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional path for run summary JSON.",
     )
     p_scrape_all.add_argument(
-        "--proxies-file",
-        default=None,
-        help="Optional proxies file path passed to scrape workers.",
-    )
-    p_scrape_all.add_argument(
         "--max-consecutive-empty",
         type=int,
         default=None,
@@ -261,11 +266,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Recover jobs stuck in running state older than this many minutes (default: 60).",
     )
     p_scrape_comments.add_argument(
-        "--proxies-file",
-        default=None,
-        help="Optional proxies file path passed to TikTokApi session creation.",
-    )
-    p_scrape_comments.add_argument(
         "--summary-path",
         default=None,
         help="Optional JSON summary path for comment enrichment run.",
@@ -303,6 +303,13 @@ def main(argv: list[str] | None = None) -> int:
 
         applied = apply_schema(db_url=args.db_url, schema_path=args.schema)
         print(f"Schema applied successfully from: {applied}")
+        return 0
+
+    if args.command == "backfill-comment-lineage":
+        from scraper.db.comment_lineage import backfill_comment_lineage
+
+        updated = backfill_comment_lineage(db_url=args.db_url)
+        print(f"Comment lineage backfill complete. rows_updated={updated}")
         return 0
 
     if args.command == "run":
@@ -354,8 +361,6 @@ def main(argv: list[str] | None = None) -> int:
             argv.append("--no-resume")
         if args.summary_path:
             argv.extend(["--summary-path", args.summary_path])
-        if args.proxies_file:
-            argv.extend(["--proxies-file", args.proxies_file])
         if args.max_consecutive_empty is not None:
             argv.extend(["--max-consecutive-empty", str(args.max_consecutive_empty)])
         if args.retry_empty is not None:
@@ -392,8 +397,6 @@ def main(argv: list[str] | None = None) -> int:
             argv.extend(["--retry-backoff-base-sec", str(args.retry_backoff_base_sec)])
         if args.stale_running_minutes != 60:
             argv.extend(["--stale-running-minutes", str(args.stale_running_minutes)])
-        if args.proxies_file:
-            argv.extend(["--proxies-file", args.proxies_file])
         if args.summary_path:
             argv.extend(["--summary-path", args.summary_path])
         return scrape_comments_main(argv)

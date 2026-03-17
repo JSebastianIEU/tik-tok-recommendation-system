@@ -280,7 +280,6 @@ Notes:
 - If TikTok blocks requests, try:
   - `export TIKTOK_BROWSER=webkit`
   - `export TIKTOK_HEADLESS=false`
-  - add proxies via `--proxies-file <path>`
 
 ## Optional PostgreSQL Mode (pipeline)
 
@@ -299,6 +298,7 @@ If later you want DB persistence for the Selenium pipeline:
 - `python -m scraper scrape-comments --max-attempts-per-video 5 --retry-backoff-base-sec 900 --stale-running-minutes 60` – tune retry/exhaustion behavior for comment enrichment jobs
 - `python -m scraper scrape-comments --max-existing-comments 2 --summary-path /tmp/comment_summary.json` – include low-coverage videos and write structured summary JSON
 - `python -m scraper export-data --dataset full --limit 1000` – retrieve pre-joined datasets (`full|videos|comments|authors`)
+- `python -m scraper backfill-comment-lineage` – recompute `comments.root_comment_id` + `comments.comment_level` for existing rows
 - `python -m scraper merge-json --input <file> --input <file> --output <file>`
 - Optional DB mode:
   - `python -m scraper init-db --db-url <url>`
@@ -341,3 +341,9 @@ python -m scraper export-data --dataset comments --since 2026-03-01T00:00:00Z --
 # Explicit full export (keyset pagination loop)
 python -m scraper export-data --dataset full --all --limit 1000 --out /tmp/full.jsonl
 ```
+
+Comment/reply normalization in DB:
+
+- `comments.parent_comment_id`: direct parent (NULL for top-level comments).
+- `comments.root_comment_id`: thread root comment id (self for top-level).
+- `comments.comment_level`: depth in thread (`0` top-level, `1+` replies).

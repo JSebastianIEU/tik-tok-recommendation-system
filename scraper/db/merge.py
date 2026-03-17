@@ -259,18 +259,31 @@ def _merge_author_metric_snapshots(src: Connection, dst: Connection, batch_size:
 def _merge_comments(src: Connection, dst: Connection, batch_size: int) -> int:
     count = 0
     query = """
-        SELECT comment_id, video_id, author_id, username, text, parent_comment_id
+        SELECT
+            comment_id,
+            video_id,
+            author_id,
+            username,
+            text,
+            parent_comment_id,
+            root_comment_id,
+            comment_level
         FROM comments
     """
     upsert = """
-        INSERT INTO comments (comment_id, video_id, author_id, username, text, parent_comment_id)
-        VALUES (%s, %s, %s, %s, %s, %s)
+        INSERT INTO comments (
+            comment_id, video_id, author_id, username, text,
+            parent_comment_id, root_comment_id, comment_level
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (comment_id) DO UPDATE SET
             video_id = COALESCE(comments.video_id, EXCLUDED.video_id),
             author_id = COALESCE(comments.author_id, EXCLUDED.author_id),
             username = COALESCE(comments.username, EXCLUDED.username),
             text = COALESCE(comments.text, EXCLUDED.text),
-            parent_comment_id = COALESCE(comments.parent_comment_id, EXCLUDED.parent_comment_id)
+            parent_comment_id = COALESCE(comments.parent_comment_id, EXCLUDED.parent_comment_id),
+            root_comment_id = COALESCE(comments.root_comment_id, EXCLUDED.root_comment_id),
+            comment_level = GREATEST(COALESCE(comments.comment_level, 0), COALESCE(EXCLUDED.comment_level, 0))
     """
     with dst.cursor() as cur:
         for row in _iter_rows(src, query, batch_size=batch_size):

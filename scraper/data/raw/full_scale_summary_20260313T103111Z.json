@@ -1,0 +1,70 @@
+{
+  "started_at": "2026-03-13T10:31:11.219746+00:00",
+  "ended_at": "2026-03-13T10:37:12.621563+00:00",
+  "duration_sec": 361,
+  "resume_enabled": false,
+  "jobs_total": 38,
+  "jobs_executed": 5,
+  "jobs_skipped_done": 0,
+  "jobs_failed": 5,
+  "jobs_succeeded": 0,
+  "aborted_early": true,
+  "abort_reason": "aborted_after_5_consecutive_empty_sources",
+  "sources": [
+    {
+      "key": "hashtag:fitness",
+      "mode": "hashtag",
+      "name": "fitness",
+      "count": 300,
+      "output_path": "scraper/data/raw/full_scale_hashtag_fitness.jsonl",
+      "status": "failed_empty",
+      "return_code": 0,
+      "rows_written": 0,
+      "duration_sec": 76.64
+    },
+    {
+      "key": "hashtag:cooking",
+      "mode": "hashtag",
+      "name": "cooking",
+      "count": 300,
+      "output_path": "scraper/data/raw/full_scale_hashtag_cooking.jsonl",
+      "status": "failed_empty",
+      "return_code": 0,
+      "rows_written": 0,
+      "duration_sec": 75.25
+    },
+    {
+      "key": "hashtag:tech",
+      "mode": "hashtag",
+      "name": "tech",
+      "count": 300,
+      "output_path": "scraper/data/raw/full_scale_hashtag_tech.jsonl",
+      "status": "failed_empty",
+      "return_code": 0,
+      "rows_written": 0,
+      "duration_sec": 68.71
+    },
+    {
+      "key": "hashtag:travel",
+      "mode": "hashtag",
+      "name": "travel",
+      "count": 300,
+      "output_path": "scraper/data/raw/full_scale_hashtag_travel.jsonl",
+      "status": "failed_empty",
+      "return_code": 0,
+      "rows_written": 0,
+      "duration_sec": 68.7
+    },
+    {
+      "key": "hashtag:music",
+      "mode": "hashtag",
+      "name": "music",
+      "count": 300,
+      "output_path": "scraper/data/raw/full_scale_hashtag_music.jsonl",
+      "status": "failed_empty",
+      "return_code": 0,
+      "rows_written": 0,
+      "duration_sec": 66.7
+    }
+  ]
+}

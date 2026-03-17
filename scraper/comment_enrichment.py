@@ -11,6 +11,7 @@ from typing import Sequence
 from TikTokApi import TikTokApi
 
 from scraper.db.client import connect, get_database_url
+from scraper.db.comment_lineage import ensure_comment_lineage_columns
 from scraper.db.writer import write_comments_for_existing_video
 from scraper.scrape_tiktok_sample import (
     _create_api_session,
@@ -221,6 +222,7 @@ def _mark_retry_or_exhausted(
 async def _run_enrichment(args: argparse.Namespace) -> int:
     db_url = get_database_url(args.db_url)
     ms_token = get_ms_token(args.ms_token)
+    ensure_comment_lineage_columns(db_url=db_url)
     _ensure_jobs_table(db_url)
     _recover_stale_running_jobs(db_url, stale_minutes=args.stale_running_minutes)
 
@@ -233,7 +235,6 @@ async def _run_enrichment(args: argparse.Namespace) -> int:
         await _create_api_session(
             api,
             ms_token=ms_token,
-            proxies_file=args.proxies_file,
             max_attempts=5,
         )
 
@@ -271,7 +272,6 @@ async def _run_enrichment(args: argparse.Namespace) -> int:
                             await _create_api_session(
                                 api,
                                 ms_token=ms_token,
-                                proxies_file=args.proxies_file,
                                 max_attempts=3,
                             )
                             comments, retry_video_errs, retry_reply_errs, _ = await fetch_comments_for_video(
@@ -460,11 +460,6 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=60,
         help="Recover jobs stuck in running state older than this many minutes (default: 60).",
-    )
-    parser.add_argument(
-        "--proxies-file",
-        default=None,
-        help="Optional proxies file path passed to TikTokApi session creation.",
     )
     parser.add_argument(
         "--summary-path",

@@ -13,13 +13,11 @@ import asyncio
 import json
 import logging
 import os
-import random
 import sys
 from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict
-from urllib.parse import urlparse
 
 from TikTokApi import TikTokApi
 
@@ -49,68 +47,13 @@ def get_ms_token(explicit: str | None) -> str:
     return token
 
 
-def _parse_proxy_line(line: str) -> Dict[str, Any] | None:
-    line = line.strip()
-    if not line or line.startswith("#"):
-        return None
-
-    scheme = "http"
-    host_port = line
-    if "://" in line:
-        parsed = urlparse(line)
-        if not parsed.netloc:
-            return None
-        scheme = parsed.scheme or "http"
-        host_port = parsed.netloc
-
-    if ":" not in host_port:
-        return None
-    host, port_str = host_port.split(":", 1)
-    if not host or not port_str:
-        return None
-    try:
-        int(port_str)
-    except ValueError:
-        return None
-
-    server = f"{scheme}://{host}:{port_str}"
-    return {"server": server}
-
-
-def load_random_proxy(path: str) -> Dict[str, Any] | None:
-    try:
-        text = Path(path).read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return None
-
-    proxies: list[Dict[str, Any]] = []
-    for line in text.splitlines():
-        cfg = _parse_proxy_line(line)
-        if cfg:
-            proxies.append(cfg)
-
-    if not proxies:
-        return None
-    return random.choice(proxies)
-
-
 async def _create_api_session(
     api: TikTokApi,
     *,
     ms_token: str,
-    proxies_file: str | None,
     max_attempts: int = 5,
 ) -> None:
     for attempt in range(1, max_attempts + 1):
-        proxy_cfg = None
-        if proxies_file:
-            proxy_cfg = load_random_proxy(proxies_file)
-            if proxy_cfg:
-                print(f"[attempt {attempt}/{max_attempts}] Using proxy {proxy_cfg['server']}")
-            else:
-                print(
-                    f"[attempt {attempt}/{max_attempts}] No valid proxies found in {proxies_file}, trying without proxy"
-                )
         try:
             headless = os.getenv("TIKTOK_HEADLESS", "false").lower() in ("1", "true", "yes")
             browser = os.getenv("TIKTOK_BROWSER", "webkit").strip() or "webkit"
@@ -120,7 +63,6 @@ async def _create_api_session(
                 sleep_after=5,
                 headless=headless,
                 browser=browser,
-                proxies=[proxy_cfg] if proxy_cfg else None,
                 timeout=60000,
             )
             return
@@ -237,6 +179,8 @@ def _comment_to_dict(c: Any, *, parent_comment_id: str | None = None) -> Dict[st
         "username": user.get("unique_id"),
         "text": text or "",
         "parent_comment_id": parent_comment_id,
+        "comment_level": 1 if parent_comment_id else 0,
+        "root_comment_id": parent_comment_id or (str(comment_id) if comment_id else None),
     }
 
 
@@ -425,6 +369,8 @@ def to_normalized(
                 "username": c.get("username"),
                 "text": c.get("text") or "",
                 "parent_comment_id": c.get("parent_comment_id") or None,
+                "root_comment_id": c.get("root_comment_id") or None,
+                "comment_level": c.get("comment_level"),
             })
 
     return {
@@ -463,10 +409,6 @@ async def main_async() -> int:
         "-o",
         default="tiktok_sample.jsonl",
         help="Path to output JSONL file (default: tiktok_sample.jsonl)",
-    )
-    parser.add_argument(
-        "--proxies-file",
-        help="Optional path to a file containing proxies (one per line, e.g. http://host:port or socks4://host:port).",
     )
     parser.add_argument(
         "--db-url",
@@ -518,7 +460,6 @@ async def main_async() -> int:
         await _create_api_session(
             api,
             ms_token=ms_token,
-            proxies_file=args.proxies_file,
             max_attempts=5,
         )
 
@@ -595,7 +536,6 @@ async def main_async() -> int:
                                 await _create_api_session(
                                     api,
                                     ms_token=ms_token,
-                                    proxies_file=args.proxies_file,
                                     max_attempts=3,
                                 )
                                 comments, retry_video_errs, retry_reply_errs, _ = await fetch_comments_for_video(

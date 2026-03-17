@@ -92,7 +92,6 @@ def _args(**overrides):
         "max_attempts_per_video": 5,
         "retry_backoff_base_sec": 60.0,
         "stale_running_minutes": 30,
-        "proxies_file": None,
         "summary_path": None,
     }
     base.update(overrides)
@@ -190,6 +189,7 @@ def test_run_enrichment_no_candidates(monkeypatch):
     conn = _Conn()
     monkeypatch.setattr(ce, "get_database_url", lambda _db=None: "postgresql://db")
     monkeypatch.setattr(ce, "get_ms_token", lambda _ms=None: "tok")
+    monkeypatch.setattr(ce, "ensure_comment_lineage_columns", lambda **_kwargs: None)
     monkeypatch.setattr(ce, "_ensure_jobs_table", lambda *_a, **_k: None)
     monkeypatch.setattr(ce, "_recover_stale_running_jobs", lambda *_a, **_k: None)
     monkeypatch.setattr(ce, "_seed_jobs_from_videos", lambda *_a, **_k: 0)
@@ -211,6 +211,7 @@ def test_run_enrichment_success_with_session_recovery(monkeypatch):
     conn = _Conn()
     monkeypatch.setattr(ce, "get_database_url", lambda _db=None: "postgresql://db")
     monkeypatch.setattr(ce, "get_ms_token", lambda _ms=None: "tok")
+    monkeypatch.setattr(ce, "ensure_comment_lineage_columns", lambda **_kwargs: None)
     monkeypatch.setattr(ce, "_ensure_jobs_table", lambda *_a, **_k: None)
     monkeypatch.setattr(ce, "_recover_stale_running_jobs", lambda *_a, **_k: None)
     monkeypatch.setattr(ce, "_seed_jobs_from_videos", lambda *_a, **_k: 0)
@@ -265,6 +266,7 @@ def test_run_enrichment_reconnects_on_commit_failure(monkeypatch):
 
     monkeypatch.setattr(ce, "get_database_url", lambda _db=None: "postgresql://db")
     monkeypatch.setattr(ce, "get_ms_token", lambda _ms=None: "tok")
+    monkeypatch.setattr(ce, "ensure_comment_lineage_columns", lambda **_kwargs: None)
     monkeypatch.setattr(ce, "_ensure_jobs_table", lambda *_a, **_k: None)
     monkeypatch.setattr(ce, "_recover_stale_running_jobs", lambda *_a, **_k: None)
     monkeypatch.setattr(ce, "_seed_jobs_from_videos", lambda *_a, **_k: 0)
@@ -295,6 +297,7 @@ def test_run_enrichment_writes_summary_path(monkeypatch, tmp_path):
 
     monkeypatch.setattr(ce, "get_database_url", lambda _db=None: "postgresql://db")
     monkeypatch.setattr(ce, "get_ms_token", lambda _ms=None: "tok")
+    monkeypatch.setattr(ce, "ensure_comment_lineage_columns", lambda **_kwargs: None)
     monkeypatch.setattr(ce, "_ensure_jobs_table", lambda *_a, **_k: None)
     monkeypatch.setattr(ce, "_recover_stale_running_jobs", lambda *_a, **_k: None)
     monkeypatch.setattr(ce, "_seed_jobs_from_videos", lambda *_a, **_k: 4)

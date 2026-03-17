@@ -100,15 +100,19 @@ def _silver_videos(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def _normalize_comment_obj(comment: dict[str, Any]) -> dict[str, Any]:
     text = _normalize_text(comment.get("text"))
     parent = comment.get("parent_comment_id")
+    comment_level = _to_int(comment.get("comment_level"))
+    if comment_level is None:
+        comment_level = 1 if parent else 0
     return {
         **comment,
         "comment_id": str(comment.get("comment_id") or ""),
         "scraped_at": _parse_iso(comment.get("scraped_at")),
         "likes": _to_int(comment.get("likes")),
         "reply_count": _to_int(comment.get("reply_count")),
+        "comment_level": comment_level,
         "text": text,
         "text_length": len(text or ""),
-        "is_reply": bool(parent),
+        "is_reply": comment_level > 0,
     }
 
 
@@ -118,6 +122,9 @@ def _silver_comments(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for row in deduped:
         text = _normalize_text(row.get("text"))
         parent = row.get("parent_comment_id")
+        comment_level = _to_int(row.get("comment_level"))
+        if comment_level is None:
+            comment_level = 1 if parent else 0
         out.append(
             {
                 **row,
@@ -128,9 +135,10 @@ def _silver_comments(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "comment_scraped_at": _parse_iso(row.get("comment_scraped_at")),
                 "comment_likes": _to_int(row.get("comment_likes")),
                 "reply_count": _to_int(row.get("reply_count")),
+                "comment_level": comment_level,
                 "text": text,
                 "text_length": len(text or ""),
-                "is_reply": bool(parent),
+                "is_reply": comment_level > 0,
             }
         )
     out.sort(

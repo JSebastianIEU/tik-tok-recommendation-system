@@ -41,7 +41,6 @@ def test_pipeline_db_url_precedence(monkeypatch):
         source_label="test",
         ms_token=None,
         tiktok_browser="webkit",
-        proxies_file=None,
     )
     monkeypatch.setenv("DATABASE_URL", "postgresql://from-env")
 
@@ -138,3 +137,10 @@ def test_cli_parser_supports_export_data():
     assert args.since == "2026-03-01T00:00:00Z"
     assert args.all is True
     assert args.format == "csv"
+
+
+def test_cli_parser_supports_comment_lineage_backfill():
+    parser = cli.build_parser()
+    args = parser.parse_args(["backfill-comment-lineage", "--db-url", "postgresql://db"])
+    assert args.command == "backfill-comment-lineage"
+    assert args.db_url == "postgresql://db"

@@ -26,7 +26,6 @@ class PipelineConfig:
     source_label: str
     ms_token: str | None
     tiktok_browser: str
-    proxies_file: str | None
 
 
 def _read_structured_config(path: Path) -> dict[str, Any]:
@@ -173,15 +172,6 @@ def load_pipeline_config(path: str | Path) -> PipelineConfig:
         raise ValueError("Config 'ms_token' must be string or null.")
 
     tiktok_browser = str(data.get("tiktok_browser", "chromium")).strip() or "chromium"
-    proxies_file = data.get("proxies_file")
-    if proxies_file is not None and not isinstance(proxies_file, str):
-        raise ValueError("Config 'proxies_file' must be string or null.")
-    if isinstance(proxies_file, str):
-        proxies_path = Path(proxies_file)
-        if not proxies_path.is_absolute():
-            proxies_path = (cfg_path.parent / proxies_path).resolve()
-        proxies_file = str(proxies_path)
-
     source_label = str(data.get("source_label", "pipeline")).strip() or "pipeline"
 
     if "keyword" in modes_enabled and not keywords:
@@ -204,5 +194,4 @@ def load_pipeline_config(path: str | Path) -> PipelineConfig:
         source_label=source_label,
         ms_token=ms_token,
         tiktok_browser=tiktok_browser,
-        proxies_file=proxies_file,
     )
