@@ -26,7 +26,7 @@ def validate_record(record: Dict[str, Any]) -> Tuple[bool, List[str]]:
     errors: List[str] = []
 
     try:
-        post = TikTokPost.parse_obj(record)
+        post = TikTokPost.model_validate(record)
     except ValidationError as e:
         errors.extend([f"schema: {err['msg']} (loc={'.'.join(map(str, err['loc']))})" for err in e.errors()])
         return False, errors
