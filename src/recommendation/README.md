@@ -5,9 +5,14 @@ This package contains Python-native recommendation modeling components.
 ## Implemented
 
 - `contracts.py`:
-  - canonical contract entities (`contract.v1`)
+  - canonical contract entities (`contract.v2`, additive-compatible with `contract.v1`)
   - raw JSONL normalization to canonical bundle
   - duplicate `video_id` support as time-series snapshots (single canonical video + many snapshots)
+  - bitemporal observation fields (`event_time`, `ingested_at`, `source_watermark_time`)
+  - late-arrival classification (`on_time`, `late_within_grace`, `late_out_of_watermark`)
+  - append+supersede lineage (`supersedes_observation_id`, `superseded_by_observation_id`)
+  - per-record quality scores/tiers and quarantine telemetry
+  - immutable content-addressed manifest export + replay loader
   - referential integrity checks
   - point-in-time (`as_of_time`) policy checks
   - pre/post-publication feature access policy checks
@@ -15,27 +20,131 @@ This package contains Python-native recommendation modeling components.
 - `datamart.py`:
   - training data mart builder (`datamart.v1`)
   - split-aware, train-only normalization for targets
+  - additive trajectory labels from snapshot time-series (`t0/t6/t24/t96`)
+  - strict per-objective/component availability masks + objective/component reason codes (no imputation)
+  - explicit run cutoff (`as_of_run_time`) for bitemporal visibility (`event_time<=boundary`, `ingested_at<=run_cutoff`)
+  - trajectory z-score normalization fitted on train split only
+  - objective composite trajectory targets with configurable weights
+  - pair label source switch (`scalar_v1` vs `trajectory_v2_composite`)
+  - trajectory-aware pair censorship for both query and candidate rows
   - right-censoring for incomplete horizons
   - train-safe author-baseline residualization (leave-one-out for train rows)
   - deterministic time-based train/validation/test splits
   - typed output contracts (`TrainingRow`, `PairTrainingRow`, `TrainingDataMart`)
   - structured exclusion telemetry (`excluded_video_records`, `excluded_by_reason`)
+  - optional manifest-aware dataset pinning (`source_manifest_id`, `source_manifest_path`)
   - optional pair-row generation for retrieval/ranking training
+- `fabric/`:
+  - Python-first multimodal feature/signal fabric (`fabric.v2`)
+  - registry-driven deterministic extractors
+  - typed missingness semantics
+  - calibrated confidence per extractor
+  - segment-aware structure features (hook / mid / payoff windows)
+  - feature snapshot store + manifest writer for offline precompute
+  - rollout promotion gate evaluator (coverage, latency, PSI, quality regression)
+- `comment_intelligence/`:
+  - deterministic comment-intelligence extraction (`comment_intelligence.v2`)
+  - 8-class intent taxonomy, confusion/help indices, sentiment dynamics, reply-graph metrics
+  - comment-to-content alignment signals (`alignment_score`, `value_prop_coverage`, `on_topic_ratio`, `artifact_drift_ratio`, `alignment_shift_early_late`)
+  - hybrid lexical + local embedding scoring with deterministic hash-embedding fallback
+  - snapshot manifest builder and transfer-prior builder (batch-first, no LLM dependency)
 - `learning/`:
   - temporal candidate pooling (`candidate_as_of_time < query_as_of_time`)
   - deterministic negative sampling (hard / semi-hard / easy mix)
-  - hybrid retriever training/inference (BM25-or-TFIDF sparse + sentence-transformers-or-char-TFIDF dense)
-  - objective-specific rankers (`reach`, `engagement`, `conversion`) with calibration
+  - adaptive negative mining (`adaptive_v2`) with false-friend prioritization and debias caps (author/topic/era)
+  - dual-build gate for baseline vs adaptive ranker promotion per objective
+  - multi-index retriever training/inference:
+    - lexical branch (BM25-or-TFIDF)
+    - dense-text branch (sentence-transformers-or-char-TFIDF, optional FAISS)
+    - multimodal branch (fabric-precomputed vectors, optional FAISS)
+    - graph branch (Creator DNA x Video DNA node2vec-like embeddings, optional FAISS)
+    - trajectory branch (growth-shape embedding from `t0/t6/t24/t96` profiles, optional FAISS)
+  - objective-conditioned fusion weights (`reach`, `engagement`, `conversion`) learned offline and artifactized
+  - tiered retrieval constraints with deterministic relaxation (`language`, `locale`, `content_type`)
+  - hybrid ownership retrieval mode (`global` index universe or `candidate_ids` intersection)
+  - objective-specific ranker families (`reach`, `engagement`, `conversion`):
+    - global ranker + segment rankers (`creator_cold_start`, `creator_mature`, `format_tutorial`, `format_entertainment`)
+    - bootstrap ensembles (`n=5`) for uncertainty-aware scoring (`score_mean`, `score_std`, `confidence`)
+    - creator-first metadata routing with uncertainty blend back to global ranker
+    - promotion gates per segment and objective-level non-regression guardrails
+    - pairwise interaction feature expansion (ratio/cross/format-sensitive features)
+  - per-objective, per-segment ranker calibration artifacts (`calibration.json`) with fallback to objective-global calibrator
+  - calibration target semantics: `P(relevance>=2)` from validation-only pairs
+  - calibration diagnostics: ECE/Brier/logloss + fallback-rate telemetry persisted in objective calibration reports
+  - runtime calibration compatibility guard (objective/version/schema hash checks with identity fallback warnings)
+  - final policy reranker layer with explicit hard/soft constraints:
+    - hard: author cap, optional strict language/locale match, max age cutoff
+    - soft: topic/author diversity penalties, freshness bonus, locale-fit bonus
+  - ranker pair-target source selection (`scalar_v1` or `trajectory_v2_composite`)
+  - trajectory modeling subsystem (`trajectory.v2`) with artifactized profiles, embeddings, and regimes (`spike|balanced|durable`)
+  - manifest-backed runtime comment feature lookup for train/serve parity (with request-hint fallback)
   - artifact registry + compatibility checks + offline evaluator metrics
 - `service.py`:
   - FastAPI serving layer:
     - `GET /v1/health`
+    - `GET /v1/compatibility`
     - `POST /v1/recommendations`
+    - `POST /v1/fabric/extract`
+    - `GET /v1/metrics`
+  - recommendation requests support additive optional filters:
+    - `language`, `locale`, `content_type`, `candidate_ids`
+    - `policy_overrides` (`strict_language`, `strict_locale`, `max_items_per_author`)
+    - `portfolio` (`enabled`, `weights.reach|conversion|durability`, `risk_aversion`, `candidate_pool_cap`)
+    - `graph_controls` (`enable_graph_branch`)
+    - `trajectory_controls` (`enabled`)
+    - `explainability` (`enabled`, `top_features`, `neighbor_k`, `run_counterfactuals`)
+    - `routing` (`objective_requested`, `objective_effective`, `track`, `allow_fallback`, `required_compat`)
+  - recommendation responses include additive retriever metadata:
+    - `retrieval_mode`, `constraint_tier_used`, `retriever_artifact_version`
+    - `graph_bundle_id`, `graph_version`, `graph_coverage`, `graph_fallback_mode`
+    - `trajectory_manifest_id`, `trajectory_version`, `trajectory_mode`, `trajectory_prediction`
+    - `portfolio_mode`, `portfolio_metadata`
+    - per-item `retrieval_branch_scores`
+    - per-item `graph_trace`
+    - per-item `trajectory_trace`
+    - per-item `portfolio_trace`
+  - recommendation responses include additive calibration/policy metadata:
+    - top-level: `calibration_version`, `calibration_metadata`, `policy_version`, `policy_metadata`
+    - per-item: `score_raw`, `score_calibrated`, `policy_adjusted_score`, `calibration_trace`, `policy_trace`
+  - recommendation responses include additive explainability metadata:
+    - top-level: `explainability_metadata`
+    - per-item: `evidence_cards`, `temporal_confidence_band`, `counterfactual_scenarios`
+  - recommendation responses include additive routing/compatibility observability:
+    - `routing_decision`, `compatibility_status`, `fallback_reason`, `latency_breakdown_ms`
+  - recommendation responses include additive traceability metadata:
+    - `request_id`, `experiment_id`, `variant`
   - explicit degradable error payloads when runtime/models are unavailable
+- `control_plane.py`:
+  - censorship-safe outcome attribution helpers (`24h`, `96h`)
+  - drift metrics (PSI / KS / relative mean delta)
+  - drift severity summarization and retrain trigger policy helpers
+  - retrain decision payload builder
 
 ## Entry points
 
 - `build_training_data_mart(bundle, config=...)`
 - `build_training_data_mart_from_jsonl(raw_jsonl, as_of_time, config=..., strict_timestamps=False, fail_on_warnings=False)`
+- `build_training_data_mart_from_manifest(manifest_ref, config=...)`
+- `build_contract_manifest(bundle, manifest_root, ...)`
+- `build_feature_snapshot_manifest(bundle, output_root, mode=...)`
+- `build_comment_intelligence_snapshot_manifest(bundle, as_of_time, output_root, mode=...)`
+- `build_comment_transfer_priors(snapshot_manifest, output_root, ...)`
 - `train_recommender_from_datamart(datamart, artifact_root, config=...)`
 - `RecommenderRuntime(bundle_dir).recommend(...)`
+- `scripts/run_outcome_attribution.py`
+- `scripts/run_drift_monitor.py`
+- `scripts/run_experiment_analysis.py`
+- `scripts/run_retrain_controller.py`
+
+## Ops
+
+- `scripts/perf_smoke_trajectory_datamart.py`: quick p50/p95 overhead benchmark for trajectory-enabled datamart builds.
+- `scripts/build_retriever_index.py`: build retriever-only artifacts from datamart.
+- `scripts/build_creator_dna_graph.py`: build graph bundle artifacts from datamart rows.
+- `scripts/build_trajectory_artifact.py`: build trajectory profile/embedding artifacts from datamart rows.
+- `scripts/fit_retriever_fusion.py`: fit and persist objective-conditioned fusion weights.
+- `scripts/eval_retriever.py`: retrieval-only Recall@K evaluation report.
+- `scripts/run_outcome_attribution.py`: writes `rec_outcome_events` from served outputs + snapshot lineage.
+- `scripts/run_drift_monitor.py`: writes `rec_drift_daily` and emits `drift_report.json`.
+- `scripts/run_experiment_analysis.py`: objective-level control vs treatment KPI report.
+- `scripts/run_retrain_controller.py`: scheduled/trigger retrain decision + `rec_retrain_runs`.

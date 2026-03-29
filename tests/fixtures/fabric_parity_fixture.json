@@ -1,0 +1,21 @@
+{
+  "description": "3 hook patterns that improve retention in tutorial videos",
+  "hashtags": ["marketing", "retention", "tutorial"],
+  "mentions": ["creatorhub"],
+  "objective": "engagement",
+  "audience": "creators",
+  "content_type": "tutorial",
+  "primary_cta": "save",
+  "locale": "en",
+  "signal_hints": {
+    "duration_seconds": 34,
+    "transcript_text": "Use one clear promise in the first three seconds, then demonstrate the payoff.",
+    "ocr_text": "Hook, Value, CTA",
+    "estimated_scene_cuts": 16,
+    "visual_motion_score": 0.62,
+    "speech_seconds": 20,
+    "music_seconds": 14,
+    "tempo_bpm": 118,
+    "audio_energy": 0.58
+  }
+}

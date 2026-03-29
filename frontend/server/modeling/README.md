@@ -4,9 +4,12 @@ This folder contains the recommendation modeling pipeline interfaces used by the
 
 ## Python-Owned Components
 
-Data Contract Layer (`contract.v1`) and Training Data Mart (`datamart.v1`) are owned by the
+Data Contract Layer (`contract.v2`) and Training Data Mart (`datamart.v1`) are owned by the
 Python implementation in `src/recommendation` and are no longer implemented in this TypeScript
 runtime.
+
+Feature/Signal Fabric (`fabric.v2`) is also Python-owned. The TypeScript Part 2 extractor
+remains as a temporary shim/fallback path while parity checks are completed.
 
 ## Step 1: Candidate Representation (implemented)
 

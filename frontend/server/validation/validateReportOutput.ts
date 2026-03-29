@@ -61,7 +61,15 @@ export function validateReportOutput(value: unknown): value is ReportOutput {
     return false;
   }
 
-  const { header, executive_summary, comparables, direct_comparison, relevant_comments, recommendations } = value;
+  const {
+    header,
+    executive_summary,
+    comparables,
+    direct_comparison,
+    relevant_comments,
+    recommendations,
+    explainability
+  } = value;
 
   if (!isObject(header) || !isObject(header.badges)) {
     return false;
@@ -149,7 +157,7 @@ export function validateReportOutput(value: unknown): value is ReportOutput {
     return false;
   }
 
-  return recommendations.items.every((item) => {
+  const recommendationsOk = recommendations.items.every((item) => {
     if (!isObject(item)) {
       return false;
     }
@@ -160,5 +168,58 @@ export function validateReportOutput(value: unknown): value is ReportOutput {
       (item.effort === "Low" || item.effort === "Medium" || item.effort === "High") &&
       isString(item.evidence)
     );
+  });
+  if (!recommendationsOk) {
+    return false;
+  }
+
+  if (explainability === undefined) {
+    return true;
+  }
+  if (!isObject(explainability)) {
+    return false;
+  }
+  if (
+    !Array.isArray(explainability.evidence_cards) ||
+    !Array.isArray(explainability.counterfactual_actions) ||
+    !isString(explainability.disclaimer) ||
+    !isObject(explainability.trace_metadata)
+  ) {
+    return false;
+  }
+  const cardsOk = explainability.evidence_cards.every((card) => {
+    if (!isObject(card)) {
+      return false;
+    }
+    return (
+      isString(card.candidate_id) &&
+      isNumber(card.rank) &&
+      isObject(card.feature_contributions) &&
+      isObject(card.neighbor_evidence) &&
+      isObject(card.temporal_confidence_band)
+    );
+  });
+  if (!cardsOk) {
+    return false;
+  }
+  return explainability.counterfactual_actions.every((action) => {
+    if (!isObject(action) || !Array.isArray(action.scenarios)) {
+      return false;
+    }
+    if (!isString(action.candidate_id) || !isNumber(action.rank)) {
+      return false;
+    }
+    return action.scenarios.every((scenario) => {
+      if (!isObject(scenario)) {
+        return false;
+      }
+      return (
+        isString(scenario.scenario_id) &&
+        isObject(scenario.expected_rank_delta_band) &&
+        isString(scenario.feasibility) &&
+        (scenario.reason === undefined || isString(scenario.reason)) &&
+        (scenario.trace === undefined || isObject(scenario.trace))
+      );
+    });
   });
 }

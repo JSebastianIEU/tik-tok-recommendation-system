@@ -88,6 +88,33 @@ export interface RecommendationsData {
   items: RecommendationItem[];
 }
 
+export interface ExplainabilityEvidenceCard {
+  candidate_id: string;
+  rank: number;
+  feature_contributions: Record<string, unknown>;
+  neighbor_evidence: Record<string, unknown>;
+  temporal_confidence_band: Record<string, unknown>;
+}
+
+export interface ExplainabilityCounterfactualAction {
+  candidate_id: string;
+  rank: number;
+  scenarios: Array<{
+    scenario_id: string;
+    expected_rank_delta_band: Record<string, unknown>;
+    feasibility: string;
+    reason?: string;
+    trace?: Record<string, unknown>;
+  }>;
+}
+
+export interface ExplainabilityReportSection {
+  evidence_cards: ExplainabilityEvidenceCard[];
+  counterfactual_actions: ExplainabilityCounterfactualAction[];
+  disclaimer: string;
+  trace_metadata: Record<string, unknown>;
+}
+
 export interface ReportOutput {
   header: ReportHeaderData;
   executive_summary: ExecutiveSummaryData;
@@ -95,4 +122,5 @@ export interface ReportOutput {
   direct_comparison: DirectComparisonData;
   relevant_comments: RelevantCommentsData;
   recommendations: RecommendationsData;
+  explainability?: ExplainabilityReportSection;
 }

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from src.recommendation.learning import (
+    AdaptiveNegativeMiningConfig,
     RecommenderTrainingConfig,
     train_recommender_from_datamart,
 )
@@ -62,10 +63,184 @@ def main() -> int:
         type=str,
         default="sentence-transformers/all-MiniLM-L6-v2",
     )
+    parser.add_argument(
+        "--pair-target-source",
+        type=str,
+        default="scalar_v1",
+        choices=["scalar_v1", "trajectory_v2_composite"],
+        help="Which pair target source to use during ranker training.",
+    )
+    parser.add_argument(
+        "--feature-snapshot-manifest-path",
+        type=str,
+        default=None,
+        help="Optional feature fabric snapshot manifest path/dir for multimodal retriever vectors.",
+    )
+    parser.add_argument(
+        "--graph-enabled",
+        dest="graph_enabled",
+        action="store_true",
+        help="Enable Creator DNA x Video DNA graph branch and graph-derived features.",
+    )
+    parser.add_argument(
+        "--no-graph",
+        dest="graph_enabled",
+        action="store_false",
+        help="Disable graph branch and graph-derived features.",
+    )
+    parser.set_defaults(graph_enabled=True)
+    parser.add_argument(
+        "--graph-embedding-dim",
+        type=int,
+        default=32,
+        help="Embedding dimension for graph node embeddings.",
+    )
+    parser.add_argument(
+        "--graph-walk-length",
+        type=int,
+        default=12,
+        help="Graph random walk length.",
+    )
+    parser.add_argument(
+        "--graph-num-walks",
+        type=int,
+        default=20,
+        help="Graph random walks per node.",
+    )
+    parser.add_argument(
+        "--graph-context-size",
+        type=int,
+        default=4,
+        help="Context window for node2vec-like co-occurrence.",
+    )
+    parser.add_argument(
+        "--graph-branch-weight",
+        type=float,
+        default=0.10,
+        help="Default graph branch weight before objective-specific blend fitting.",
+    )
+    parser.add_argument(
+        "--trajectory-enabled",
+        dest="trajectory_enabled",
+        action="store_true",
+        help="Enable trajectory branch and trajectory-derived features.",
+    )
+    parser.add_argument(
+        "--no-trajectory",
+        dest="trajectory_enabled",
+        action="store_false",
+        help="Disable trajectory branch and trajectory-derived features.",
+    )
+    parser.set_defaults(trajectory_enabled=True)
+    parser.add_argument(
+        "--trajectory-embedding-dim",
+        type=int,
+        default=16,
+        help="Embedding dimension for trajectory vectors.",
+    )
+    parser.add_argument(
+        "--trajectory-feature-version",
+        type=str,
+        default="trajectory_features.v2",
+        help="Trajectory feature schema/version identifier.",
+    )
+    parser.add_argument(
+        "--trajectory-branch-weight",
+        type=float,
+        default=0.08,
+        help="Default trajectory branch weight before objective-specific blend fitting.",
+    )
+    parser.add_argument(
+        "--trajectory-encoder-mode",
+        type=str,
+        default="feature_only",
+        choices=["feature_only", "sequence_encoder_shadow"],
+        help="Trajectory encoder mode.",
+    )
+    parser.add_argument(
+        "--trajectory-manifest-path",
+        type=str,
+        default=None,
+        help="Optional trajectory artifact manifest path/dir.",
+    )
+    parser.add_argument(
+        "--negative-mining-mode",
+        type=str,
+        default="fixed_v1",
+        choices=["fixed_v1", "adaptive_v2"],
+        help="Negative mining mode for ranker training.",
+    )
+    parser.add_argument(
+        "--ranker-ensemble-size",
+        type=int,
+        default=5,
+        help="Bootstrap ensemble members per ranker family model.",
+    )
+    parser.add_argument(
+        "--ranker-uncertainty-std-ref",
+        type=float,
+        default=0.15,
+        help="Reference std used by uncertainty-to-confidence/blend mapping.",
+    )
+    parser.add_argument(
+        "--segment-min-train-pairs",
+        type=int,
+        default=120,
+        help="Minimum segment train support to train segment ranker.",
+    )
+    parser.add_argument(
+        "--segment-min-validation-pairs",
+        type=int,
+        default=20,
+        help="Minimum segment validation support for promotion gate.",
+    )
+    parser.add_argument(
+        "--creator-cold-start-threshold",
+        type=int,
+        default=10,
+        help="Creator prior-video threshold for cold-start vs mature segment gate.",
+    )
+    parser.add_argument(
+        "--ranker-calibration-min-support",
+        type=int,
+        default=25,
+        help="Minimum validation samples per segment calibrator before fallback to global calibration.",
+    )
+    parser.add_argument(
+        "--adaptive-mining-candidate-k",
+        type=int,
+        default=400,
+        help="Candidate depth for adaptive mining retrieval stage.",
+    )
+    parser.add_argument(
+        "--adaptive-era-bucket",
+        type=str,
+        default="month",
+        choices=["month"],
+        help="Era bucket used by adaptive debias caps.",
+    )
+    parser.add_argument(
+        "--adaptive-mining-enabled",
+        dest="adaptive_mining_enabled",
+        action="store_true",
+        help="Enable adaptive negative mining.",
+    )
+    parser.add_argument(
+        "--no-adaptive-mining",
+        dest="adaptive_mining_enabled",
+        action="store_false",
+        help="Disable adaptive negative mining.",
+    )
+    parser.set_defaults(adaptive_mining_enabled=None)
     args = parser.parse_args()
 
     datamart = json.loads(args.datamart_json.read_text(encoding="utf-8"))
     objectives = [item.strip() for item in args.objectives.split(",") if item.strip()]
+    adaptive_enabled = (
+        bool(args.adaptive_mining_enabled)
+        if args.adaptive_mining_enabled is not None
+        else False
+    )
     result = train_recommender_from_datamart(
         datamart=datamart,
         artifact_root=args.artifact_root,
@@ -75,7 +250,43 @@ def main() -> int:
             max_age_days=max(1, args.max_age_days),
             dense_model_name=args.dense_model_name,
             run_name=args.run_name,
-            contract_version=str(datamart.get("source_contract_version", "contract.v1")),
+            pair_target_source=args.pair_target_source,
+            negative_mining_mode=args.negative_mining_mode,
+            adaptive_negative_mining=AdaptiveNegativeMiningConfig(
+                enabled=adaptive_enabled,
+                mining_candidate_k=max(1, int(args.adaptive_mining_candidate_k)),
+                era_bucket=args.adaptive_era_bucket,
+                seed=13,
+            ),
+            ranker_ensemble_size=max(1, int(args.ranker_ensemble_size)),
+            ranker_uncertainty_std_ref=max(1e-6, float(args.ranker_uncertainty_std_ref)),
+            segment_min_train_pairs=max(1, int(args.segment_min_train_pairs)),
+            segment_min_validation_pairs=max(1, int(args.segment_min_validation_pairs)),
+            creator_cold_start_threshold=max(1, int(args.creator_cold_start_threshold)),
+            ranker_calibration_min_support=max(1, int(args.ranker_calibration_min_support)),
+            feature_snapshot_manifest_path=args.feature_snapshot_manifest_path,
+            graph_enabled=bool(args.graph_enabled),
+            graph_embedding_dim=max(4, int(args.graph_embedding_dim)),
+            graph_walk_params={
+                "walk_length": max(4, int(args.graph_walk_length)),
+                "num_walks": max(2, int(args.graph_num_walks)),
+                "context_size": max(1, int(args.graph_context_size)),
+                "seed": 13,
+            },
+            graph_weighting_params={
+                "recency_half_life_days": 45.0,
+                "include_creator_similarity": True,
+                "creator_similarity_top_k": 5,
+                "creator_similarity_min_jaccard": 0.15,
+                "branch_weight": max(0.0, float(args.graph_branch_weight)),
+            },
+            trajectory_enabled=bool(args.trajectory_enabled),
+            trajectory_embedding_dim=max(4, int(args.trajectory_embedding_dim)),
+            trajectory_feature_version=str(args.trajectory_feature_version),
+            trajectory_branch_weight=max(0.0, float(args.trajectory_branch_weight)),
+            trajectory_encoder_mode=str(args.trajectory_encoder_mode),
+            trajectory_manifest_path=args.trajectory_manifest_path,
+            contract_version=str(datamart.get("source_contract_version", "contract.v2")),
             datamart_version=str(datamart.get("version", "datamart.v1")),
         ),
     )

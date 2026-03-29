@@ -1,6 +1,6 @@
 # Modelling Contracts
 
-## Data Contract Layer (`contract.v1`)
+## Data Contract Layer (`contract.v2`)
 
 Implemented in:
 
@@ -18,10 +18,29 @@ Governance checks:
 
 - runtime schema validation (pydantic)
 - referential integrity + uniqueness checks
-- point-in-time (`as_of_time`) checks
+- bitemporal point-in-time (`event_time` + `ingested_at` vs `as_of_time`) checks
 - feature access policy by modeling track (`pre_publication`, `post_publication`)
 - time-series ingest support for repeated `video_id` rows
 - snapshot timestamp precedence with optional strict fallback policy
+- per-source watermark state + late-arrival classification
+- append+supersede observation lineage
+- record-level quality scoring and quarantine telemetry
+- content-addressed manifest bundles for replayable as-of datasets
+
+## Feature/Signal Fabric (`fabric.v2`)
+
+Python implementation:
+
+- `src/recommendation/fabric/`
+
+Core behaviors:
+
+- registry-driven extractor execution (semver + schema hash aware)
+- deterministic trace metadata per extractor (input digest + schema hash + version)
+- multimodal blocks: text/transcript/OCR, structure, audio, visual
+- typed missingness semantics (`not_available`, `low_quality`, `extraction_failed`, `not_applicable`)
+- calibrated confidence scores per extractor
+- segment-aware structure windows (hook/mid/payoff)
 
 ## CandidateProfileCore (`core.v1`)
 
@@ -118,7 +137,7 @@ Claim evidence is deterministic:
 
 Built from:
 
-- `CanonicalDatasetBundle` (`contract.v1`)
+- `CanonicalDatasetBundle` (`contract.v2`)
 
 Python implementation:
 

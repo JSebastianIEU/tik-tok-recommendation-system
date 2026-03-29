@@ -9,13 +9,14 @@
     "dev:all": "concurrently -k -n API,WEB -c cyan,magenta \"npm run server\" \"npm run dev -- --host 127.0.0.1 --port 5173 --strictPort --clearScreen false\"",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "test:modeling": "node --import tsx --test server/modeling/step1/buildCandidateProfileCore.test.ts server/modeling/step2/buildComparableNeighborhood.test.ts server/modeling/step3/buildNeighborhoodContrast.test.ts server/recommender/client.test.ts server/validation/parseGenerateReportRequest.test.ts server/validation/parseRecommendationsRequest.test.ts"
+    "test:modeling": "node --import tsx --test server/modeling/step1/buildCandidateProfileCore.test.ts server/modeling/step2/buildComparableNeighborhood.test.ts server/modeling/step3/buildNeighborhoodContrast.test.ts server/recommender/client.test.ts server/recommender/routing.test.ts server/recommender/resilience.test.ts server/recommender/fallbackBundle.test.ts server/recommender/experimentation.test.ts server/recommender/requestId.test.ts server/feedback/store.test.ts server/validation/parseGenerateReportRequest.test.ts server/validation/parseRecommendationsRequest.test.ts"
   },
   "dependencies": {
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^4.21.2",
     "openai": "^4.104.0",
+    "pg": "^8.20.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
