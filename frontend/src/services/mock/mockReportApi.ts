@@ -327,18 +327,30 @@ export function generateMockReport(
 
       const comparable: ComparableItem = {
         id: candidate.video_id.toUpperCase() || `C-${index + 1}`,
+        candidate_id: candidate.video_id,
         caption: candidate.caption,
         author: toAuthorLabel(candidate),
         video_url: toVideoUrl(candidate),
         thumbnail_url: "",
         hashtags: candidate.hashtags.slice(0, 5),
         similarity: similarity.score,
+        support_level: "full",
+        confidence_label: "Medium confidence",
         metrics: toComparableMetrics(candidate),
         matched_keywords:
           similarity.matchedKeywords.length > 0
             ? similarity.matchedKeywords
             : candidate.keywords.slice(0, 4),
-        observations: buildComparableObservations(similarity.matchedKeywords)
+        observations: buildComparableObservations(similarity.matchedKeywords),
+        why_this_was_chosen: "Selected by the local mock baseline for lexical topic overlap.",
+        ranking_reasons: ["topic overlap", "hashtag overlap"],
+        score_components: {
+          semantic_relevance: similarity.score,
+          intent_alignment: clamp(similarity.score - 0.08, 0, 1),
+          reference_usefulness: clamp(similarity.score - 0.04, 0, 1),
+          support_confidence: 0.72
+        },
+        retrieval_branches: ["lexical", "topic"]
       };
 
       return { comparable, raw: candidate };
@@ -373,6 +385,19 @@ export function generateMockReport(
       : "Based on local baseline comparables.";
 
   return {
+    meta: {
+      request_id: "mock-report",
+      objective: "engagement",
+      objective_effective: "engagement",
+      generated_at: new Date().toISOString(),
+      recommender_source: "deterministic-local",
+      fallback_mode: true,
+      fallback_reason: "mock_only_mode",
+      evidence_label: "Limited evidence",
+      confidence_label: "Medium confidence",
+      experiment_id: null,
+      variant: null
+    },
     header: {
       title: "Report",
       subtitle: "Comparison based on similar videos (baseline TF-IDF)",
@@ -432,23 +457,111 @@ export function generateMockReport(
           title: "Start with a one-line promise and immediate proof of outcome.",
           priority: "High",
           effort: "Low",
-          evidence: evidenceText
+          evidence: evidenceText,
+          rationale: "Top lexical comparables lead with a clearer promise.",
+          confidence_label: "Medium confidence",
+          effect_area: "hook",
+          caveats: [],
+          evidence_refs: []
         },
         {
           id: "rec-2",
           title: "Use 3 to 5 tightly aligned hashtags instead of broad generic tags.",
           priority: "Medium",
           effort: "Low",
-          evidence: evidenceText
+          evidence: evidenceText,
+          rationale: "Hashtag overlap is one of the strongest recurring signals in the mock baseline.",
+          confidence_label: "Medium confidence",
+          effect_area: "topic_alignment",
+          caveats: [],
+          evidence_refs: []
         },
         {
           id: "rec-3",
           title: "Close with a specific question to increase high-intent comments.",
           priority: "High",
           effort: "Medium",
-          evidence: evidenceText
+          evidence: evidenceText,
+          rationale: "Comparables that end with a clearer response cue tend to look stronger in comments.",
+          confidence_label: "Medium confidence",
+          effect_area: "cta",
+          caveats: [],
+          evidence_refs: []
         }
       ]
+    },
+    reasoning: {
+      evidence_pack: {
+        version: "mock.reasoning.v1",
+        request: {
+          request_id: "mock-report",
+          objective: "engagement",
+          objective_effective: "engagement",
+          fallback_mode: true
+        },
+        query_summary: {
+          description: params.description,
+          hashtags: params.hashtags,
+          mentions: params.mentions
+        },
+        candidate_summary: {
+          final_count: topComparables.length,
+          top_k_considered: topComparables.length,
+          support_mix: { full: topComparables.length, partial: 0, low: 0 },
+          branch_mix: { lexical: topComparables.length }
+        },
+        top_candidates: topComparables.map((item, index) => ({
+          candidate_id: item.candidate_id,
+          rank: index + 1,
+          score: item.similarity,
+          support_level: item.support_level,
+          score_components: item.score_components,
+          ranking_reasons: item.ranking_reasons,
+          hashtags: item.hashtags
+        })),
+        aggregate_patterns: {
+          repeated_hashtags: [],
+          repeated_content_types: [],
+          repeated_ranking_reasons: [
+            { reason: "topic overlap", support_count: topComparables.length }
+          ],
+          score_component_averages: {
+            semantic_relevance: 0.7,
+            intent_alignment: 0.62,
+            reference_usefulness: 0.66,
+            support_confidence: 0.72
+          }
+        },
+        contrast_signals: {
+          top_vs_rest: [],
+          mismatches: [],
+          conflicts: ["Mock report uses local-only baseline reasoning."]
+        },
+        evidence_quality: {
+          sufficient: false,
+          confidence: 0.55,
+          missing_flags: ["mock_only_mode"]
+        }
+      },
+      explanation_units: [
+        {
+          explanation_id: "mock-exp-1",
+          claim_type: "selection_reason",
+          statement: "Comparables were selected for lexical topic and hashtag overlap.",
+          evidence_refs: topComparables.slice(0, 3).map((item) => item.candidate_id),
+          confidence: 0.55,
+          status: "fallback",
+          caveats: ["Mock mode is not production evidence."]
+        }
+      ],
+      recommendation_units: [],
+      reasoning_metadata: {
+        version: "mock.reasoning.v1",
+        fallback_mode: true,
+        evidence_sufficiency: false,
+        reasoning_confidence: 0.55,
+        missing_evidence_flags: ["mock_only_mode"]
+      }
     }
   };
 }

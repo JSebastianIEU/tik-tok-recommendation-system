@@ -14,6 +14,7 @@ test("parseGenerateReportRequest accepts valid payload with signal hints", () =>
     content_type: "tutorial",
     primary_cta: "save",
     locale: "en-US",
+    language: "en",
     signal_hints: {
       duration_seconds: 42,
       transcript_text: "Step one cook pasta",
@@ -32,6 +33,7 @@ test("parseGenerateReportRequest accepts valid payload with signal hints", () =>
   assert.equal(result.value.objective, "conversion");
   assert.equal(result.value.content_type, "tutorial");
   assert.equal(result.value.primary_cta, "save");
+  assert.equal(result.value.language, "en");
   assert.equal(result.value.signal_hints?.duration_seconds, 42);
 });
 
@@ -88,3 +90,26 @@ test("parseGenerateReportRequest applies defaults when optional fields are missi
   assert.equal(result.value.primary_cta, undefined);
 });
 
+test("parseGenerateReportRequest accepts structured audience objects", () => {
+  const result = parseGenerateReportRequest({
+    description: "Draft",
+    mentions: [],
+    hashtags: [],
+    audience: {
+      label: "small business owners",
+      segments: ["small_business", "marketing"],
+      expertise_level: "beginner"
+    }
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) {
+    return;
+  }
+
+  assert.deepEqual(result.value.audience, {
+    label: "small business owners",
+    segments: ["small_business", "marketing"],
+    expertise_level: "beginner"
+  });
+});

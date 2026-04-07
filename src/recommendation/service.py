@@ -50,6 +50,8 @@ class RecommendationQueryInput(BaseModel):
     text: Optional[str] = None
     topic_key: Optional[str] = None
     author_id: Optional[str] = None
+    audience: Optional[Any] = None
+    primary_cta: Optional[str] = None
     language: Optional[str] = None
     locale: Optional[str] = None
     content_type: Optional[str] = None
@@ -60,7 +62,8 @@ class RecommendationRequest(BaseModel):
     objective: str
     as_of_time: datetime
     query: RecommendationQueryInput
-    candidates: List[RecommendationCandidateInput]
+    candidates: List[RecommendationCandidateInput] = Field(default_factory=list)
+    user_context: Dict[str, Any] = Field(default_factory=dict)
     language: Optional[str] = None
     locale: Optional[str] = None
     content_type: Optional[str] = None
@@ -221,6 +224,7 @@ def recommendations(request: RecommendationRequest) -> Dict[str, Any]:
             as_of_time=request.as_of_time,
             query=request.query.model_dump(mode="python"),
             candidates=[item.model_dump(mode="python") for item in request.candidates],
+            user_context=request.user_context,
             top_k=request.top_k,
             retrieve_k=request.retrieve_k,
             language=request.language,

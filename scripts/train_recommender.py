@@ -5,14 +5,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
-from src.recommendation.learning import (
-    AdaptiveNegativeMiningConfig,
-    RecommenderTrainingConfig,
-    train_recommender_from_datamart,
-)
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from src.recommendation.learning import RecommenderTrainingConfig, train_recommender_from_datamart
 
 
 def _to_jsonable(value: Any) -> Any:
@@ -163,84 +164,10 @@ def main() -> int:
         default=None,
         help="Optional trajectory artifact manifest path/dir.",
     )
-    parser.add_argument(
-        "--negative-mining-mode",
-        type=str,
-        default="fixed_v1",
-        choices=["fixed_v1", "adaptive_v2"],
-        help="Negative mining mode for ranker training.",
-    )
-    parser.add_argument(
-        "--ranker-ensemble-size",
-        type=int,
-        default=5,
-        help="Bootstrap ensemble members per ranker family model.",
-    )
-    parser.add_argument(
-        "--ranker-uncertainty-std-ref",
-        type=float,
-        default=0.15,
-        help="Reference std used by uncertainty-to-confidence/blend mapping.",
-    )
-    parser.add_argument(
-        "--segment-min-train-pairs",
-        type=int,
-        default=120,
-        help="Minimum segment train support to train segment ranker.",
-    )
-    parser.add_argument(
-        "--segment-min-validation-pairs",
-        type=int,
-        default=20,
-        help="Minimum segment validation support for promotion gate.",
-    )
-    parser.add_argument(
-        "--creator-cold-start-threshold",
-        type=int,
-        default=10,
-        help="Creator prior-video threshold for cold-start vs mature segment gate.",
-    )
-    parser.add_argument(
-        "--ranker-calibration-min-support",
-        type=int,
-        default=25,
-        help="Minimum validation samples per segment calibrator before fallback to global calibration.",
-    )
-    parser.add_argument(
-        "--adaptive-mining-candidate-k",
-        type=int,
-        default=400,
-        help="Candidate depth for adaptive mining retrieval stage.",
-    )
-    parser.add_argument(
-        "--adaptive-era-bucket",
-        type=str,
-        default="month",
-        choices=["month"],
-        help="Era bucket used by adaptive debias caps.",
-    )
-    parser.add_argument(
-        "--adaptive-mining-enabled",
-        dest="adaptive_mining_enabled",
-        action="store_true",
-        help="Enable adaptive negative mining.",
-    )
-    parser.add_argument(
-        "--no-adaptive-mining",
-        dest="adaptive_mining_enabled",
-        action="store_false",
-        help="Disable adaptive negative mining.",
-    )
-    parser.set_defaults(adaptive_mining_enabled=None)
     args = parser.parse_args()
 
     datamart = json.loads(args.datamart_json.read_text(encoding="utf-8"))
     objectives = [item.strip() for item in args.objectives.split(",") if item.strip()]
-    adaptive_enabled = (
-        bool(args.adaptive_mining_enabled)
-        if args.adaptive_mining_enabled is not None
-        else False
-    )
     result = train_recommender_from_datamart(
         datamart=datamart,
         artifact_root=args.artifact_root,
@@ -251,19 +178,6 @@ def main() -> int:
             dense_model_name=args.dense_model_name,
             run_name=args.run_name,
             pair_target_source=args.pair_target_source,
-            negative_mining_mode=args.negative_mining_mode,
-            adaptive_negative_mining=AdaptiveNegativeMiningConfig(
-                enabled=adaptive_enabled,
-                mining_candidate_k=max(1, int(args.adaptive_mining_candidate_k)),
-                era_bucket=args.adaptive_era_bucket,
-                seed=13,
-            ),
-            ranker_ensemble_size=max(1, int(args.ranker_ensemble_size)),
-            ranker_uncertainty_std_ref=max(1e-6, float(args.ranker_uncertainty_std_ref)),
-            segment_min_train_pairs=max(1, int(args.segment_min_train_pairs)),
-            segment_min_validation_pairs=max(1, int(args.segment_min_validation_pairs)),
-            creator_cold_start_threshold=max(1, int(args.creator_cold_start_threshold)),
-            ranker_calibration_min_support=max(1, int(args.ranker_calibration_min_support)),
             feature_snapshot_manifest_path=args.feature_snapshot_manifest_path,
             graph_enabled=bool(args.graph_enabled),
             graph_embedding_dim=max(4, int(args.graph_embedding_dim)),

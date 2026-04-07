@@ -1,0 +1,23 @@
+# Future Improvements Checklist
+
+- [ ] Phase 2 learned reranker on top of the retrieval shortlist, using the Step 4 feature contract and Step 12 explicit-feedback labels.
+- [ ] Objective-specific learned weighting or separate rerankers once explicit-feedback support is sufficient by objective.
+- [ ] Retrieval hyperparameter tuning for branch depths, merge behavior, shortlist size, and diversity preservation.
+- [ ] Production retrieval/indexing upgrade so serving uses the full eligible corpus through retrieval and shortlist pruning, not development-style sampling assumptions.
+- [ ] Ranking hyperparameter tuning for component weights, objective-conditioned reweighting, and calibration behavior.
+- [ ] Post-processing hyperparameter tuning for author caps, duplicate thresholds, support-fill thresholds, and relaxation order cutoffs.
+- [ ] Unicode-safe semantic text processor shared across query, candidate, and comment paths, with hashtag extraction, emoji-aware normalization, and cleaner separation of semantic text vs lexical text.
+- [ ] Richer multimodal intake and feature coverage for transcript, OCR, audio, motion, and visual embeddings as optional enrichment.
+- [ ] Stronger audience structuring and normalization beyond free-text labels.
+- [ ] Behavioral/collaborative feature family once feedback telemetry is mature enough to avoid overfitting to sparse early usage.
+- [ ] Connected TikTok creator account support via authenticated account linking and creator-history ingestion, instead of username/display-name matching.
+- [ ] Creator-history-aware recommendation mode and policy separation so external comparables remain the default, with self-history shown only as an explicit secondary lane when useful.
+- [ ] Stronger growth-aware ranking/evaluation targets that use view-count-derived and author-normalized performance signals without collapsing optimization to raw views alone.
+- [ ] Workflow-integrated UI evolution beyond report-first mode:
+  - accept/reject recommendation actions
+  - preferred-comparable selection
+  - iterative reranking inside a session
+  - draft revision workflow with direct application of recommendations
+- [ ] More advanced explainability presentation, including richer evidence cards, better counterfactual UX, and cleaner confidence communication.
+- [ ] Broader constrained LLM presentation support for narrative polish and chat reformulation without expanding LLM authority into primary reasoning.
+- [ ] Experiment and rollout automation improvements once immediate-feedback volumes support stronger promotion and rollback gates.

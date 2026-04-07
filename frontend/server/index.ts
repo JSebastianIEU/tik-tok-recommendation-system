@@ -40,19 +40,19 @@ import type { ReportOutput } from "../src/features/report/types";
 import { loadDatasetFromFile } from "./dataset/loadDatasetFromFile";
 import { buildLocalBaselineReport } from "./fallback/buildLocalBaselineReport";
 import { buildLocalChatAnswer } from "./fallback/buildLocalChatAnswer";
+import {
+  buildSignalProfileFallback,
+  type CandidateSignalProfile
+} from "./fallback/signalProfile";
 import { enrichComparableMedia } from "./formatters/enrichComparableMedia";
 import { normalizeReportOutput } from "./formatters/normalizeReportOutput";
-import {
-  buildCandidateProfileCore,
-  buildComparableNeighborhood,
-  buildNeighborhoodContrast,
-  extractCandidateSignals,
-  type CandidateSignalProfile
-} from "./modeling";
 import { buildChatPrompt } from "./prompts/buildChatPrompt";
 import { buildReportPrompt } from "./prompts/buildReportPrompt";
+import { applyNarrativePolish, validateNarrativePolish } from "./report/polish";
+import { buildReportReasoning } from "./report/reasoning";
 import { HARD_CODED_EXTRACTED_KEYWORDS } from "./prompts/seedVideoContext";
 import { parseGenerateReportRequest } from "./validation/parseGenerateReportRequest";
+import { parseReportFeedbackRequest } from "./validation/parseReportFeedbackRequest";
 import { parseRecommendationsRequest } from "./validation/parseRecommendationsRequest";
 import { validateReportOutput } from "./validation/validateReportOutput";
 import {
@@ -74,6 +74,7 @@ import {
   RecommenderCircuitBreakers,
   createStageLatencyTracker
 } from "./recommender/resilience";
+import { classifyRecommenderFailure } from "./recommender/fallbackReason";
 import { buildRoutingEnvelope, type RoutingRequestInput } from "./recommender/routing";
 import {
   FeedbackEventStore,
@@ -81,6 +82,10 @@ import {
   type CandidateEventRecord,
   type ServedOutputRecord
 } from "./feedback/store";
+import {
+  LabelingSessionStore,
+  type LabelingReviewLabel
+} from "./labeling/store";
 
 interface ChatRequestBody {
   report?: unknown;
@@ -129,6 +134,7 @@ const feedbackStore = new FeedbackEventStore({
   enabled: RECOMMENDER_FEEDBACK_ENABLED,
   dbUrl: RECOMMENDER_FEEDBACK_DB_URL
 });
+const labelingSessionStore = new LabelingSessionStore();
 
 interface CompatibilityCacheRecord {
   checked_at: number;
@@ -159,6 +165,28 @@ function clamp(value: number, min: number, max: number): number {
 function round(value: number, decimals = 4): number {
   const factor = 10 ** decimals;
   return Math.round(value * factor) / factor;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function normalizeLabelingReviewLabel(value: unknown): LabelingReviewLabel | null {
+  if (value === null) {
+    return null;
+  }
+  if (typeof value !== "string") {
+    return null;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (
+    normalized === "saved" ||
+    normalized === "relevant" ||
+    normalized === "not_relevant"
+  ) {
+    return normalized;
+  }
+  return null;
 }
 
 function recordStageLatency(stage: string, valueMs: number): void {
@@ -266,6 +294,27 @@ function mapObjectiveForRecommender(value: string | undefined): string {
     return normalized;
   }
   return "engagement";
+}
+
+function resolveTrafficMeta(
+  traffic:
+    | {
+        class?: "production" | "synthetic";
+        injected_failure?: boolean;
+      }
+    | undefined
+): {
+  trafficClass: "production" | "synthetic";
+  isSynthetic: boolean;
+  injectedFailure: boolean;
+} {
+  const trafficClass = traffic?.class === "synthetic" ? "synthetic" : "production";
+  const injectedFailure = Boolean(traffic?.injected_failure);
+  return {
+    trafficClass,
+    isSynthetic: trafficClass === "synthetic",
+    injectedFailure
+  };
 }
 
 function buildExperimentUnitKey(params: {
@@ -387,11 +436,42 @@ function toServedOutputEvents(params: {
       rank: Math.round(rank),
       score,
       metadata: {
+        served_rank: Math.round(rank),
+        visible_position: Math.round(rank),
+        was_exposed: true,
+        author_id:
+          typeof item.author_id === "string" && item.author_id.trim()
+            ? item.author_id.trim()
+            : null,
+        topic_key:
+          typeof item.topic_key === "string" && item.topic_key.trim()
+            ? item.topic_key.trim()
+            : null,
+        content_type:
+          typeof item.content_type === "string" && item.content_type.trim()
+            ? item.content_type.trim()
+            : null,
+        language:
+          typeof item.language === "string" && item.language.trim()
+            ? item.language.trim()
+            : null,
+        locale:
+          typeof item.locale === "string" && item.locale.trim()
+            ? item.locale.trim()
+            : null,
+        hashtags: Array.isArray(item.hashtags) ? item.hashtags : [],
+        keywords: Array.isArray(item.keywords) ? item.keywords : [],
         retrieval_branch_scores:
           (item.retrieval_branch_scores as Record<string, unknown> | undefined) || {},
         similarity: (item.similarity as Record<string, unknown> | undefined) || {},
         selected_ranker_id: item.selected_ranker_id,
         confidence: item.confidence,
+        user_affinity_score: item.user_affinity_score,
+        creator_retrieval_score: item.creator_retrieval_score,
+        user_affinity_trace:
+          (item.user_affinity_trace as Record<string, unknown> | undefined) || {},
+        creator_retrieval_trace:
+          (item.creator_retrieval_trace as Record<string, unknown> | undefined) || {},
         portfolio_trace: (item.portfolio_trace as Record<string, unknown> | undefined) || {},
         portfolio_mode:
           typeof params.payload.portfolio_mode === "boolean"
@@ -399,7 +479,16 @@ function toServedOutputEvents(params: {
             : false,
         portfolio_metadata:
           (params.payload.portfolio_metadata as Record<string, unknown> | undefined) || {},
-        objective_model: (item.trace as Record<string, unknown> | undefined)?.objective_model ?? null
+        retrieval_personalization_metadata:
+          (params.payload.retrieval_personalization_metadata as
+            | Record<string, unknown>
+            | undefined) || {},
+        objective_model: (item.trace as Record<string, unknown> | undefined)?.objective_model ?? null,
+        score_components:
+          (item.score_components as Record<string, unknown> | undefined) || {},
+        support_level: item.support_level ?? null,
+        support_score: item.support_score ?? null,
+        ranking_reasons: Array.isArray(item.ranking_reasons) ? item.ranking_reasons : []
       }
     });
   }
@@ -827,7 +916,9 @@ function buildExplainabilitySection(
       candidate_id: item.candidate_id,
       rank: item.rank,
       feature_contributions:
-        (item.evidence_cards?.feature_contributions as Record<string, unknown>) ?? {},
+        (item.evidence_cards?.feature_contributions as Record<string, unknown>) ??
+        (item.evidence_cards?.feature_contribution as Record<string, unknown>) ??
+        {},
       neighbor_evidence: (item.evidence_cards?.neighbor_evidence as Record<string, unknown>) ?? {},
       temporal_confidence_band:
         (item.temporal_confidence_band as Record<string, unknown>) ??
@@ -854,8 +945,10 @@ function buildExplainabilitySection(
     .map((item) => ({
       candidate_id: item.candidate_id,
       rank: item.rank,
-      scenarios: (item.counterfactual_scenarios ?? []).map((scenario) => ({
-        scenario_id: scenario.scenario_id,
+      scenarios: (item.counterfactual_scenarios ?? []).map((scenario, index) => ({
+        scenario_id:
+          (typeof scenario.scenario_id === "string" && scenario.scenario_id.trim()) ||
+          `scenario-${item.rank}-${index + 1}`,
         expected_rank_delta_band: scenario.expected_rank_delta_band ?? {},
         feasibility: scenario.feasibility ?? "unknown",
         reason: scenario.reason,
@@ -990,6 +1083,54 @@ interface FetchRecommenderResult {
   gatewayMeta: GatewayMeta;
 }
 
+function extractCreatorId(record: DemoVideoRecord | undefined): string | undefined {
+  if (!record) {
+    return undefined;
+  }
+  const rawAuthor = record.author;
+  if (rawAuthor && typeof rawAuthor === "object" && !Array.isArray(rawAuthor)) {
+    const authorId =
+      typeof rawAuthor.author_id === "string" && rawAuthor.author_id.trim()
+        ? rawAuthor.author_id.trim()
+        : undefined;
+    const username =
+      typeof rawAuthor.username === "string" && rawAuthor.username.trim()
+        ? rawAuthor.username.trim().replace(/^@/, "")
+        : undefined;
+    return (authorId || username)?.toLowerCase();
+  }
+  if (typeof rawAuthor === "string" && rawAuthor.trim()) {
+    return rawAuthor.trim().replace(/^@/, "").toLowerCase();
+  }
+  return undefined;
+}
+
+async function buildCreatorUserContext(params: {
+  creatorId?: string;
+  objective?: string;
+}): Promise<Record<string, unknown> | undefined> {
+  const creatorId =
+    typeof params.creatorId === "string" && params.creatorId.trim()
+      ? params.creatorId.trim().toLowerCase()
+      : "";
+  if (!creatorId || !feedbackStore.isReady()) {
+    return undefined;
+  }
+  try {
+    return (
+      (await feedbackStore.loadCreatorPreferenceProfile({
+        creatorId,
+        objectiveEffective: mapObjectiveForRecommender(params.objective),
+        historyDays: 180,
+        maxFeedbackRows: 750
+      })) as Record<string, unknown> | null
+    ) ?? undefined;
+  } catch (error) {
+    console.error("creator_preference_profile_failed", error);
+    return undefined;
+  }
+}
+
 async function refreshCompatibility(
   routeIdentifier: string,
   requiredCompat: Record<string, string>,
@@ -1121,6 +1262,8 @@ async function fetchRecommenderResult(params: {
     neighbor_k?: number;
     run_counterfactuals?: boolean;
   };
+  creatorId?: string;
+  userContext?: Record<string, unknown>;
   experiment: {
     experiment_id: string;
     variant: "control" | "treatment";
@@ -1234,12 +1377,16 @@ async function fetchRecommenderResult(params: {
       mentions: params.mentions,
       text: [params.description, ...params.hashtags, ...params.mentions].join(" ").trim(),
       topic_key: params.hashtags[0]?.replace(/^#/, "") || "general",
+      author_id: params.creatorId,
+      audience: params.audience,
+      primary_cta: params.primaryCta,
       language: params.language,
       locale: params.locale,
       content_type: params.contentType,
       as_of_time: params.asOfTimeIso
     },
     candidates: buildRecommenderCandidates(params.candidates, params.asOfTimeIso),
+    user_context: params.userContext,
     language: params.language,
     locale: params.locale,
     content_type: params.contentType,
@@ -1285,11 +1432,11 @@ async function fetchRecommenderResult(params: {
   const nextState = recommenderBreakers.recordFailure(breakerKey);
   gatewayMetrics.breakerTransitions[nextState] =
     (gatewayMetrics.breakerTransitions[nextState] ?? 0) + 1;
-  const fallbackReason = result.error.includes("incompatible_artifact")
-    ? "incompatible_artifact"
-    : result.error.includes("stage_timeout")
-      ? "core_stage_timeout"
-      : "python_request_failed";
+  const failureClass = classifyRecommenderFailure(result.error);
+  const fallbackReason = failureClass.reason;
+  if (failureClass.compatibilityMismatch) {
+    gatewayMetrics.compatibilityMismatchCount += 1;
+  }
   trackFallbackReason(fallbackReason);
   return {
     result,
@@ -1397,9 +1544,8 @@ async function resolveCandidateSignals(params: {
   description: string;
   hashtags: string[];
   keywords: string[];
-  contentType: string;
+  contentType?: string;
   signalHints?: Record<string, unknown>;
-  fallbackProfile: ReturnType<typeof buildCandidateProfileCore>;
 }): Promise<{ signals: CandidateSignalProfile; source: "python-fabric" | "ts-shim" }> {
   const hints = params.signalHints;
   const fabricResult = await requestFabricSignals({
@@ -1421,7 +1567,11 @@ async function resolveCandidateSignals(params: {
     };
   }
   return {
-    signals: extractCandidateSignals(params.fallbackProfile, hints),
+    signals: buildSignalProfileFallback({
+      description: params.description,
+      contentType: params.contentType,
+      signalHints: hints
+    }),
     source: "ts-shim"
   };
 }
@@ -1707,6 +1857,7 @@ app.post("/recommendations", async (request, response) => {
     const requestId = createUuidV7();
     const requestReceivedAt = new Date().toISOString();
     const traceId = requestId;
+    const trafficMeta = resolveTrafficMeta(body.traffic);
     const experimentAssignment = buildExperimentAssignment({
       objectiveRequested: body.objective,
       assignmentUnit: buildExperimentUnitKey({
@@ -1737,28 +1888,17 @@ app.post("/recommendations", async (request, response) => {
         treatmentBundleId: RECOMMENDER_EXPERIMENT_TREATMENT_BUNDLE_ID
       }
     });
-    const candidateProfile = buildCandidateProfileCore({
-      description: body.description,
-      mentions: body.mentions,
-      hashtags: body.hashtags,
-      objective: body.objective,
-      audience: body.audience,
-      content_type: body.content_type,
-      primary_cta: body.primary_cta,
-      locale: body.locale
-    });
     const resolvedSignals = await resolveCandidateSignals({
       videoId: body.seed_video_id || "uploaded-seed",
       asOfTime: body.as_of_time,
-      description: candidateProfile.raw.description,
-      hashtags: candidateProfile.normalized.hashtags.map((tag) => `#${tag}`),
-      keywords: candidateProfile.tokens.keyphrases,
-      contentType: candidateProfile.intent.content_type,
+      description: body.description,
+      hashtags: body.hashtags,
+      keywords: body.hashtags,
+      contentType: body.content_type,
       signalHints:
         body.signal_hints && typeof body.signal_hints === "object"
           ? (body.signal_hints as Record<string, unknown>)
-          : undefined,
-      fallbackProfile: candidateProfile
+          : undefined
     });
     const candidateSignals = resolvedSignals.signals;
     response.setHeader("x-signal-source", resolvedSignals.source);
@@ -1769,6 +1909,13 @@ app.post("/recommendations", async (request, response) => {
       return;
     }
     const seedVideoId = body.seed_video_id;
+    const seedRecord =
+      dataset.find((record) => record.video_id === seedVideoId) ?? getSeedVideo(dataset);
+    const creatorId = extractCreatorId(seedRecord);
+    const userContext = await buildCreatorUserContext({
+      creatorId,
+      objective: body.objective
+    });
     const candidates = getCombinedCandidates(dataset, seedVideoId);
     if (candidates.length === 0) {
       response.status(400).json({ error: "No comparable candidates were found." });
@@ -1797,6 +1944,8 @@ app.post("/recommendations", async (request, response) => {
       graphControls: body.graph_controls,
       trajectoryControls: body.trajectory_controls,
       explainability: body.explainability,
+      creatorId,
+      userContext,
       experiment: {
         experiment_id: experimentAssignment.experiment_id,
         variant: experimentAssignment.variant,
@@ -1872,6 +2021,16 @@ app.post("/recommendations", async (request, response) => {
               typeof merged.calibration_version === "string"
                 ? merged.calibration_version
                 : undefined,
+            policyMetadata:
+              (merged.policy_metadata as Record<string, unknown> | undefined) || {},
+            requestContext: {
+              creator_id: creatorId ?? null,
+              seed_video_id: seedVideoId || null,
+              endpoint_mode: "recommendations"
+            },
+            trafficClass: trafficMeta.trafficClass,
+            isSynthetic: trafficMeta.isSynthetic,
+            injectedFailure: trafficMeta.injectedFailure,
             bundleFingerprint:
               (merged.compatibility_status as Record<string, unknown> | undefined)?.fingerprints &&
               typeof (merged.compatibility_status as Record<string, unknown>).fingerprints ===
@@ -1975,6 +2134,16 @@ app.post("/recommendations", async (request, response) => {
               (bundlePayload.latency_breakdown_ms as Record<string, number> | undefined) || {},
             policyVersion: undefined,
             calibrationVersion: undefined,
+            policyMetadata:
+              (bundlePayload.policy_metadata as Record<string, unknown> | undefined) || {},
+            requestContext: {
+              creator_id: creatorId ?? null,
+              seed_video_id: seedVideoId || null,
+              endpoint_mode: "recommendations"
+            },
+            trafficClass: trafficMeta.trafficClass,
+            isSynthetic: trafficMeta.isSynthetic,
+            injectedFailure: trafficMeta.injectedFailure,
             bundleFingerprint: {}
           },
           assignment: {
@@ -1996,139 +2165,12 @@ app.post("/recommendations", async (request, response) => {
       return;
     }
 
-    const fallbackNeighborhood = buildComparableNeighborhood({
-      candidateProfile,
-      candidateSignals,
-      records: candidates
-    });
-    const fallbackItems = [
-      ...fallbackNeighborhood.content_twins,
-      ...fallbackNeighborhood.similar_overperformers,
-      ...fallbackNeighborhood.similar_underperformers
-    ]
-      .slice(0, body.top_k)
-      .map((candidate, index) => ({
-        candidate_id: candidate.record.video_id,
-        rank: index + 1,
-        score: Number(candidate.composite_score.toFixed(6)),
-        similarity: {
-          sparse: Number(candidate.score_components.text_similarity.toFixed(6)),
-          dense: Number(candidate.score_components.signal_match.toFixed(6)),
-          fused: Number(candidate.similarity.toFixed(6))
-        },
-        trace: {
-          objective_model:
-            mapObjectiveForRecommender(body.objective) === "community"
-              ? "engagement"
-              : mapObjectiveForRecommender(body.objective),
-          ranker_backend: "deterministic-fallback"
-        },
-        comment_trace: buildCommentIntelligenceHint(candidate.record.comments, {
-          caption: candidate.record.caption,
-          hashtags: candidate.record.hashtags,
-          keywords: candidate.record.keywords,
-          searchQuery:
-            typeof candidate.record.search_query === "string"
-              ? candidate.record.search_query
-              : undefined
-        })
-      }));
-
-    response.setHeader("x-recommender-source", "fallback-deterministic");
-    const deterministicPayload = {
-      request_id: requestId,
-      experiment_id: experimentAssignment.experiment_id,
-      variant: experimentAssignment.variant,
-      objective: mapObjectiveForRecommender(body.objective),
-      objective_effective:
-        mapObjectiveForRecommender(body.objective) === "community"
-          ? "engagement"
-          : mapObjectiveForRecommender(body.objective),
-      generated_at: new Date().toISOString(),
+    response.status(503).json({
+      error: "Recommendations are unavailable right now.",
       fallback_mode: true,
-      fallback_reason: gatewayMeta.fallback_reason ?? recommenderResult.error,
-      routing_decision: gatewayMeta.routing_decision,
-      compatibility_status: gatewayMeta.compatibility_status,
-      latency_breakdown_ms: gatewayMeta.latency_breakdown_ms,
-      circuit_state: gatewayMeta.circuit_state,
-      served_by: gatewayMeta.served_by,
-      comment_feature_manifest_id: null,
-      comment_intelligence_version: "comment_intelligence.v2",
-      trajectory_manifest_id: null,
-      trajectory_version: "trajectory.v2",
-      trajectory_mode: "fallback_deterministic",
-      portfolio_mode: false,
-      portfolio_metadata: {
-        enabled_requested: Boolean(body.portfolio.enabled),
-        enabled: false,
-        fallback_reason: gatewayMeta.fallback_reason ?? recommenderResult.error
-      },
-      explainability_metadata: body.explainability.enabled
-        ? {
-            version: "explainability.v2",
-            fallback_mode: true,
-            reason: "recommender_unavailable"
-          }
-        : undefined,
-      items: fallbackItems,
-      debug: body.debug
-        ? {
-            candidate_pool_size: candidates.length,
-            neighborhood_confidence: fallbackNeighborhood.confidence
-          }
-        : undefined
-    };
-    response.status(200).json(deterministicPayload);
-    try {
-      await feedbackStore.writeRecommendationTrace({
-        request: {
-          requestId,
-          endpoint: "/recommendations",
-          receivedAt: requestReceivedAt,
-          servedAt: new Date().toISOString(),
-          objectiveRequested: mapObjectiveForRecommender(body.objective),
-          objectiveEffective:
-            String(deterministicPayload.objective_effective || "engagement"),
-          experimentId: experimentAssignment.experiment_id,
-          variant: experimentAssignment.variant,
-          assignmentUnitHash: experimentAssignment.unit_hash,
-          requestHash: buildRequestHash({
-            objectiveRequested: mapObjectiveForRecommender(body.objective),
-            objectiveEffective: String(deterministicPayload.objective_effective || "engagement"),
-            requestId,
-            assignmentUnitHash: experimentAssignment.unit_hash
-          }),
-          routingDecision: deterministicPayload.routing_decision || {},
-          compatibilityStatus: deterministicPayload.compatibility_status || {},
-          fallbackMode: true,
-          fallbackReason:
-            typeof deterministicPayload.fallback_reason === "string"
-              ? deterministicPayload.fallback_reason
-              : null,
-          circuitState: deterministicPayload.circuit_state || {},
-          latencyBreakdownMs:
-            (deterministicPayload.latency_breakdown_ms as Record<string, number> | undefined) ||
-            {},
-          policyVersion: undefined,
-          calibrationVersion: undefined,
-          bundleFingerprint: {}
-        },
-        assignment: {
-          experimentId: experimentAssignment.experiment_id,
-          objectiveEffective: String(deterministicPayload.objective_effective || "engagement"),
-          unitHash: experimentAssignment.unit_hash,
-          variant: experimentAssignment.variant,
-          requestId
-        },
-        candidates: [],
-        served: toServedOutputEvents({
-          requestId,
-          payload: deterministicPayload as Record<string, unknown>
-        })
-      });
-    } catch (feedbackError) {
-      console.error("feedback_store_write_failed", feedbackError);
-    }
+      fallback_reason: gatewayMeta.fallback_reason ?? recommenderResult.error
+    });
+    return;
   } catch (error) {
     console.error(error);
     response.status(500).json({
@@ -2155,42 +2197,131 @@ app.get("/recommender-gateway-metrics", (_request, response) => {
   });
 });
 
+app.get("/labeling/sources", async (_request, response) => {
+  try {
+    const sources = await labelingSessionStore.listSources();
+    response.json({ sources });
+  } catch (error) {
+    console.error("labeling_sources_failed", error);
+    response.status(500).json({ error: "Failed to load labeling sources." });
+  }
+});
+
+app.get("/labeling/sessions", async (_request, response) => {
+  try {
+    const sessions = await labelingSessionStore.listSessions();
+    response.json({ sessions });
+  } catch (error) {
+    console.error("labeling_sessions_failed", error);
+    response.status(500).json({ error: "Failed to load labeling sessions." });
+  }
+});
+
+app.post("/labeling/sessions", async (request, response) => {
+  try {
+    const body = isPlainObject(request.body) ? request.body : {};
+    const sourceId =
+      typeof body.source_id === "string" && body.source_id.trim().length > 0
+        ? body.source_id.trim()
+        : undefined;
+    const sessionName =
+      typeof body.session_name === "string" && body.session_name.trim().length > 0
+        ? body.session_name.trim()
+        : undefined;
+    const session = await labelingSessionStore.createSession({
+      sourceId,
+      sessionName
+    });
+    response.status(201).json({ session });
+  } catch (error) {
+    console.error("labeling_session_create_failed", error);
+    const message =
+      error instanceof Error && error.message === "no_labeling_sources_available"
+        ? "No benchmark sources are available for labeling."
+        : "Failed to create labeling session.";
+    response.status(500).json({ error: message });
+  }
+});
+
+app.get("/labeling/sessions/:sessionId", async (request, response) => {
+  try {
+    const session = await labelingSessionStore.loadSession(request.params.sessionId);
+    response.json({ session });
+  } catch (error) {
+    console.error("labeling_session_load_failed", error);
+    response.status(404).json({ error: "Labeling session not found." });
+  }
+});
+
+app.put(
+  "/labeling/sessions/:sessionId/cases/:caseId/candidates/:candidateId",
+  async (request, response) => {
+    try {
+      const body = isPlainObject(request.body) ? request.body : {};
+      if (!("label" in body)) {
+        response.status(400).json({ error: "label is required." });
+        return;
+      }
+      const label = normalizeLabelingReviewLabel(body.label);
+      if (body.label !== null && label === null) {
+        response
+          .status(400)
+          .json({ error: "label must be saved, relevant, not_relevant, or null." });
+        return;
+      }
+      const note =
+        typeof body.note === "string" ? body.note.slice(0, 500) : undefined;
+      const session = await labelingSessionStore.updateCandidateReview({
+        sessionId: request.params.sessionId,
+        caseId: request.params.caseId,
+        candidateId: request.params.candidateId,
+        label,
+        note
+      });
+      response.json({ session });
+    } catch (error) {
+      console.error("labeling_session_update_failed", error);
+      const message =
+        error instanceof Error &&
+        (error.message === "labeling_case_not_found" ||
+          error.message === "labeling_candidate_not_found")
+          ? "Case or candidate not found."
+          : "Failed to update labeling session.";
+      response.status(400).json({ error: message });
+    }
+  }
+);
+
 app.post("/generate-report", async (request, response) => {
   try {
+    const requestReceivedAt = new Date().toISOString();
     const parsedRequest = parseGenerateReportRequest(request.body);
     if (!parsedRequest.ok) {
       response.status(400).json({ error: parsedRequest.error });
       return;
     }
     const body = parsedRequest.value;
-    const candidateProfile = buildCandidateProfileCore({
-      description: body.description,
-      mentions: body.mentions,
-      hashtags: body.hashtags,
-      objective: body.objective,
-      audience: body.audience,
-      content_type: body.content_type,
-      primary_cta: body.primary_cta,
-      locale: body.locale
-    });
     const resolvedSignals = await resolveCandidateSignals({
       videoId: body.seed_video_id || "uploaded-seed",
       asOfTime: new Date().toISOString(),
-      description: candidateProfile.raw.description,
-      hashtags: candidateProfile.normalized.hashtags.map((tag) => `#${tag}`),
-      keywords: candidateProfile.tokens.keyphrases,
-      contentType: candidateProfile.intent.content_type,
+      description: body.description,
+      hashtags: body.hashtags,
+      keywords: body.hashtags,
+      contentType: body.content_type,
       signalHints:
         body.signal_hints && typeof body.signal_hints === "object"
           ? (body.signal_hints as Record<string, unknown>)
-          : undefined,
-      fallbackProfile: candidateProfile
+          : undefined
     });
     const candidateSignals = resolvedSignals.signals;
     response.setHeader("x-signal-source", resolvedSignals.source);
-    const description = candidateProfile.raw.description;
-    const mentions = candidateProfile.normalized.mentions.map((mention) => `@${mention}`);
-    const hashtags = candidateProfile.normalized.hashtags.map((tag) => `#${tag}`);
+    const description = body.description.trim();
+    const mentions = body.mentions.map((mention) =>
+      mention.trim().startsWith("@") ? mention.trim() : `@${mention.trim()}`
+    );
+    const hashtags = body.hashtags.map((tag) =>
+      tag.trim().startsWith("#") ? tag.trim() : `#${tag.trim()}`
+    );
     const seedVideoId = body.seed_video_id;
 
     const dataset = await loadDatasetFromFile();
@@ -2204,6 +2335,11 @@ app.post("/generate-report", async (request, response) => {
       response.status(404).json({ error: "Seed video was not found in local dataset." });
       return;
     }
+    const creatorId = extractCreatorId(seed);
+    const userContext = await buildCreatorUserContext({
+      creatorId,
+      objective: body.objective
+    });
 
     const uploadedSeed = buildUploadedSeedRecord(seed, description, hashtags);
     const candidates = getCombinedCandidates(dataset, seedVideoId);
@@ -2250,7 +2386,9 @@ app.post("/generate-report", async (request, response) => {
       mentions,
       candidates,
       asOfTimeIso: new Date().toISOString(),
-      language: typeof body.locale === "string" ? body.locale.split("-")[0]?.toLowerCase() : undefined,
+      language:
+        body.language ??
+        (typeof body.locale === "string" ? body.locale.split("-")[0]?.toLowerCase() : undefined),
       locale: body.locale,
       contentType: body.content_type,
       candidateIds: candidates.map((candidate) => candidate.video_id),
@@ -2263,6 +2401,8 @@ app.post("/generate-report", async (request, response) => {
       trajectoryControls: {
         enabled: true
       },
+      creatorId,
+      userContext,
       experiment: {
         experiment_id: reportExperimentAssignment.experiment_id,
         variant: reportExperimentAssignment.variant,
@@ -2278,7 +2418,7 @@ app.post("/generate-report", async (request, response) => {
       retrieveK: 200
     });
     let recommenderResult = recommenderAttempt.result;
-    let recommenderSource = recommenderResult.ok ? "python-service" : "fallback-deterministic";
+    let recommenderSource = recommenderResult.ok ? "python-service" : "fallback-bundle";
     if (!recommenderResult.ok) {
       const bundleFallback = await buildFallbackItemsFromBundle({
         objective: body.objective,
@@ -2302,6 +2442,14 @@ app.post("/generate-report", async (request, response) => {
             items: bundleFallback.items
           }
         };
+      } else {
+        response.status(503).json({
+          error: "Report generation is unavailable because ranked comparable evidence is unavailable.",
+          fallback_mode: true,
+          fallback_reason:
+            recommenderAttempt.gatewayMeta.fallback_reason ?? recommenderResult.error
+        });
+        return;
       }
     }
     const commentTraceSummary = summarizeCommentTrace(recommenderResult);
@@ -2311,48 +2459,183 @@ app.post("/generate-report", async (request, response) => {
     const recommenderFallbackNote = recommenderResult.ok
       ? undefined
       : recommenderAttempt.gatewayMeta.fallback_reason ?? recommenderResult.error;
+    const recommenderPayload = recommenderResult.ok
+      ? recommenderResult.payload
+      : {
+          request_id: recommenderAttempt.gatewayMeta.request_id,
+          objective: mapObjectiveForRecommender(body.objective),
+          objective_effective:
+            mapObjectiveForRecommender(body.objective) === "community"
+              ? "engagement"
+              : mapObjectiveForRecommender(body.objective),
+          generated_at: new Date().toISOString(),
+          fallback_mode: true,
+          fallback_reason: recommenderAttempt.gatewayMeta.fallback_reason ?? recommenderResult.error,
+          items: []
+        };
+    const reasoningArtifacts = buildReportReasoning({
+      requestId:
+        (typeof recommenderPayload.request_id === "string" && recommenderPayload.request_id) ||
+        recommenderAttempt.gatewayMeta.request_id,
+      objective: body.objective,
+      objectiveEffective: recommenderPayload.objective_effective,
+      generatedAt: recommenderPayload.generated_at,
+      recommenderSource:
+        recommenderSource === "python-service" ? "python-service" : "fallback-bundle",
+      fallbackMode: Boolean(recommenderPayload.fallback_mode),
+      fallbackReason: recommenderPayload.fallback_reason ?? null,
+      experimentId:
+        (typeof recommenderPayload.experiment_id === "string" && recommenderPayload.experiment_id) ||
+        recommenderAttempt.gatewayMeta.experiment_id ||
+        null,
+      variant:
+        recommenderPayload.variant === "control" || recommenderPayload.variant === "treatment"
+          ? recommenderPayload.variant
+          : recommenderAttempt.gatewayMeta.variant ?? null,
+      description,
+      hashtags,
+      mentions,
+      contentType: body.content_type,
+      primaryCta: body.primary_cta,
+      audience: body.audience ? { label: body.audience } : undefined,
+      locale: body.locale,
+      language: body.language,
+      candidateSignals,
+      candidates: rankedCandidates,
+      recommenderPayload
+    });
 
-    const comparableNeighborhood = buildComparableNeighborhood({
-      candidateProfile,
+    const deterministicReport = buildLocalBaselineReport({
+      candidates: rankedCandidates,
+      mentions,
+      hashtags,
+      description,
+      candidatesK: rankedCandidates.length,
+      objective: body.objective,
+      recommenderItems: recommenderPayload.items ?? [],
       candidateSignals,
-      records: rankedCandidates
+      meta: reasoningArtifacts.meta,
+      reasoning: reasoningArtifacts.reasoning
     });
-    const neighborhoodContrast = buildNeighborhoodContrast({
-      candidateProfile,
-      candidateSignals,
-      neighborhood: comparableNeighborhood
-    });
+
+    const persistedPayloadForLogging = mergeGatewayMeta(
+      recommenderPayload as Record<string, unknown>,
+      recommenderAttempt.gatewayMeta
+    );
+    const persistReportTrace = async (): Promise<void> => {
+      try {
+        await feedbackStore.writeRecommendationTrace({
+          request: {
+            requestId:
+              (typeof persistedPayloadForLogging.request_id === "string" &&
+                persistedPayloadForLogging.request_id) ||
+              reportRequestId,
+            endpoint: "/generate-report",
+            receivedAt: requestReceivedAt,
+            servedAt: new Date().toISOString(),
+            objectiveRequested: mapObjectiveForRecommender(body.objective),
+            objectiveEffective:
+              String((persistedPayloadForLogging.objective_effective as string) || "engagement"),
+            experimentId: reportExperimentAssignment.experiment_id,
+            variant: reportExperimentAssignment.variant,
+            assignmentUnitHash: reportExperimentAssignment.unit_hash,
+            requestHash: buildRequestHash({
+              objectiveRequested: mapObjectiveForRecommender(body.objective),
+              objectiveEffective:
+                String((persistedPayloadForLogging.objective_effective as string) || "engagement"),
+              requestId:
+                (typeof persistedPayloadForLogging.request_id === "string" &&
+                  persistedPayloadForLogging.request_id) ||
+                reportRequestId,
+              assignmentUnitHash: reportExperimentAssignment.unit_hash
+            }),
+            routingDecision:
+              (persistedPayloadForLogging.routing_decision as Record<string, unknown> | undefined) ||
+              {},
+            compatibilityStatus:
+              (persistedPayloadForLogging.compatibility_status as
+                | Record<string, unknown>
+                | undefined) || {},
+            fallbackMode: Boolean(persistedPayloadForLogging.fallback_mode),
+            fallbackReason:
+              typeof persistedPayloadForLogging.fallback_reason === "string"
+                ? persistedPayloadForLogging.fallback_reason
+                : null,
+            circuitState:
+              (persistedPayloadForLogging.circuit_state as Record<string, unknown> | undefined) ||
+              {},
+            latencyBreakdownMs:
+              (persistedPayloadForLogging.latency_breakdown_ms as
+                | Record<string, number>
+                | undefined) || {},
+            policyVersion:
+              typeof persistedPayloadForLogging.policy_version === "string"
+                ? persistedPayloadForLogging.policy_version
+                : undefined,
+            calibrationVersion:
+              typeof persistedPayloadForLogging.calibration_version === "string"
+                ? persistedPayloadForLogging.calibration_version
+                : undefined,
+            policyMetadata:
+              (persistedPayloadForLogging.policy_metadata as Record<string, unknown> | undefined) ||
+              {},
+            requestContext: {
+              creator_id: creatorId ?? null,
+              seed_video_id: body.seed_video_id || null,
+              endpoint_mode: "generate_report"
+            },
+            trafficClass: "production",
+            isSynthetic: false,
+            injectedFailure: false,
+            bundleFingerprint:
+              (persistedPayloadForLogging.compatibility_status as
+                | Record<string, unknown>
+                | undefined)?.fingerprints &&
+              typeof (persistedPayloadForLogging.compatibility_status as Record<string, unknown>)
+                .fingerprints === "object"
+                ? ((persistedPayloadForLogging.compatibility_status as Record<string, unknown>)
+                    .fingerprints as Record<string, unknown>)
+                : {}
+          },
+          assignment: {
+            experimentId: reportExperimentAssignment.experiment_id,
+            objectiveEffective:
+              String((persistedPayloadForLogging.objective_effective as string) || "engagement"),
+            unitHash: reportExperimentAssignment.unit_hash,
+            variant: reportExperimentAssignment.variant,
+            requestId:
+              (typeof persistedPayloadForLogging.request_id === "string" &&
+                persistedPayloadForLogging.request_id) ||
+              reportRequestId
+          },
+          candidates: toCandidateEventsFromResponse({
+            requestId:
+              (typeof persistedPayloadForLogging.request_id === "string" &&
+                persistedPayloadForLogging.request_id) ||
+              reportRequestId,
+            payload: persistedPayloadForLogging
+          }),
+          served: toServedOutputEvents({
+            requestId:
+              (typeof persistedPayloadForLogging.request_id === "string" &&
+                persistedPayloadForLogging.request_id) ||
+              reportRequestId,
+            payload: persistedPayloadForLogging
+          })
+        });
+      } catch (feedbackError) {
+        console.error("feedback_store_report_trace_failed", feedbackError);
+      }
+    };
 
     const reportPrompt = buildReportPrompt({
-      seed: uploadedSeed,
-      candidates: rankedCandidates,
-      mentions,
-      hashtags,
-      description,
-      candidatesK: rankedCandidates.length,
-      candidateProfile,
-      candidateSignals,
-      comparableNeighborhood,
-      neighborhoodContrast
-    });
-
-    const localFallbackReport = buildLocalBaselineReport({
-      seed: uploadedSeed,
-      candidates: rankedCandidates,
-      mentions,
-      hashtags,
-      description,
-      candidatesK: rankedCandidates.length,
-      candidateProfile,
-      candidateSignals,
-      comparableNeighborhood,
-      neighborhoodContrast
+      report: deterministicReport
     });
 
     if (!DEEPSEEK_ENABLED) {
       response.setHeader("x-report-source", "baseline-local-no-key");
       const report = await normalizeAndEnrichReport(
-        sanitizeUnknownStrings(localFallbackReport) as ReportOutput,
+        sanitizeUnknownStrings(deterministicReport) as ReportOutput,
         rankedCandidates,
         {
           source: recommenderResult.ok ? "recommender" : "fallback",
@@ -2361,6 +2644,7 @@ app.post("/generate-report", async (request, response) => {
         },
         explainabilitySection
       );
+      await persistReportTrace();
       response.json({
         report
       });
@@ -2390,7 +2674,7 @@ app.post("/generate-report", async (request, response) => {
       if (!rawContent) {
         response.setHeader("x-report-source", "baseline-local-empty-provider-response");
         const report = await normalizeAndEnrichReport(
-          sanitizeUnknownStrings(localFallbackReport) as ReportOutput,
+          sanitizeUnknownStrings(deterministicReport) as ReportOutput,
           rankedCandidates,
           {
             source: recommenderResult.ok ? "recommender" : "fallback",
@@ -2399,6 +2683,7 @@ app.post("/generate-report", async (request, response) => {
           },
           explainabilitySection
         );
+        await persistReportTrace();
         response.json({
           report
         });
@@ -2406,12 +2691,12 @@ app.post("/generate-report", async (request, response) => {
       }
 
       const parsed = extractFirstJsonObject(rawContent);
-      const sanitizedReport = sanitizeUnknownStrings(parsed);
+      const sanitizedPolish = sanitizeUnknownStrings(parsed);
 
-      if (!validateReportOutput(sanitizedReport)) {
+      if (!validateNarrativePolish(sanitizedPolish)) {
         response.setHeader("x-report-source", "baseline-local-invalid-provider-schema");
         const report = await normalizeAndEnrichReport(
-          sanitizeUnknownStrings(localFallbackReport) as ReportOutput,
+          sanitizeUnknownStrings(deterministicReport) as ReportOutput,
           rankedCandidates,
           {
             source: recommenderResult.ok ? "recommender" : "fallback",
@@ -2428,7 +2713,10 @@ app.post("/generate-report", async (request, response) => {
 
       response.setHeader("x-report-source", "deepseek");
       const report = await normalizeAndEnrichReport(
-        sanitizedReport as ReportOutput,
+        applyNarrativePolish(
+          sanitizeUnknownStrings(deterministicReport) as ReportOutput,
+          sanitizedPolish
+        ),
         rankedCandidates,
         {
           source: recommenderResult.ok ? "recommender" : "fallback",
@@ -2437,6 +2725,7 @@ app.post("/generate-report", async (request, response) => {
         },
         explainabilitySection
       );
+      await persistReportTrace();
       response.json({
         report
       });
@@ -2444,7 +2733,7 @@ app.post("/generate-report", async (request, response) => {
       console.error(providerError);
       response.setHeader("x-report-source", "baseline-local-provider-error");
       const report = await normalizeAndEnrichReport(
-        sanitizeUnknownStrings(localFallbackReport) as ReportOutput,
+        sanitizeUnknownStrings(deterministicReport) as ReportOutput,
         rankedCandidates,
         {
           source: recommenderResult.ok ? "recommender" : "fallback",
@@ -2453,6 +2742,7 @@ app.post("/generate-report", async (request, response) => {
         },
         explainabilitySection
       );
+      await persistReportTrace();
       response.json({
         report
       });
@@ -2461,6 +2751,42 @@ app.post("/generate-report", async (request, response) => {
     console.error(error);
     response.status(500).json({
       error: "The report could not be generated right now."
+    });
+  }
+});
+
+app.post("/report-feedback", async (request, response) => {
+  const parsed = parseReportFeedbackRequest(request.body);
+  if (!parsed.ok) {
+    response.status(400).json({ error: parsed.error });
+    return;
+  }
+
+  try {
+    await feedbackStore.writeUiFeedbackEvent({
+      requestId: parsed.value.request_id,
+      eventName: parsed.value.event_name,
+      entityType: parsed.value.entity_type,
+      entityId: parsed.value.entity_id ?? null,
+      section: parsed.value.section,
+      rank: parsed.value.rank ?? null,
+      objectiveEffective: parsed.value.objective_effective,
+      experimentId: parsed.value.experiment_id ?? null,
+      variant: parsed.value.variant ?? null,
+      signalStrength: parsed.value.signal_strength,
+      labelDirection: parsed.value.label_direction,
+      metadata: parsed.value.metadata,
+      createdAt: new Date().toISOString()
+    });
+
+    response.status(202).json({
+      ok: true,
+      ready: feedbackStore.isReady()
+    });
+  } catch (error) {
+    console.error("feedback_store_ui_write_failed", error);
+    response.status(500).json({
+      error: "Feedback could not be recorded right now."
     });
   }
 });

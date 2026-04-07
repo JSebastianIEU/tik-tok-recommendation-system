@@ -37,9 +37,9 @@ In this mode, report/chat use local mock fallbacks so the app still works.
   npm run build
   ```
 
-## Modeling tests
+## Server tests
 
-Run deterministic modeling tests (data contracts, Step 1, Step 2, Step 3, request parser):
+Run the Node gateway and request-contract tests:
 
 ```bash
 npm run test:modeling
@@ -53,11 +53,7 @@ npm run test:modeling
 - intent fields: `objective`, `audience`, `content_type`, `primary_cta`, `locale`
 - optional signal hints: `signal_hints` (`duration_seconds`, `transcript_text`, `ocr_text`, `estimated_scene_cuts`, audio/tempo hints)
 
-These inputs feed:
-
-- Step 1 candidate profile (`core.v1`)
-- Part 2 signal profile (`extractors.v1`)
-- Step 2 comparable neighborhood (`step2.v1`)
+These inputs feed the Python recommender runtime plus the lightweight Node-side signal/report formatting fallback.
 
 ## Recommender integration (Node -> Python)
 
@@ -65,7 +61,7 @@ The Node API includes:
 
 - `POST /recommendations` (proxy to Python `POST /v1/recommendations`)
 - `POST /generate-report` auto-uses recommender-ranked comparables when available
-- deterministic fallback if recommender is unavailable/invalid
+- bundle-backed fallback if recommender is unavailable/invalid
 
 `POST /recommendations` supports additive optional retrieval controls:
 
@@ -94,10 +90,21 @@ Recommender responses include additive metadata when available:
 - per-item: `evidence_cards`, `temporal_confidence_band`, `counterfactual_scenarios`
 - top-level: `routing_decision`, `compatibility_status`, `fallback_reason`, `latency_breakdown_ms`, `circuit_state`
 
-`POST /generate-report` now appends an additive `report.explainability` block with auditable cards
-and counterfactual summaries, including comment-alignment evidence and strategy hints when available.
-When recommender explainability is unavailable, the block is still
-returned with fallback metadata.
+`POST /generate-report` now returns a deterministic report contract with:
+
+- `report.meta` for request/fallback/confidence/evidence metadata
+- `report.reasoning` for `evidence_pack`, `explanation_units`, `recommendation_units`, and reasoning metadata
+- `report.explainability` for auditable cards and counterfactual summaries
+
+Only selected narrative fields are LLM-polished. Comparables, direct-comparison rows,
+explainability payloads, confidence/evidence metadata, and recommendation structure remain deterministic.
+
+Feedback endpoint:
+
+- `POST /report-feedback`
+  - comparable events: `comparable_opened`, `comparable_details_opened`, `comparable_marked_relevant`, `comparable_marked_not_relevant`, `comparable_saved`
+  - recommendation events: `recommendation_marked_useful`, `recommendation_marked_not_useful`, `recommendation_saved`
+  - report/explainability events: `report_viewed`, `report_exported`, `report_followup_asked`, `explainability_viewed`, `counterfactual_viewed`
 
 Gateway observability endpoint:
 

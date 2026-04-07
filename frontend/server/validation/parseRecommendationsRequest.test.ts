@@ -49,6 +49,10 @@ test("parseRecommendationsRequest accepts valid payload", () => {
       id: "rec_v2_launch",
       force_variant: "treatment"
     },
+    traffic: {
+      class: "synthetic",
+      injected_failure: false
+    },
     top_k: 15,
     retrieve_k: 300,
     debug: true
@@ -78,6 +82,8 @@ test("parseRecommendationsRequest accepts valid payload", () => {
   assert.equal(result.value.routing.required_compat.component, "recommender-learning-v1");
   assert.equal(result.value.experiment.id, "rec_v2_launch");
   assert.equal(result.value.experiment.force_variant, "treatment");
+  assert.equal(result.value.traffic.class, "synthetic");
+  assert.equal(result.value.traffic.injected_failure, false);
   assert.equal(result.value.debug, true);
 });
 
@@ -165,6 +171,16 @@ test("parseRecommendationsRequest rejects invalid experiment", () => {
     description: "Test",
     experiment: {
       force_variant: "bad"
+    }
+  });
+  assert.equal(result.ok, false);
+});
+
+test("parseRecommendationsRequest rejects invalid traffic", () => {
+  const result = parseRecommendationsRequest({
+    description: "Test",
+    traffic: {
+      class: "qa"
     }
   });
   assert.equal(result.ok, false);

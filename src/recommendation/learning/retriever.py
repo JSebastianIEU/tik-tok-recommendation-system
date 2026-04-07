@@ -13,7 +13,8 @@ import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
-from .temporal import parse_dt, row_as_of_time, row_text
+from .temporal import parse_dt, row_as_of_time, row_lexical_text, row_text
+from .user_affinity import build_user_affinity_context
 
 try:
     from rank_bm25 import BM25Okapi  # type: ignore
@@ -32,6 +33,10 @@ except Exception:  # pragma: no cover - optional dependency
 
 
 RUNTIME_OBJECTIVES = ("reach", "engagement", "conversion")
+CREATOR_RETRIEVAL_VERSION = "creator_retrieval.v1"
+CREATOR_RETRIEVAL_MAX_BLEND_WEIGHT = 0.16
+CREATOR_RETRIEVAL_MIN_QUERY_GUARD = 0.20
+CREATOR_RETRIEVAL_MAX_MEMORY = 24
 
 
 @dataclass
@@ -222,12 +227,12 @@ def _query_trajectory_fallback(
 
 def _query_hashtags(query_row: Dict[str, Any]) -> List[str]:
     out: List[str] = []
-    text = row_text(query_row)
-    if text:
-        out.extend(token for token in text.split() if token.strip().startswith("#"))
     explicit = query_row.get("hashtags")
     if isinstance(explicit, list):
         out.extend(str(item) for item in explicit if str(item).strip())
+    text = row_text(query_row)
+    if text:
+        out.extend(token for token in text.split() if token.strip().startswith("#"))
     cleaned: List[str] = []
     seen: set[str] = set()
     for value in out:
@@ -291,6 +296,54 @@ def _query_audio_motif(query_row: Dict[str, Any]) -> Optional[str]:
         f"energy:{_bucket(energy, 0.35, 0.70)}|"
         f"music:{'yes' if music else 'no'}"
     )
+
+
+def _normalize_candidate_ids(value: Any) -> List[str]:
+    if not isinstance(value, list):
+        return []
+    out: List[str] = []
+    seen: set[str] = set()
+    for item in value:
+        candidate_id = str(item or "").strip().lower()
+        if not candidate_id or candidate_id in seen:
+            continue
+        seen.add(candidate_id)
+        out.append(candidate_id)
+        if len(out) >= CREATOR_RETRIEVAL_MAX_MEMORY:
+            break
+    return out
+
+
+def _candidate_memory_block(user_context: Dict[str, Any], key: str) -> Dict[str, List[str]]:
+    block = user_context.get(key)
+    if not isinstance(block, dict):
+        return {"positive_candidate_ids": [], "negative_candidate_ids": []}
+    return {
+        "positive_candidate_ids": _normalize_candidate_ids(block.get("positive_candidate_ids")),
+        "negative_candidate_ids": _normalize_candidate_ids(block.get("negative_candidate_ids")),
+    }
+
+
+def _merge_candidate_memory(
+    primary: Dict[str, List[str]],
+    fallback: Dict[str, List[str]],
+) -> Dict[str, List[str]]:
+    out: Dict[str, List[str]] = {}
+    for key in ("positive_candidate_ids", "negative_candidate_ids"):
+        merged: List[str] = []
+        seen: set[str] = set()
+        for source in (primary.get(key, []), fallback.get(key, [])):
+            for item in source:
+                if item in seen:
+                    continue
+                seen.add(item)
+                merged.append(item)
+                if len(merged) >= CREATOR_RETRIEVAL_MAX_MEMORY:
+                    break
+            if len(merged) >= CREATOR_RETRIEVAL_MAX_MEMORY:
+                break
+        out[key] = merged
+    return out
 
 
 def _lookup_vector(payload: Dict[str, Any], key: str, value: str) -> Optional[np.ndarray]:
@@ -425,6 +478,21 @@ class HybridRetriever:
             row_id: str((self.row_metadata.get(row_id, {}) or {}).get("video_id") or row_id.split("::", 1)[0])
             for row_id in self.row_ids
         }
+        self.row_index_by_id: Dict[str, int] = {
+            row_id: idx for idx, row_id in enumerate(self.row_ids)
+        }
+        self.candidate_latest_row_ids: Dict[str, str] = {}
+        for row_id in self.row_ids:
+            candidate_key = self.row_candidate_keys.get(row_id, row_id.split("::", 1)[0])
+            normalized_candidate_key = str(candidate_key).strip().lower()
+            current = self.candidate_latest_row_ids.get(normalized_candidate_key)
+            if current is None:
+                self.candidate_latest_row_ids[normalized_candidate_key] = row_id
+                continue
+            current_dt = parse_dt(self.row_times.get(current))
+            row_dt = parse_dt(self.row_times.get(row_id))
+            if row_dt is not None and (current_dt is None or row_dt > current_dt):
+                self.candidate_latest_row_ids[normalized_candidate_key] = row_id
 
     @classmethod
     def train(
@@ -444,6 +512,7 @@ class HybridRetriever:
         ordered_rows = list(rows)
         row_ids = [str(row.get("row_id")) for row in ordered_rows]
         row_texts = [row_text(row) for row in ordered_rows]
+        row_lexical_texts = [row_lexical_text(row) for row in ordered_rows]
         row_times = {
             str(row.get("row_id")): (
                 row_as_of_time(row).astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -454,28 +523,44 @@ class HybridRetriever:
         }
         row_metadata: Dict[str, Dict[str, Any]] = {}
         row_shards: Dict[str, str] = {}
-        for row, row_id, text_value in zip(ordered_rows, row_ids, row_texts):
+        for idx, (row, row_id, text_value) in enumerate(zip(ordered_rows, row_ids, row_texts)):
             features = row.get("features", {})
             if not isinstance(features, dict):
                 features = {}
-            language = features.get("language") if isinstance(features.get("language"), str) else None
+            language = (
+                row.get("language")
+                if isinstance(row.get("language"), str)
+                else features.get("language")
+                if isinstance(features.get("language"), str)
+                else None
+            )
             content_type = (
                 row.get("content_type")
                 if isinstance(row.get("content_type"), str)
-                else "general"
+                else "other"
             )
             row_metadata[row_id] = {
                 "row_id": row_id,
                 "video_id": str(row.get("video_id") or row_id.split("::", 1)[0]),
                 "candidate_id": str(row.get("video_id") or row_id.split("::", 1)[0]),
                 "text": text_value,
+                "semantic_text": text_value,
+                "lexical_text": row_lexical_texts[idx],
+                "caption": str(row.get("caption") or ""),
                 "topic_key": str(row.get("topic_key") or "general"),
                 "author_id": str(row.get("author_id") or "unknown"),
                 "as_of_time": row_times.get(row_id, ""),
+                "posted_at": (
+                    row.get("posted_at").astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+                    if isinstance(row.get("posted_at"), datetime)
+                    else str(row.get("posted_at") or "")
+                ),
                 "language": language,
                 "locale": row.get("locale") if isinstance(row.get("locale"), str) else None,
                 "content_type": content_type,
-                "hashtags": _query_hashtags(row),
+                "hashtags": list(row.get("hashtags") or _query_hashtags(row)),
+                "keywords": list(row.get("keywords") or []),
+                "search_query": str(row.get("search_query") or "").strip() or None,
                 "style_tags": _query_style_tags(row),
                 "audio_motif": _query_audio_motif(row),
             }
@@ -484,7 +569,7 @@ class HybridRetriever:
         sparse_backend = "tfidf"
         sparse_payload: Dict[str, Any]
         if BM25Okapi is not None:
-            tokenized = [_to_tokens(text) for text in row_texts]
+            tokenized = [_to_tokens(text) for text in row_lexical_texts]
             sparse_backend = "bm25"
             sparse_payload = {"model": BM25Okapi(tokenized), "tokenized": tokenized}
         else:
@@ -493,7 +578,7 @@ class HybridRetriever:
                 strip_accents="unicode",
                 token_pattern=r"\b\w+\b",
             )
-            matrix = vectorizer.fit_transform(row_texts)
+            matrix = vectorizer.fit_transform(row_lexical_texts)
             sparse_payload = {"vectorizer": vectorizer, "matrix": matrix}
 
         dense_backend = "tfidf-char"
@@ -521,7 +606,7 @@ class HybridRetriever:
                     ngram_range=(3, 5),
                     lowercase=True,
                 )
-                dense_matrix = dense_vectorizer.fit_transform(row_texts)
+                dense_matrix = dense_vectorizer.fit_transform(row_lexical_texts)
                 dense_payload = {"vectorizer": dense_vectorizer, "matrix": dense_matrix}
         else:
             dense_vectorizer = TfidfVectorizer(
@@ -529,7 +614,7 @@ class HybridRetriever:
                 ngram_range=(3, 5),
                 lowercase=True,
             )
-            dense_matrix = dense_vectorizer.fit_transform(row_texts)
+            dense_matrix = dense_vectorizer.fit_transform(row_lexical_texts)
             dense_payload = {"vectorizer": dense_vectorizer, "matrix": dense_matrix}
 
         default_vectors: List[Sequence[float]] = []
@@ -698,6 +783,230 @@ class HybridRetriever:
 
     def row_payload(self, row_id: str) -> Dict[str, Any]:
         return dict(self.row_metadata.get(row_id, {"row_id": row_id, "video_id": row_id}))
+
+    def _branch_embeddings(self, branch: str) -> Optional[np.ndarray]:
+        if branch == "dense_text":
+            raw = self.dense_payload.get("embeddings")
+        elif branch == "multimodal":
+            raw = self.multimodal_payload.get("embeddings")
+        elif branch == "graph_dense":
+            raw = self.graph_payload.get("embeddings")
+        elif branch == "trajectory_dense":
+            raw = self.trajectory_payload.get("embeddings")
+        else:
+            raw = None
+        if isinstance(raw, np.ndarray) and raw.ndim == 2:
+            return np.asarray(raw, dtype=np.float32)
+        return None
+
+    def _candidate_centroid(
+        self,
+        *,
+        candidate_ids: Sequence[str],
+        branch: str,
+    ) -> Tuple[Optional[np.ndarray], int]:
+        embeddings = self._branch_embeddings(branch)
+        if embeddings is None or embeddings.shape[0] != len(self.row_ids):
+            return None, 0
+        row_indexes: List[int] = []
+        seen_rows: set[str] = set()
+        for candidate_id in candidate_ids:
+            lookup_id = str(candidate_id or "").strip().lower()
+            if not lookup_id:
+                continue
+            row_id = self.candidate_latest_row_ids.get(lookup_id)
+            if row_id is None and lookup_id in self.row_index_by_id:
+                row_id = lookup_id
+            if row_id is None or row_id in seen_rows:
+                continue
+            row_idx = self.row_index_by_id.get(row_id)
+            if row_idx is None:
+                continue
+            seen_rows.add(row_id)
+            row_indexes.append(int(row_idx))
+            if len(row_indexes) >= CREATOR_RETRIEVAL_MAX_MEMORY:
+                break
+        if not row_indexes:
+            return None, 0
+        centroid = np.mean(embeddings[row_indexes], axis=0).astype(np.float32)
+        norm = float(np.linalg.norm(centroid))
+        if norm <= 0.0:
+            return None, 0
+        centroid = centroid / norm
+        return centroid.astype(np.float32), len(row_indexes)
+
+    def _creator_branch_scores(
+        self,
+        *,
+        branch: str,
+        positive_candidate_ids: Sequence[str],
+        negative_candidate_ids: Sequence[str],
+    ) -> Tuple[np.ndarray, Dict[str, Any]]:
+        embeddings = self._branch_embeddings(branch)
+        if embeddings is None or embeddings.shape[0] != len(self.row_ids):
+            return np.zeros(len(self.row_ids), dtype=np.float32), {
+                "available": False,
+                "reason": "embeddings_unavailable",
+                "positive_memory_count": 0,
+                "negative_memory_count": 0,
+            }
+        positive_centroid, positive_count = self._candidate_centroid(
+            candidate_ids=positive_candidate_ids,
+            branch=branch,
+        )
+        negative_centroid, negative_count = self._candidate_centroid(
+            candidate_ids=negative_candidate_ids,
+            branch=branch,
+        )
+        if positive_centroid is None and negative_centroid is None:
+            return np.zeros(len(self.row_ids), dtype=np.float32), {
+                "available": False,
+                "reason": "candidate_memory_unavailable",
+                "positive_memory_count": positive_count,
+                "negative_memory_count": negative_count,
+            }
+        positive_scores = (
+            np.dot(embeddings, positive_centroid).astype(np.float32)
+            if positive_centroid is not None
+            else np.zeros(len(self.row_ids), dtype=np.float32)
+        )
+        negative_scores = (
+            np.dot(embeddings, negative_centroid).astype(np.float32)
+            if negative_centroid is not None
+            else np.zeros(len(self.row_ids), dtype=np.float32)
+        )
+        raw = positive_scores - (0.7 * negative_scores)
+        return _normalize_scores(raw), {
+            "available": True,
+            "reason": None,
+            "positive_memory_count": positive_count,
+            "negative_memory_count": negative_count,
+        }
+
+    def _creator_retrieval_personalization(
+        self,
+        *,
+        user_context: Optional[Dict[str, Any]],
+        objective: Optional[str],
+        query_as_of: Optional[datetime],
+        lexical_scores: np.ndarray,
+        dense_scores: np.ndarray,
+        branch_weights: Dict[str, float],
+    ) -> Dict[str, Any]:
+        payload = user_context if isinstance(user_context, dict) else {}
+        affinity_context = build_user_affinity_context(
+            user_context=payload if payload else None,
+            effective_objective=(objective or "engagement").strip().lower(),
+            as_of=query_as_of or datetime.now(timezone.utc),
+        )
+        if not bool(affinity_context.get("enabled")):
+            return {
+                "applied": False,
+                "reason": "missing_creator_context",
+                "version": CREATOR_RETRIEVAL_VERSION,
+                "scores": np.zeros(len(self.row_ids), dtype=np.float32),
+                "score_shifts": np.zeros(len(self.row_ids), dtype=np.float32),
+                "query_guards": np.zeros(len(self.row_ids), dtype=np.float32),
+                "branch_scores": {},
+                "branch_meta": {},
+            }
+        confidence = float(affinity_context.get("confidence") or 0.0)
+        if confidence <= 0.01:
+            return {
+                "applied": False,
+                "reason": "insufficient_profile_confidence",
+                "version": CREATOR_RETRIEVAL_VERSION,
+                "creator_id": affinity_context.get("creator_id"),
+                "confidence": confidence,
+                "scores": np.zeros(len(self.row_ids), dtype=np.float32),
+                "score_shifts": np.zeros(len(self.row_ids), dtype=np.float32),
+                "query_guards": np.zeros(len(self.row_ids), dtype=np.float32),
+                "branch_scores": {},
+                "branch_meta": {},
+            }
+
+        memory = _merge_candidate_memory(
+            _candidate_memory_block(payload, "objective_candidate_memory"),
+            _candidate_memory_block(payload, "global_candidate_memory"),
+        )
+        positive_candidate_ids = memory["positive_candidate_ids"]
+        negative_candidate_ids = memory["negative_candidate_ids"]
+        if not positive_candidate_ids and not negative_candidate_ids:
+            return {
+                "applied": False,
+                "reason": "missing_candidate_memory",
+                "version": CREATOR_RETRIEVAL_VERSION,
+                "creator_id": affinity_context.get("creator_id"),
+                "confidence": confidence,
+                "scores": np.zeros(len(self.row_ids), dtype=np.float32),
+                "score_shifts": np.zeros(len(self.row_ids), dtype=np.float32),
+                "query_guards": np.zeros(len(self.row_ids), dtype=np.float32),
+                "branch_scores": {},
+                "branch_meta": {},
+            }
+
+        creator_branch_scores: Dict[str, np.ndarray] = {}
+        creator_branch_meta: Dict[str, Any] = {}
+        available_weight = 0.0
+        fused_scores = np.zeros(len(self.row_ids), dtype=np.float32)
+        for branch in ("dense_text", "multimodal", "graph_dense", "trajectory_dense"):
+            branch_score, branch_meta = self._creator_branch_scores(
+                branch=branch,
+                positive_candidate_ids=positive_candidate_ids,
+                negative_candidate_ids=negative_candidate_ids,
+            )
+            creator_branch_meta[branch] = branch_meta
+            if not branch_meta.get("available"):
+                continue
+            branch_weight = float(branch_weights.get(branch, 0.0))
+            if branch_weight <= 0.0:
+                continue
+            creator_branch_scores[branch] = branch_score
+            fused_scores += branch_weight * branch_score
+            available_weight += branch_weight
+        if available_weight <= 0.0:
+            return {
+                "applied": False,
+                "reason": "no_personalized_branches_available",
+                "version": CREATOR_RETRIEVAL_VERSION,
+                "creator_id": affinity_context.get("creator_id"),
+                "confidence": confidence,
+                "scores": np.zeros(len(self.row_ids), dtype=np.float32),
+                "score_shifts": np.zeros(len(self.row_ids), dtype=np.float32),
+                "query_guards": np.zeros(len(self.row_ids), dtype=np.float32),
+                "branch_scores": creator_branch_scores,
+                "branch_meta": creator_branch_meta,
+            }
+        fused_scores = fused_scores / available_weight
+        query_signal = np.asarray(
+            (0.65 * dense_scores) + (0.35 * lexical_scores),
+            dtype=np.float32,
+        )
+        query_guards = np.clip(
+            (query_signal - CREATOR_RETRIEVAL_MIN_QUERY_GUARD)
+            / max(1e-6, 1.0 - CREATOR_RETRIEVAL_MIN_QUERY_GUARD),
+            0.0,
+            1.0,
+        ).astype(np.float32)
+        blend_weight = CREATOR_RETRIEVAL_MAX_BLEND_WEIGHT * confidence
+        score_shifts = (
+            blend_weight * query_guards * ((fused_scores - 0.5) * 2.0)
+        ).astype(np.float32)
+        return {
+            "applied": True,
+            "reason": None,
+            "version": CREATOR_RETRIEVAL_VERSION,
+            "creator_id": affinity_context.get("creator_id"),
+            "confidence": confidence,
+            "blend_weight": blend_weight,
+            "scores": fused_scores,
+            "score_shifts": score_shifts,
+            "query_guards": query_guards,
+            "branch_scores": creator_branch_scores,
+            "branch_meta": creator_branch_meta,
+            "positive_memory_count": len(positive_candidate_ids),
+            "negative_memory_count": len(negative_candidate_ids),
+        }
 
     def _sparse_scores(self, query_text: str) -> np.ndarray:
         if self.sparse_backend == "bm25":
@@ -895,11 +1204,15 @@ class HybridRetriever:
         candidate_ids: Optional[Sequence[str]] = None,
         retrieval_constraints: Optional[Dict[str, Any]] = None,
         weight_override: Optional[Dict[str, float]] = None,
+        user_context: Optional[Dict[str, Any]] = None,
         return_metadata: bool = False,
     ) -> List[Dict[str, Any]] | Tuple[List[Dict[str, Any]], Dict[str, Any]]:
         query_text = row_text(query_row)
+        query_lexical_text = row_lexical_text(query_row)
         if not query_text.strip():
             query_text = str(query_row.get("topic_key") or "general")
+        if not query_lexical_text.strip():
+            query_lexical_text = query_text.lower()
 
         query_as_of = row_as_of_time(query_row)
         index_cutoff = (
@@ -910,7 +1223,7 @@ class HybridRetriever:
         if index_cutoff is None:
             index_cutoff = query_as_of
 
-        lexical_scores = _normalize_scores(self._sparse_scores(query_text))
+        lexical_scores = _normalize_scores(self._sparse_scores(query_lexical_text))
         dense_scores = _normalize_scores(self._dense_scores(query_text))
         multimodal_scores = _normalize_scores(self._multimodal_scores(query_row))
         graph_scores_raw, graph_trace = self._graph_scores(query_row)
@@ -925,6 +1238,21 @@ class HybridRetriever:
             + (weights["graph_dense"] * graph_scores)
             + (weights["trajectory_dense"] * trajectory_scores)
         )
+        base_fused = np.asarray(fused, dtype=np.float32)
+        creator_retrieval = self._creator_retrieval_personalization(
+            user_context=user_context,
+            objective=objective,
+            query_as_of=query_as_of,
+            lexical_scores=lexical_scores,
+            dense_scores=dense_scores,
+            branch_weights=weights,
+        )
+        if bool(creator_retrieval.get("applied")):
+            fused = np.clip(
+                fused + np.asarray(creator_retrieval.get("score_shifts"), dtype=np.float32),
+                0.0,
+                1.0,
+            ).astype(np.float32)
 
         requested_ids = {
             str(item).strip()
@@ -1032,6 +1360,24 @@ class HybridRetriever:
                 float(trajectory_scores[idx]) if idx < len(trajectory_scores) else 0.0
             )
             fused_score = float(fused[idx]) if idx < len(fused) else 0.0
+            creator_scores = creator_retrieval.get("scores")
+            creator_query_guards = creator_retrieval.get("query_guards")
+            creator_score_shifts = creator_retrieval.get("score_shifts")
+            creator_score = (
+                float(creator_scores[idx])
+                if isinstance(creator_scores, np.ndarray) and idx < len(creator_scores)
+                else 0.0
+            )
+            creator_query_guard = (
+                float(creator_query_guards[idx])
+                if isinstance(creator_query_guards, np.ndarray) and idx < len(creator_query_guards)
+                else 0.0
+            )
+            creator_shift = (
+                float(creator_score_shifts[idx])
+                if isinstance(creator_score_shifts, np.ndarray) and idx < len(creator_score_shifts)
+                else 0.0
+            )
             candidate_meta = self.row_metadata.get(row_id, {})
             hashtag_overlap = 0
             style_overlap = 0
@@ -1062,7 +1408,23 @@ class HybridRetriever:
                         "multimodal": multimodal,
                         "graph_dense": graph_dense,
                         "trajectory_dense": trajectory_dense,
+                        "creator_affinity": creator_score,
+                        "fused_base": float(base_fused[idx]) if idx < len(base_fused) else fused_score,
                         "fused": fused_score,
+                    },
+                    "creator_retrieval_score": creator_score,
+                    "creator_retrieval_trace": {
+                        "version": CREATOR_RETRIEVAL_VERSION,
+                        "applied": bool(creator_retrieval.get("applied")),
+                        "creator_id": creator_retrieval.get("creator_id"),
+                        "confidence": float(creator_retrieval.get("confidence") or 0.0),
+                        "query_guard": creator_query_guard,
+                        "score_shift": creator_shift,
+                        "branch_scores": {
+                            branch: float(scores[idx])
+                            for branch, scores in dict(creator_retrieval.get("branch_scores") or {}).items()
+                            if isinstance(scores, np.ndarray) and idx < len(scores)
+                        },
                     },
                     "graph_trace": {
                         "graph_bundle_id": self.graph_bundle_id,
@@ -1096,6 +1458,9 @@ class HybridRetriever:
             "trajectory_dense": sum(
                 1 for item in items if float(item.get("trajectory_dense_score") or 0.0) > 0.0
             ),
+            "creator_affinity": sum(
+                1 for item in items if float(item.get("creator_retrieval_score") or 0.0) > 0.0
+            ),
         }
         metadata = {
             "retrieval_mode": "intersected" if requested_ids else "global",
@@ -1116,6 +1481,18 @@ class HybridRetriever:
             "graph_query_sources": list(graph_trace.get("sources") or []),
             "trajectory_manifest_id": self.trajectory_manifest_id,
             "trajectory_version": self.trajectory_version,
+            "creator_retrieval": {
+                "enabled": bool(creator_retrieval.get("creator_id")),
+                "applied": bool(creator_retrieval.get("applied")),
+                "reason": creator_retrieval.get("reason"),
+                "version": CREATOR_RETRIEVAL_VERSION,
+                "creator_id": creator_retrieval.get("creator_id"),
+                "confidence": float(creator_retrieval.get("confidence") or 0.0),
+                "blend_weight": float(creator_retrieval.get("blend_weight") or 0.0),
+                "positive_memory_count": int(creator_retrieval.get("positive_memory_count") or 0),
+                "negative_memory_count": int(creator_retrieval.get("negative_memory_count") or 0),
+                "branch_meta": dict(creator_retrieval.get("branch_meta") or {}),
+            },
         }
         return items, metadata
 

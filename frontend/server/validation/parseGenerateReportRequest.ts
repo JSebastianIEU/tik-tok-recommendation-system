@@ -1,12 +1,14 @@
 import {
+  AUDIENCE_EXPERTISE_LEVELS,
   CONTENT_TYPES,
   OBJECTIVES,
   PRIMARY_CTAS,
+  type CandidateSignalHints,
+  type AudienceInput,
   type ContentType,
   type Objective,
   type PrimaryCta
-} from "../modeling/step1/types";
-import type { CandidateSignalHints } from "../modeling/part2/extractCandidateSignals";
+} from "../contracts/query";
 
 export interface ParsedGenerateReportRequest {
   seed_video_id: string;
@@ -14,10 +16,11 @@ export interface ParsedGenerateReportRequest {
   hashtags: string[];
   description: string;
   objective?: Objective;
-  audience: string;
+  audience: string | AudienceInput;
   content_type?: ContentType;
   primary_cta?: PrimaryCta;
   locale?: string;
+  language?: string;
   signal_hints?: CandidateSignalHints;
 }
 
@@ -131,6 +134,40 @@ function parseSignalHints(value: unknown): CandidateSignalHints | null {
   return output;
 }
 
+function parseAudience(value: unknown): string | AudienceInput | null {
+  if (value === undefined) {
+    return "";
+  }
+  if (typeof value === "string") {
+    return value.trim().slice(0, 120);
+  }
+  if (!isObject(value)) {
+    return null;
+  }
+
+  const label =
+    typeof value.label === "string"
+      ? value.label.trim().slice(0, 120)
+      : undefined;
+  const segments = parseStringArray(value.segments, 8);
+  if (segments === null) {
+    return null;
+  }
+  const expertiseLevel =
+    typeof value.expertise_level === "string"
+      ? value.expertise_level.trim()
+      : undefined;
+  if (expertiseLevel && !AUDIENCE_EXPERTISE_LEVELS.includes(expertiseLevel as (typeof AUDIENCE_EXPERTISE_LEVELS)[number])) {
+    return null;
+  }
+
+  return {
+    ...(label ? { label } : {}),
+    ...(segments && segments.length > 0 ? { segments } : {}),
+    ...(expertiseLevel ? { expertise_level: expertiseLevel as AudienceInput["expertise_level"] } : {})
+  };
+}
+
 export function parseGenerateReportRequest(body: unknown): ParseResult {
   if (!isObject(body)) {
     return { ok: false, error: "Request body must be a JSON object." };
@@ -164,14 +201,19 @@ export function parseGenerateReportRequest(body: unknown): ParseResult {
     return { ok: false, error: "'primary_cta' is invalid." };
   }
 
-  const audience =
-    typeof body.audience === "string"
-      ? body.audience.trim().slice(0, 120)
-      : "";
+  const audience = parseAudience(body.audience);
+  if (audience === null) {
+    return { ok: false, error: "'audience' must be a string or object with valid fields." };
+  }
 
   const locale =
     typeof body.locale === "string" && body.locale.trim()
       ? body.locale.trim().slice(0, 24)
+      : undefined;
+
+  const language =
+    typeof body.language === "string" && body.language.trim()
+      ? body.language.trim().toLowerCase().slice(0, 8)
       : undefined;
 
   const seedVideoId =
@@ -196,6 +238,7 @@ export function parseGenerateReportRequest(body: unknown): ParseResult {
       content_type: contentType,
       primary_cta: primaryCta,
       locale,
+      language,
       signal_hints: signalHints
     }
   };

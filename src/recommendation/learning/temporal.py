@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional
 
+from ..semantic_processor import ProcessedText, process_text
+
 
 def _to_utc(dt: datetime) -> datetime:
     if dt.tzinfo is None:
@@ -28,19 +30,35 @@ def row_as_of_time(row: Dict[str, Any]) -> Optional[datetime]:
     return parse_dt(row.get("as_of_time"))
 
 
+def row_processed_text(row: Dict[str, Any]) -> ProcessedText:
+    text = " ".join(
+        [
+            str(row.get("text") or row.get("caption") or row.get("description") or "").strip(),
+            str(row.get("search_query") or "").strip(),
+            " ".join(str(item) for item in list(row.get("keywords") or []) if str(item).strip()),
+        ]
+    ).strip()
+    return process_text(
+        text=text,
+        explicit_hashtags=list(row.get("hashtags") or []),
+        explicit_mentions=list(row.get("mentions") or []),
+    )
+
+
 def row_text(row: Dict[str, Any]) -> str:
+    processed = row_processed_text(row)
+    if processed.semantic_text:
+        return processed.semantic_text
     topic_key = str(row.get("topic_key", "")).strip().lower()
-    row_id = str(row.get("row_id", "")).strip().lower()
-    missingness = row.get("features", {}).get("missingness_flags", [])
-    if not isinstance(missingness, list):
-        missingness = []
-    missing_tokens = [
-        str(item).strip().lower()
-        for item in missingness
-        if isinstance(item, str) and item.strip()
-    ]
-    text_parts = [topic_key, row_id, *missing_tokens]
-    return " ".join(part for part in text_parts if part).strip()
+    search_query = str(row.get("search_query", "")).strip().lower()
+    return " ".join(part for part in [search_query, topic_key] if part).strip()
+
+
+def row_lexical_text(row: Dict[str, Any]) -> str:
+    processed = row_processed_text(row)
+    if processed.lexical_text:
+        return processed.lexical_text
+    return row_text(row).lower()
 
 
 @dataclass

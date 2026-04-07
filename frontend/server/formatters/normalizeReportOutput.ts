@@ -70,7 +70,10 @@ function normalizeComparable(item: ComparableItem): ComparableItem {
     thumbnail_url: typeof item.thumbnail_url === "string" ? item.thumbnail_url : "",
     hashtags: item.hashtags.slice(0, 6),
     matched_keywords: item.matched_keywords.slice(0, 8),
-    observations: item.observations.slice(0, 4).map(stripComparableIdReferences)
+    observations: item.observations.slice(0, 4).map(stripComparableIdReferences),
+    why_this_was_chosen: stripComparableIdReferences(item.why_this_was_chosen),
+    ranking_reasons: item.ranking_reasons.slice(0, 4).map(stripComparableIdReferences),
+    retrieval_branches: item.retrieval_branches.slice(0, 5)
   };
 }
 
@@ -86,6 +89,10 @@ export function normalizeReportOutput(
 
   return {
     ...report,
+    meta: {
+      ...report.meta,
+      fallback_reason: report.meta.fallback_reason ?? null
+    },
     header: {
       ...report.header,
       title: "Report",
@@ -141,7 +148,24 @@ export function normalizeReportOutput(
         title: stripComparableIdReferences(item.title),
         priority: normalizePriority(item.priority),
         effort: normalizeEffort(item.effort),
-        evidence: stripComparableIdReferences(item.evidence)
+        evidence: stripComparableIdReferences(item.evidence),
+        rationale: stripComparableIdReferences(item.rationale),
+        caveats: item.caveats.slice(0, 4).map(stripComparableIdReferences),
+        evidence_refs: item.evidence_refs.slice(0, 6)
+      }))
+    },
+    reasoning: {
+      ...report.reasoning,
+      explanation_units: report.reasoning.explanation_units.map((item) => ({
+        ...item,
+        statement: stripComparableIdReferences(item.statement),
+        caveats: item.caveats.slice(0, 4).map(stripComparableIdReferences)
+      })),
+      recommendation_units: report.reasoning.recommendation_units.map((item) => ({
+        ...item,
+        action: stripComparableIdReferences(item.action),
+        rationale: stripComparableIdReferences(item.rationale),
+        caveats: item.caveats.slice(0, 4).map(stripComparableIdReferences)
       }))
     }
   };

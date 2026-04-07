@@ -32,7 +32,12 @@ export interface RequestEventRecord {
   latencyBreakdownMs: Record<string, number>;
   policyVersion?: string;
   calibrationVersion?: string;
+  policyMetadata?: Record<string, unknown>;
+  requestContext?: Record<string, unknown>;
   bundleFingerprint: Record<string, unknown>;
+  trafficClass?: "production" | "synthetic";
+  isSynthetic?: boolean;
+  injectedFailure?: boolean;
 }
 
 export interface CandidateEventRecord {
@@ -58,6 +63,46 @@ export interface ServedOutputRecord {
   rank: number;
   score: number;
   metadata: Record<string, unknown>;
+}
+
+export interface UiFeedbackEventRecord {
+  requestId: string;
+  eventName: string;
+  entityType: "report" | "comparable" | "recommendation" | "explainability" | "chat";
+  entityId?: string | null;
+  section: string;
+  rank?: number | null;
+  objectiveEffective: string;
+  experimentId?: string | null;
+  variant?: "control" | "treatment" | null;
+  signalStrength: "strong" | "medium" | "weak" | "context";
+  labelDirection: "positive" | "negative" | "neutral" | "context";
+  metadata?: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface CreatorPreferenceProfile {
+  version: "creator_feedback_profile.v1";
+  creator_id: string;
+  objective_effective: string;
+  built_at: string;
+  last_feedback_at?: string;
+  support: {
+    explicit_positive_count: number;
+    explicit_negative_count: number;
+    explicit_request_count: number;
+    objective_request_count: number;
+  };
+  global_preferences: Record<string, Record<string, number>>;
+  objective_preferences: Record<string, Record<string, number>>;
+  global_candidate_memory: {
+    positive_candidate_ids: string[];
+    negative_candidate_ids: string[];
+  };
+  objective_candidate_memory: {
+    positive_candidate_ids: string[];
+    negative_candidate_ids: string[];
+  };
 }
 
 interface PgPoolLike {
@@ -105,6 +150,47 @@ function sanitizeForDerivedOnly(value: unknown): unknown {
     return out;
   }
   return null;
+}
+
+function normalizeTextToken(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const normalized = value.trim().toLowerCase().replace(/^[@#]/, "");
+  return normalized || null;
+}
+
+function pushWeighted(map: Map<string, number>, value: unknown, weight: number): void {
+  const token = normalizeTextToken(value);
+  if (!token || weight <= 0) {
+    return;
+  }
+  map.set(token, (map.get(token) ?? 0) + weight);
+}
+
+function pushManyWeighted(map: Map<string, number>, values: unknown, weight: number): void {
+  if (!Array.isArray(values)) {
+    return;
+  }
+  for (const value of values) {
+    pushWeighted(map, value, weight);
+  }
+}
+
+function mapToSortedObject(map: Map<string, number>, limit = 24): Record<string, number> {
+  return Object.fromEntries(
+    [...map.entries()]
+      .sort((left, right) => right[1] - left[1])
+      .slice(0, Math.max(1, limit))
+      .map(([key, value]) => [key, Number(value.toFixed(6))])
+  );
+}
+
+function topKeysByWeight(map: Map<string, number>, limit = 24): string[] {
+  return [...map.entries()]
+    .sort((left, right) => right[1] - left[1])
+    .slice(0, Math.max(1, limit))
+    .map(([key]) => key);
 }
 
 export function buildRequestHash(payload: {
@@ -189,9 +275,29 @@ CREATE TABLE IF NOT EXISTS rec_request_events (
   latency_breakdown_ms JSONB NOT NULL DEFAULT '{}'::jsonb,
   policy_version TEXT,
   calibration_version TEXT,
-  bundle_fingerprint JSONB NOT NULL DEFAULT '{}'::jsonb
+  policy_metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  request_context JSONB NOT NULL DEFAULT '{}'::jsonb,
+  bundle_fingerprint JSONB NOT NULL DEFAULT '{}'::jsonb,
+  traffic_class TEXT NOT NULL DEFAULT 'production',
+  is_synthetic BOOLEAN NOT NULL DEFAULT FALSE,
+  injected_failure BOOLEAN NOT NULL DEFAULT FALSE
 );
 `);
+    await this.pool.query(
+      "ALTER TABLE rec_request_events ADD COLUMN IF NOT EXISTS traffic_class TEXT NOT NULL DEFAULT 'production';"
+    );
+    await this.pool.query(
+      "ALTER TABLE rec_request_events ADD COLUMN IF NOT EXISTS is_synthetic BOOLEAN NOT NULL DEFAULT FALSE;"
+    );
+    await this.pool.query(
+      "ALTER TABLE rec_request_events ADD COLUMN IF NOT EXISTS injected_failure BOOLEAN NOT NULL DEFAULT FALSE;"
+    );
+    await this.pool.query(
+      "ALTER TABLE rec_request_events ADD COLUMN IF NOT EXISTS policy_metadata JSONB NOT NULL DEFAULT '{}'::jsonb;"
+    );
+    await this.pool.query(
+      "ALTER TABLE rec_request_events ADD COLUMN IF NOT EXISTS request_context JSONB NOT NULL DEFAULT '{}'::jsonb;"
+    );
     await this.pool.query(`
 CREATE TABLE IF NOT EXISTS rec_candidate_events (
   request_id UUID NOT NULL,
@@ -278,6 +384,25 @@ CREATE TABLE IF NOT EXISTS rec_retrain_runs (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 `);
+    await this.pool.query(`
+CREATE TABLE IF NOT EXISTS rec_ui_feedback_events (
+  event_id BIGSERIAL PRIMARY KEY,
+  request_id UUID NOT NULL,
+  event_name TEXT NOT NULL,
+  entity_type TEXT NOT NULL,
+  entity_id TEXT,
+  section TEXT NOT NULL,
+  rank INTEGER,
+  objective_effective TEXT NOT NULL,
+  experiment_id TEXT,
+  variant TEXT,
+  signal_strength TEXT NOT NULL,
+  label_direction TEXT NOT NULL,
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  FOREIGN KEY (request_id) REFERENCES rec_request_events(request_id) ON DELETE CASCADE
+);
+`);
   }
 
   async writeRecommendationTrace(params: {
@@ -297,12 +422,12 @@ INSERT INTO rec_request_events (
   request_id, endpoint, received_at, served_at, objective_requested, objective_effective,
   experiment_id, variant, assignment_unit_hash, request_hash, routing_decision,
   compatibility_status, fallback_mode, fallback_reason, circuit_state, latency_breakdown_ms,
-  policy_version, calibration_version, bundle_fingerprint
+  policy_version, calibration_version, policy_metadata, request_context, bundle_fingerprint, traffic_class, is_synthetic, injected_failure
 ) VALUES (
   $1::uuid, $2, $3::timestamptz, $4::timestamptz, $5, $6,
   $7, $8, $9, $10, $11::jsonb,
   $12::jsonb, $13, $14, $15::jsonb, $16::jsonb,
-  $17, $18, $19::jsonb
+  $17, $18, $19::jsonb, $20::jsonb, $21::jsonb, $22, $23, $24
 )
 ON CONFLICT (request_id) DO UPDATE SET
   served_at = EXCLUDED.served_at,
@@ -310,7 +435,12 @@ ON CONFLICT (request_id) DO UPDATE SET
   fallback_reason = EXCLUDED.fallback_reason,
   latency_breakdown_ms = EXCLUDED.latency_breakdown_ms,
   circuit_state = EXCLUDED.circuit_state,
-  compatibility_status = EXCLUDED.compatibility_status;
+  compatibility_status = EXCLUDED.compatibility_status,
+  policy_metadata = EXCLUDED.policy_metadata,
+  request_context = EXCLUDED.request_context,
+  traffic_class = EXCLUDED.traffic_class,
+  is_synthetic = EXCLUDED.is_synthetic,
+  injected_failure = EXCLUDED.injected_failure;
 `,
         [
           request.requestId,
@@ -330,8 +460,13 @@ ON CONFLICT (request_id) DO UPDATE SET
           JSON.stringify(sanitizeForDerivedOnly(request.circuitState)),
           JSON.stringify(sanitizeForDerivedOnly(request.latencyBreakdownMs)),
           request.policyVersion ?? null,
-            request.calibrationVersion ?? null,
-            JSON.stringify(sanitizeForDerivedOnly(request.bundleFingerprint))
+          request.calibrationVersion ?? null,
+          JSON.stringify(sanitizeForDerivedOnly(request.policyMetadata ?? {})),
+          JSON.stringify(sanitizeForDerivedOnly(request.requestContext ?? {})),
+          JSON.stringify(sanitizeForDerivedOnly(request.bundleFingerprint)),
+          request.trafficClass === "synthetic" ? "synthetic" : "production",
+          Boolean(request.isSynthetic),
+          Boolean(request.injectedFailure)
       ]
     );
 
@@ -422,5 +557,274 @@ ON CONFLICT (request_id, candidate_id) DO UPDATE SET
         ]
       );
     }
+  }
+
+  async loadCreatorPreferenceProfile(params: {
+    creatorId: string;
+    objectiveEffective: string;
+    historyDays?: number;
+    maxFeedbackRows?: number;
+  }): Promise<CreatorPreferenceProfile | null> {
+    if (!this.pool || this.initError) {
+      return null;
+    }
+    const creatorId = normalizeTextToken(params.creatorId);
+    const objectiveEffective = normalizeTextToken(params.objectiveEffective);
+    if (!creatorId || !objectiveEffective) {
+      return null;
+    }
+    const historyDays = Math.max(7, Math.min(365, Math.round(params.historyDays ?? 180)));
+    const maxFeedbackRows = Math.max(50, Math.min(5000, Math.round(params.maxFeedbackRows ?? 750)));
+
+    const rows = await this.pool.query(
+      `
+SELECT
+  re.request_id::text,
+  re.objective_effective,
+  so.candidate_id,
+  uife.event_name,
+  uife.created_at,
+  so.metadata
+FROM rec_request_events re
+JOIN rec_ui_feedback_events uife
+  ON uife.request_id = re.request_id
+JOIN rec_served_outputs so
+  ON so.request_id = re.request_id
+ AND so.candidate_id = uife.entity_id
+WHERE COALESCE(re.request_context->>'creator_id', '') = $1
+  AND uife.entity_type = 'comparable'
+  AND uife.signal_strength = 'strong'
+  AND uife.event_name IN (
+    'comparable_saved',
+    'comparable_marked_relevant',
+    'comparable_marked_not_relevant'
+  )
+  AND uife.created_at >= NOW() - ($2::text || ' days')::interval
+ORDER BY uife.created_at DESC
+LIMIT $3
+`,
+      [creatorId, String(historyDays), maxFeedbackRows]
+    );
+
+    type AggregateEntry = {
+      requestId: string;
+      candidateId: string;
+      objectiveEffective: string;
+      events: string[];
+      latestCreatedAt?: string;
+      metadata: Record<string, unknown>;
+    };
+
+    const aggregates = new Map<string, AggregateEntry>();
+    for (const row of rows.rows as Array<Record<string, unknown>>) {
+      const requestId = typeof row.request_id === "string" ? row.request_id : "";
+      const objective = typeof row.objective_effective === "string" ? row.objective_effective : "";
+      const candidateId = typeof row.candidate_id === "string" ? row.candidate_id : "";
+      const eventName = typeof row.event_name === "string" ? row.event_name : "";
+      const createdAt =
+        typeof row.created_at === "string"
+          ? row.created_at
+          : row.created_at instanceof Date
+            ? row.created_at.toISOString()
+            : undefined;
+      const metadata =
+        row.metadata && typeof row.metadata === "object" && !Array.isArray(row.metadata)
+          ? (row.metadata as Record<string, unknown>)
+          : {};
+      const key = `${requestId}::${candidateId}`;
+      const existing = aggregates.get(key);
+      if (existing) {
+        existing.events.push(eventName);
+        if (createdAt && (!existing.latestCreatedAt || createdAt > existing.latestCreatedAt)) {
+          existing.latestCreatedAt = createdAt;
+        }
+        continue;
+      }
+      aggregates.set(key, {
+        requestId,
+        candidateId,
+        objectiveEffective: objective,
+        events: [eventName],
+        latestCreatedAt: createdAt,
+        metadata
+      });
+    }
+
+    const globalPositiveTopics = new Map<string, number>();
+    const globalNegativeTopics = new Map<string, number>();
+    const globalPositiveContentTypes = new Map<string, number>();
+    const globalNegativeContentTypes = new Map<string, number>();
+    const globalPositiveHashtags = new Map<string, number>();
+    const globalNegativeHashtags = new Map<string, number>();
+    const globalPositiveAuthors = new Map<string, number>();
+    const globalNegativeAuthors = new Map<string, number>();
+
+    const objectivePositiveTopics = new Map<string, number>();
+    const objectiveNegativeTopics = new Map<string, number>();
+    const objectivePositiveContentTypes = new Map<string, number>();
+    const objectiveNegativeContentTypes = new Map<string, number>();
+    const objectivePositiveHashtags = new Map<string, number>();
+    const objectiveNegativeHashtags = new Map<string, number>();
+    const objectivePositiveAuthors = new Map<string, number>();
+    const objectiveNegativeAuthors = new Map<string, number>();
+    const globalPositiveCandidates = new Map<string, number>();
+    const globalNegativeCandidates = new Map<string, number>();
+    const objectivePositiveCandidates = new Map<string, number>();
+    const objectiveNegativeCandidates = new Map<string, number>();
+
+    let explicitPositiveCount = 0;
+    let explicitNegativeCount = 0;
+    let explicitRequestCount = 0;
+    let objectiveRequestCount = 0;
+    let lastFeedbackAt = "";
+
+    const requestsWithFeedback = new Set<string>();
+    const objectiveRequestsWithFeedback = new Set<string>();
+
+    for (const entry of aggregates.values()) {
+      const hasSaved = entry.events.includes("comparable_saved");
+      const hasRelevant = entry.events.includes("comparable_marked_relevant");
+      const hasNegative = entry.events.includes("comparable_marked_not_relevant");
+      if ((hasSaved || hasRelevant) && hasNegative) {
+        continue;
+      }
+      const isPositive = hasSaved || hasRelevant;
+      const isNegative = hasNegative;
+      if (!isPositive && !isNegative) {
+        continue;
+      }
+      const ageDays =
+        entry.latestCreatedAt && !Number.isNaN(Date.parse(entry.latestCreatedAt))
+          ? Math.max(
+              0,
+              (Date.now() - Date.parse(entry.latestCreatedAt)) / (1000 * 60 * 60 * 24)
+            )
+          : historyDays;
+      const recencyWeight = Math.max(0.1, Math.exp((-Math.log(2) * ageDays) / 45));
+      const labelWeight = hasSaved ? 1.25 : 1.0;
+      const totalWeight = recencyWeight * labelWeight;
+      const topicKey = entry.metadata.topic_key;
+      const contentType = entry.metadata.content_type;
+      const authorId = entry.metadata.author_id;
+      const hashtags = entry.metadata.hashtags;
+
+      if (isPositive) {
+        explicitPositiveCount += 1;
+        requestsWithFeedback.add(entry.requestId);
+        pushWeighted(globalPositiveTopics, topicKey, totalWeight);
+        pushWeighted(globalPositiveContentTypes, contentType, totalWeight);
+        pushManyWeighted(globalPositiveHashtags, hashtags, totalWeight);
+        pushWeighted(globalPositiveAuthors, authorId, totalWeight * 0.5);
+        pushWeighted(globalPositiveCandidates, entry.candidateId, totalWeight);
+        if (entry.objectiveEffective === objectiveEffective) {
+          objectiveRequestsWithFeedback.add(entry.requestId);
+          pushWeighted(objectivePositiveTopics, topicKey, totalWeight);
+          pushWeighted(objectivePositiveContentTypes, contentType, totalWeight);
+          pushManyWeighted(objectivePositiveHashtags, hashtags, totalWeight);
+          pushWeighted(objectivePositiveAuthors, authorId, totalWeight * 0.5);
+          pushWeighted(objectivePositiveCandidates, entry.candidateId, totalWeight);
+        }
+      } else if (isNegative) {
+        explicitNegativeCount += 1;
+        requestsWithFeedback.add(entry.requestId);
+        pushWeighted(globalNegativeTopics, topicKey, totalWeight);
+        pushWeighted(globalNegativeContentTypes, contentType, totalWeight);
+        pushManyWeighted(globalNegativeHashtags, hashtags, totalWeight);
+        pushWeighted(globalNegativeAuthors, authorId, totalWeight * 0.5);
+        pushWeighted(globalNegativeCandidates, entry.candidateId, totalWeight);
+        if (entry.objectiveEffective === objectiveEffective) {
+          objectiveRequestsWithFeedback.add(entry.requestId);
+          pushWeighted(objectiveNegativeTopics, topicKey, totalWeight);
+          pushWeighted(objectiveNegativeContentTypes, contentType, totalWeight);
+          pushManyWeighted(objectiveNegativeHashtags, hashtags, totalWeight);
+          pushWeighted(objectiveNegativeAuthors, authorId, totalWeight * 0.5);
+          pushWeighted(objectiveNegativeCandidates, entry.candidateId, totalWeight);
+        }
+      }
+
+      if (entry.latestCreatedAt && entry.latestCreatedAt > lastFeedbackAt) {
+        lastFeedbackAt = entry.latestCreatedAt;
+      }
+    }
+
+    explicitRequestCount = requestsWithFeedback.size;
+    objectiveRequestCount = objectiveRequestsWithFeedback.size;
+    if (explicitPositiveCount + explicitNegativeCount <= 0) {
+      return null;
+    }
+
+    return {
+      version: "creator_feedback_profile.v1",
+      creator_id: creatorId,
+      objective_effective: objectiveEffective,
+      built_at: new Date().toISOString(),
+      ...(lastFeedbackAt ? { last_feedback_at: lastFeedbackAt } : {}),
+      support: {
+        explicit_positive_count: explicitPositiveCount,
+        explicit_negative_count: explicitNegativeCount,
+        explicit_request_count: explicitRequestCount,
+        objective_request_count: objectiveRequestCount
+      },
+      global_preferences: {
+        topics_positive: mapToSortedObject(globalPositiveTopics),
+        topics_negative: mapToSortedObject(globalNegativeTopics),
+        content_types_positive: mapToSortedObject(globalPositiveContentTypes),
+        content_types_negative: mapToSortedObject(globalNegativeContentTypes),
+        hashtags_positive: mapToSortedObject(globalPositiveHashtags),
+        hashtags_negative: mapToSortedObject(globalNegativeHashtags),
+        authors_positive: mapToSortedObject(globalPositiveAuthors),
+        authors_negative: mapToSortedObject(globalNegativeAuthors)
+      },
+      objective_preferences: {
+        topics_positive: mapToSortedObject(objectivePositiveTopics),
+        topics_negative: mapToSortedObject(objectiveNegativeTopics),
+        content_types_positive: mapToSortedObject(objectivePositiveContentTypes),
+        content_types_negative: mapToSortedObject(objectiveNegativeContentTypes),
+        hashtags_positive: mapToSortedObject(objectivePositiveHashtags),
+        hashtags_negative: mapToSortedObject(objectiveNegativeHashtags),
+        authors_positive: mapToSortedObject(objectivePositiveAuthors),
+        authors_negative: mapToSortedObject(objectiveNegativeAuthors)
+      },
+      global_candidate_memory: {
+        positive_candidate_ids: topKeysByWeight(globalPositiveCandidates),
+        negative_candidate_ids: topKeysByWeight(globalNegativeCandidates)
+      },
+      objective_candidate_memory: {
+        positive_candidate_ids: topKeysByWeight(objectivePositiveCandidates),
+        negative_candidate_ids: topKeysByWeight(objectiveNegativeCandidates)
+      }
+    };
+  }
+
+  async writeUiFeedbackEvent(event: UiFeedbackEventRecord): Promise<void> {
+    if (!this.pool || this.initError) {
+      return;
+    }
+    await this.pool.query(
+      `
+INSERT INTO rec_ui_feedback_events (
+  request_id, event_name, entity_type, entity_id, section, rank, objective_effective,
+  experiment_id, variant, signal_strength, label_direction, metadata, created_at
+) VALUES (
+  $1::uuid, $2, $3, $4, $5, $6, $7,
+  $8, $9, $10, $11, $12::jsonb, $13::timestamptz
+);
+`,
+      [
+        event.requestId,
+        event.eventName,
+        event.entityType,
+        event.entityId ?? null,
+        event.section,
+        event.rank ?? null,
+        event.objectiveEffective,
+        event.experimentId ?? null,
+        event.variant ?? null,
+        event.signalStrength,
+        event.labelDirection,
+        JSON.stringify(sanitizeForDerivedOnly(event.metadata ?? {})),
+        event.createdAt
+      ]
+    );
   }
 }

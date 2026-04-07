@@ -5,6 +5,10 @@ interface ComparablesSectionProps {
   items: ComparableItem[];
   selectedComparableId: string | null;
   onSelectComparable: (id: string) => void;
+  onOpenVideo: (item: ComparableItem) => void;
+  onMarkRelevant: (item: ComparableItem, label: "relevant" | "not_relevant") => void;
+  onSaveComparable: (item: ComparableItem) => void;
+  feedbackState: Record<string, "relevant" | "not_relevant" | "saved" | undefined>;
 }
 
 function formatCompactNumber(value: number): string {
@@ -49,6 +53,7 @@ export function ComparablesSection(props: ComparablesSectionProps): JSX.Element 
                   rel="noreferrer"
                   className="comparable-thumb-link"
                   aria-label="Open comparable video on TikTok"
+                  onClick={() => props.onOpenVideo(item)}
                 >
                   <ComparableThumbnailImage
                     className="comparable-thumb-image"
@@ -74,6 +79,9 @@ export function ComparablesSection(props: ComparablesSectionProps): JSX.Element 
                     <span className="comparable-main-top">
                       <span className="comparable-score">
                         Similarity: {formatSimilarity(item.similarity)}
+                      </span>
+                      <span className="comparable-score">
+                        {item.confidence_label}
                       </span>
                     </span>
 
@@ -105,9 +113,43 @@ export function ComparablesSection(props: ComparablesSectionProps): JSX.Element 
                       </span>
                       <span>Shares: {item.metrics.shares.toLocaleString("en-US")}</span>
                       <span>Engagement: {item.metrics.engagement_rate}</span>
+                      <span>Support: {item.support_level}</span>
                     </span>
                   </span>
                 </button>
+
+                <div className="comparable-feedback-row">
+                  <button
+                    type="button"
+                    className="report-ghost-action"
+                    onClick={() => props.onMarkRelevant(item, "relevant")}
+                  >
+                    {props.feedbackState[item.id] === "relevant" ? "Relevant saved" : "Mark relevant"}
+                  </button>
+                  <button
+                    type="button"
+                    className="report-ghost-action"
+                    onClick={() => props.onMarkRelevant(item, "not_relevant")}
+                  >
+                    {props.feedbackState[item.id] === "not_relevant"
+                      ? "Marked not relevant"
+                      : "Mark not relevant"}
+                  </button>
+                  <button
+                    type="button"
+                    className="report-ghost-action"
+                    onClick={() => props.onSaveComparable(item)}
+                  >
+                    {props.feedbackState[item.id] === "saved" ? "Saved" : "Save comparable"}
+                  </button>
+                </div>
+
+                <div className="comparable-evidence-block">
+                  <p>{item.why_this_was_chosen}</p>
+                  <p>
+                    Reasons: {item.ranking_reasons.length > 0 ? item.ranking_reasons.join(", ") : "Not available"}
+                  </p>
+                </div>
 
                 {hasVideoUrl ? (
                   <a
@@ -116,6 +158,7 @@ export function ComparablesSection(props: ComparablesSectionProps): JSX.Element 
                     rel="noreferrer"
                     className="comparable-open-link"
                     aria-label="Open this video on TikTok"
+                    onClick={() => props.onOpenVideo(item)}
                   >
                     View on TikTok
                   </a>

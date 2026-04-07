@@ -1,4 +1,4 @@
-.PHONY: lint test validate-data baseline query datamart feature-snapshot fabric-hourly fabric-daily comment-snapshot comment-priors comment-hourly comment-daily eval-fabric-rollout eval-comment-rollout train-recommender eval-recommender serve-recommender bootstrap-embedding benchmark-recommender build-retriever fit-retriever-fusion eval-retriever-only outcome-attribution drift-monitor retrain-controller experiment-analysis
+.PHONY: lint test validate-data baseline query datamart feature-snapshot fabric-hourly fabric-daily comment-snapshot comment-priors comment-hourly comment-daily eval-fabric-rollout eval-comment-rollout train-recommender eval-recommender eval-recommender-ablation serve-recommender bootstrap-embedding benchmark-recommender build-retriever fit-retriever-fusion eval-retriever-only outcome-attribution drift-monitor retrain-controller experiment-analysis live-e2e-validate
 
 # Lint only tests for Sprint 1 (repo has known scaffold lint debt elsewhere).
 lint:
@@ -53,6 +53,9 @@ train-recommender:
 eval-recommender:
 	PYTHONPATH=. python3 scripts/eval_recommender.py artifacts/recommender/latest --show-manifest
 
+eval-recommender-ablation:
+	PYTHONPATH=. python3 scripts/eval_recommender.py artifacts/recommender/latest --show-ablation
+
 serve-recommender:
 	PYTHONPATH=. python3 scripts/serve_recommender.py --host 127.0.0.1 --port 8081 --bundle-dir artifacts/recommender/latest
 
@@ -82,3 +85,6 @@ retrain-controller:
 
 experiment-analysis:
 	PYTHONPATH=. python3 scripts/run_experiment_analysis.py --output-json artifacts/control_plane/experiment_report.json
+
+live-e2e-validate:
+	PYTHONPATH=. python3 scripts/run_live_e2e_validation.py --launch-python --launch-node --inject-compat-mismatch --inject-python-down --run-control-plane --db-url $$DATABASE_URL --output-json artifacts/control_plane/live_e2e_validation_report.json

@@ -1,8 +1,28 @@
 ﻿import { UserAvatarButton } from "./UserAvatarButton";
 
 export function LeftSidebar(): JSX.Element {
+  const pathname = typeof window !== "undefined" ? window.location.pathname : "/";
+  const inLabeling = pathname.startsWith("/labeling");
+
   return (
     <aside className="left-sidebar" aria-label="Sidebar">
+      <nav className="sidebar-nav" aria-label="Main navigation">
+        <a
+          href="/"
+          className={`sidebar-nav-link ${!inLabeling ? "sidebar-nav-link-active" : ""}`}
+          aria-label="Open main app"
+        >
+          <span>App</span>
+        </a>
+        <a
+          href="/labeling"
+          className={`sidebar-nav-link ${inLabeling ? "sidebar-nav-link-active" : ""}`}
+          aria-label="Open labeling workspace"
+        >
+          <span>Labels</span>
+        </a>
+      </nav>
+
       <button
         type="button"
         className="sidebar-icon-button"

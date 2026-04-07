@@ -45,6 +45,10 @@ export interface ParsedRecommendationsRequest extends ParsedGenerateReportReques
     id?: string;
     force_variant?: "control" | "treatment";
   };
+  traffic: {
+    class?: "production" | "synthetic";
+    injected_failure?: boolean;
+  };
   debug: boolean;
 }
 
@@ -421,6 +425,32 @@ function parseExperiment(
   return out;
 }
 
+function parseTraffic(
+  value: unknown
+): { class?: "production" | "synthetic"; injected_failure?: boolean } | null {
+  if (value === undefined || value === null) {
+    return {};
+  }
+  if (typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const source = value as Record<string, unknown>;
+  const out: { class?: "production" | "synthetic"; injected_failure?: boolean } = {};
+  if (source.class !== undefined) {
+    if (source.class !== "production" && source.class !== "synthetic") {
+      return null;
+    }
+    out.class = source.class;
+  }
+  if (source.injected_failure !== undefined) {
+    if (typeof source.injected_failure !== "boolean") {
+      return null;
+    }
+    out.injected_failure = source.injected_failure;
+  }
+  return out;
+}
+
 export function parseRecommendationsRequest(body: unknown): ParseRecommendationsResult {
   const parsedCore = parseGenerateReportRequest(body);
   if (!parsedCore.ok) {
@@ -503,6 +533,14 @@ export function parseRecommendationsRequest(body: unknown): ParseRecommendations
         "'experiment' must be an object with optional id(string<=80) and force_variant(control|treatment)."
     };
   }
+  const traffic = parseTraffic(source.traffic);
+  if (traffic === null) {
+    return {
+      ok: false,
+      error:
+        "'traffic' must be an object with optional class(production|synthetic) and injected_failure(boolean)."
+    };
+  }
   const debug = source.debug === true;
 
   return {
@@ -521,6 +559,7 @@ export function parseRecommendationsRequest(body: unknown): ParseRecommendations
       explainability,
       routing,
       experiment,
+      traffic,
       debug
     }
   };

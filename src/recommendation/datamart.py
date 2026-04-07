@@ -206,7 +206,14 @@ class TrainingRow(BaseModel):
     row_id: str
     video_id: str
     author_id: str
+    caption: str = ""
+    hashtags: List[str] = Field(default_factory=list)
+    keywords: List[str] = Field(default_factory=list)
+    search_query: Optional[str] = None
     topic_key: str
+    language: Optional[str] = None
+    locale: Optional[str] = None
+    content_type: str = "other"
     posted_at: datetime
     as_of_time: datetime
     split: Literal["train", "validation", "test"]
@@ -965,9 +972,15 @@ def _build_pair_rows(
     for row in rows:
         row_tokens[row["row_id"]] = _dedupe(
             [
+                *_tokenize(str(row.get("caption") or "")),
+                *[
+                    tag.replace("#", "").strip().lower()
+                    for tag in list(row.get("hashtags") or [])
+                    if str(tag).strip()
+                ],
+                *_tokenize(" ".join(str(item) for item in list(row.get("keywords") or []))),
+                *_tokenize(str(row.get("search_query") or "")),
                 *_tokenize(row["topic_key"]),
-                *_tokenize(row["video_id"]),
-                *row["features"]["missingness_flags"],
             ]
         )
 
@@ -1356,7 +1369,14 @@ def build_training_data_mart(
                 "row_id": f"{video.video_id}::{as_of.isoformat()}",
                 "video_id": video.video_id,
                 "author_id": video.author_id,
+                "caption": video.caption,
+                "hashtags": list(video.hashtags),
+                "keywords": list(video.keywords),
+                "search_query": video.search_query,
                 "topic_key": topic_key,
+                "language": video.language,
+                "locale": None,
+                "content_type": content_type_bucket,
                 "posted_at": posted_at,
                 "as_of_time": as_of,
                 "split": "test",
@@ -1696,7 +1716,14 @@ def build_training_data_mart(
                 "row_id": row["row_id"],
                 "video_id": row["video_id"],
                 "author_id": author_id,
+                "caption": row.get("caption") or "",
+                "hashtags": list(row.get("hashtags") or []),
+                "keywords": list(row.get("keywords") or []),
+                "search_query": row.get("search_query"),
                 "topic_key": row["topic_key"],
+                "language": row.get("language"),
+                "locale": row.get("locale"),
+                "content_type": row.get("content_type") or "other",
                 "posted_at": row["posted_at"],
                 "as_of_time": row["as_of_time"],
                 "split": split,

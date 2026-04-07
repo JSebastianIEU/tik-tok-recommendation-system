@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Literal, Optional, Sequence, Set, Tuple
@@ -1314,7 +1315,7 @@ def _schema_hash(model: type[BaseModel]) -> str:
 
 
 def _rows_to_dict_rows(rows: Sequence[BaseModel]) -> List[Dict[str, Any]]:
-    return [item.model_dump(mode="python") for item in rows]
+    return [item.model_dump(mode="json") for item in rows]
 
 
 def _write_partitioned_entity(
@@ -1403,7 +1404,10 @@ def build_contract_manifest(
     manifest_id = _sha256_text(_canonical_json(deterministic_seed))
     manifest_dir = root / manifest_id
     if manifest_dir.exists():
-        return json.loads((manifest_dir / "manifest.json").read_text(encoding="utf-8"))
+        manifest_path = manifest_dir / "manifest.json"
+        if manifest_path.exists():
+            return json.loads(manifest_path.read_text(encoding="utf-8"))
+        shutil.rmtree(manifest_dir)
 
     manifest_dir.mkdir(parents=True, exist_ok=False)
     exports_root = manifest_dir / "exports"
@@ -1414,7 +1418,7 @@ def build_contract_manifest(
         entity_files[entity_name] = _write_partitioned_entity(entity_name, rows, exports_root)
 
     bundle_with_manifest = bundle.model_copy(update={"manifest_id": manifest_id})
-    bundle_json = bundle_with_manifest.model_dump(mode="python")
+    bundle_json = bundle_with_manifest.model_dump(mode="json")
     (manifest_dir / "bundle.json").write_text(
         json.dumps(bundle_json, indent=2, ensure_ascii=False, default=_json_default),
         encoding="utf-8",

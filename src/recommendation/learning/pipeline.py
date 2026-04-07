@@ -8,30 +8,30 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .artifacts import ArtifactRegistry
-from .calibration import ObjectiveSegmentCalibrators
-from .evaluator import evaluate_ranking, evaluate_retrieval, recall_at_k
-from .objectives import OBJECTIVE_SPECS, map_objective
-from .ranker import (
-    FEATURE_NAMES,
-    ObjectiveRankerConfig,
-    ObjectiveRankerModel,
-    RankerEnsembleModel,
-    RankerFamilyConfig,
-    RankerFamilyModel,
-    SEGMENT_GLOBAL,
-    SEGMENT_CREATOR_COLD_START,
-    SEGMENT_CREATOR_MATURE,
-    SEGMENT_FORMAT_ENTERTAINMENT,
-    SEGMENT_FORMAT_TUTORIAL,
-    segment_candidates_for_pair,
-    pair_feature_vector_array,
+from .baseline_common import (
+    BASELINE_GRAPH_VERSION,
+    BASELINE_RANKER_VERSION,
+    BASELINE_RETRIEVER_VERSION,
+    BASELINE_TRAJECTORY_VERSION,
+    DEFAULT_RANKING_WEIGHTS,
+    OBJECTIVE_RANKING_WEIGHTS,
+    round_score,
 )
-from .retriever import HybridRetriever, HybridRetrieverTrainerConfig
+from .candidate_support import prepare_candidate
+from .evaluator import evaluate_ranking, evaluate_retrieval, recall_at_k
 from .graph import (
     GraphBuildConfig,
     annotate_rows_with_graph_features,
     build_creator_video_dna_graph,
 )
+from .objectives import OBJECTIVE_SPECS, map_objective
+from .policy import PolicyRerankerConfig
+from .query_contract import build_query_profile
+from .ranking_baseline import rank_shortlist
+from .retrieval_baseline import retrieve_shortlist
+from .retriever import HybridRetriever, HybridRetrieverTrainerConfig
+from .sampling import NegativeSampler, NegativeSamplerConfig
+from .temporal import TemporalCandidatePool, TemporalCandidatePoolConfig, parse_dt, row_text, split_rows
 from .trajectory import (
     TRAJECTORY_VERSION,
     TrajectoryBuildConfig,
@@ -39,24 +39,24 @@ from .trajectory import (
     annotate_rows_with_trajectory_features,
     build_trajectory_bundle,
 )
-from .sampling import (
-    AdaptiveNegativeMiner,
-    AdaptiveNegativeMiningConfig,
-    NegativeSampler,
-    NegativeSamplerConfig,
-)
-from .temporal import TemporalCandidatePool, TemporalCandidatePoolConfig, split_rows
-from .policy import PolicyRerankerConfig
 from ..fabric import FeatureFabric
 
 VALID_PAIR_TARGET_SOURCES = {"scalar_v1", "trajectory_v2_composite"}
-VALID_NEGATIVE_MINING_MODES = {"fixed_v1", "adaptive_v2"}
-RANKER_SEGMENTS = (
-    SEGMENT_CREATOR_COLD_START,
-    SEGMENT_CREATOR_MATURE,
-    SEGMENT_FORMAT_TUTORIAL,
-    SEGMENT_FORMAT_ENTERTAINMENT,
+RETRIEVAL_BRANCH_KEYS = (
+    "lexical",
+    "dense_text",
+    "multimodal",
+    "graph_dense",
+    "trajectory_dense",
 )
+BASELINE_RANKER_FEATURE_NAMES = [
+    "semantic_relevance",
+    "intent_alignment",
+    "reference_usefulness",
+    "support_confidence",
+    "retrieval_fused",
+    "support_score",
+]
 
 
 def _to_utc_iso(value: Any) -> Optional[str]:
@@ -80,16 +80,6 @@ class RecommenderTrainingConfig:
     random_seed: int = 13
     run_name: str = "recommender-v1"
     pair_target_source: str = "scalar_v1"
-    negative_mining_mode: str = "fixed_v1"
-    adaptive_negative_mining: AdaptiveNegativeMiningConfig = field(
-        default_factory=AdaptiveNegativeMiningConfig
-    )
-    ranker_ensemble_size: int = 5
-    ranker_uncertainty_std_ref: float = 0.15
-    segment_min_train_pairs: int = 120
-    segment_min_validation_pairs: int = 20
-    creator_cold_start_threshold: int = 10
-    ranker_calibration_min_support: int = 25
     feature_snapshot_manifest_path: Optional[str] = None
     graph_enabled: bool = True
     graph_embedding_dim: int = 32
@@ -125,31 +115,15 @@ class RecommenderTrainingConfig:
                 "pair_target_source must be one of "
                 f"{sorted(VALID_PAIR_TARGET_SOURCES)}; got '{self.pair_target_source}'"
             )
-        if self.negative_mining_mode not in VALID_NEGATIVE_MINING_MODES:
-            raise ValueError(
-                "negative_mining_mode must be one of "
-                f"{sorted(VALID_NEGATIVE_MINING_MODES)}; got '{self.negative_mining_mode}'"
-            )
-        if self.ranker_ensemble_size < 1:
-            raise ValueError("ranker_ensemble_size must be >= 1.")
-        if self.ranker_uncertainty_std_ref <= 0:
-            raise ValueError("ranker_uncertainty_std_ref must be > 0.")
-        if self.segment_min_train_pairs < 1 or self.segment_min_validation_pairs < 1:
-            raise ValueError("segment_min_train_pairs and segment_min_validation_pairs must be >= 1.")
-        if self.creator_cold_start_threshold < 1:
-            raise ValueError("creator_cold_start_threshold must be >= 1.")
-        if self.ranker_calibration_min_support < 1:
-            raise ValueError("ranker_calibration_min_support must be >= 1.")
+        if self.retrieve_k < 1:
+            raise ValueError("retrieve_k must be >= 1.")
+        if self.max_age_days < 1:
+            raise ValueError("max_age_days must be >= 1.")
         if self.graph_embedding_dim < 4:
             raise ValueError("graph_embedding_dim must be >= 4.")
         if self.trajectory_embedding_dim < 4:
             raise ValueError("trajectory_embedding_dim must be >= 4.")
-        if self.trajectory_branch_weight < 0:
-            raise ValueError("trajectory_branch_weight must be >= 0.")
-        if self.trajectory_encoder_mode not in {
-            "feature_only",
-            "sequence_encoder_shadow",
-        }:
+        if self.trajectory_encoder_mode not in {"feature_only", "sequence_encoder_shadow"}:
             raise ValueError(
                 "trajectory_encoder_mode must be one of: feature_only, sequence_encoder_shadow."
             )
@@ -218,7 +192,6 @@ def _load_feature_snapshot_vectors(
         except Exception:
             rows = []
     else:
-        rows = []
         for line in feature_file.read_text(encoding="utf-8").splitlines():
             if not line.strip():
                 continue
@@ -252,134 +225,14 @@ def _load_trajectory_bundle_from_manifest(
     manifest_path = _resolve_manifest_path(manifest_ref)
     if not manifest_path.exists():
         return None
-    bundle_dir = manifest_path.parent
     try:
-        return TrajectoryBundle.load(bundle_dir)
+        return TrajectoryBundle.load(manifest_path.parent)
     except Exception:
         return None
 
 
-class ObjectiveRankerTrainer:
-    def __init__(self, objective: str, random_seed: int = 13) -> None:
-        _, self.objective = map_objective(objective)
-        self.random_seed = random_seed
-
-    def train(
-        self,
-        rows_by_id: Dict[str, Dict[str, Any]],
-        pair_rows: Sequence[Dict[str, Any]],
-    ) -> ObjectiveRankerModel:
-        return ObjectiveRankerModel.train(
-            config=ObjectiveRankerConfig(
-                objective=self.objective,
-                random_state=self.random_seed,
-            ),
-            rows_by_id=rows_by_id,
-            pair_rows=pair_rows,
-        )
-
-
 def _rows_by_id(rows: Sequence[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     return {str(row.get("row_id")): row for row in rows}
-
-
-def _relevance_label_from_score(score: float) -> int:
-    if score >= 1.0:
-        return 3
-    if score >= 0.3:
-        return 2
-    if score >= -0.3:
-        return 1
-    return 0
-
-
-def _pair_rows_for_objective(
-    rows_by_id: Dict[str, Dict[str, Any]],
-    pair_rows: Sequence[Dict[str, Any]],
-    objective: str,
-    pair_target_source: str = "scalar_v1",
-) -> List[Dict[str, Any]]:
-    direct = [
-        row
-        for row in pair_rows
-        if str(row.get("objective")) == objective
-        and str(row.get("target_source", "scalar_v1")) == pair_target_source
-    ]
-    if direct:
-        return direct
-
-    out: List[Dict[str, Any]] = []
-    for pair in pair_rows:
-        candidate_id = str(pair.get("candidate_row_id"))
-        candidate_row = rows_by_id.get(candidate_id)
-        if candidate_row is None:
-            continue
-        if pair_target_source == "trajectory_v2_composite":
-            trajectory_targets = (
-                candidate_row.get("targets_trajectory_z", {})
-                if isinstance(candidate_row.get("targets_trajectory_z"), dict)
-                else {}
-            ).get(objective, {})
-            score = trajectory_targets.get("composite_z") if isinstance(trajectory_targets, dict) else None
-            if score is None:
-                continue
-            score = float(score)
-            components = (
-                trajectory_targets.get("components_z", {})
-                if isinstance(trajectory_targets, dict)
-                else {}
-            )
-            objective_score_components = {
-                key: float(value)
-                for key, value in (components.items() if isinstance(components, dict) else [])
-                if value is not None and key in {"early_velocity", "stability", "late_lift"}
-            }
-            availability_payload = (
-                candidate_row.get("target_availability", {})
-                if isinstance(candidate_row.get("target_availability"), dict)
-                else {}
-            ).get(objective, {})
-            component_mask = (
-                availability_payload.get("components", {})
-                if isinstance(availability_payload, dict)
-                else {}
-            )
-            availability_mask = {
-                "candidate_objective_available": bool(
-                    availability_payload.get("objective_available", False)
-                ),
-                "candidate_early_available": bool(
-                    component_mask.get("early_velocity", False)
-                ),
-                "candidate_stability_available": bool(
-                    component_mask.get("stability", False)
-                ),
-                "candidate_late_available": bool(
-                    component_mask.get("late_lift", False)
-                ),
-            }
-        else:
-            score = float(
-                (
-                    candidate_row.get("targets_z", {})
-                    if isinstance(candidate_row.get("targets_z"), dict)
-                    else {}
-                ).get(objective, 0.0)
-            )
-            objective_score_components = None
-            availability_mask = None
-        out.append(
-            {
-                **pair,
-                "objective": objective,
-                "target_source": pair_target_source,
-                "objective_score": round(score, 6),
-                "objective_score_components": objective_score_components,
-                "availability_mask": availability_mask,
-                "relevance_label": _relevance_label_from_score(score),
-            }
-        )
-    return out
 
 
 def _group_relevance_by_query(
@@ -390,309 +243,191 @@ def _group_relevance_by_query(
     for pair in pair_rows:
         if str(pair.get("objective")) != objective:
             continue
-        qid = str(pair.get("query_row_id"))
-        cid = str(pair.get("candidate_row_id"))
-        rel = float(pair.get("relevance_label") or 0.0)
-        out.setdefault(qid, {})[cid] = rel
+        query_id = str(pair.get("query_row_id") or "").strip()
+        candidate_id = str(pair.get("candidate_row_id") or "").strip()
+        if not query_id or not candidate_id:
+            continue
+        out.setdefault(query_id, {})[candidate_id] = float(pair.get("relevance_label") or 0.0)
     return out
 
 
-def _parse_as_of(value: Any) -> datetime:
-    if isinstance(value, datetime):
-        return value.astimezone(timezone.utc)
-    return datetime.fromisoformat(str(value).replace("Z", "+00:00")).astimezone(timezone.utc)
+def _normalize_retrieval_weights(weights: Dict[str, float]) -> Dict[str, float]:
+    normalized = {
+        key: max(0.0, float(weights.get(key, 0.0)))
+        for key in RETRIEVAL_BRANCH_KEYS
+    }
+    denom = sum(normalized.values())
+    if denom <= 0.0:
+        uniform = 1.0 / float(len(RETRIEVAL_BRANCH_KEYS))
+        return {key: uniform for key in RETRIEVAL_BRANCH_KEYS}
+    return {key: value / denom for key, value in normalized.items()}
 
 
-def _annotate_creator_prior_video_counts(rows: Sequence[Dict[str, Any]]) -> None:
-    ordered = sorted(rows, key=lambda row: _parse_as_of(row.get("as_of_time")))
-    author_counts: Dict[str, int] = {}
-    for row in ordered:
-        author_id = str(row.get("author_id") or "unknown")
-        prior = int(author_counts.get(author_id, 0))
-        row["_creator_prior_video_count"] = prior
-        features = row.get("features")
-        if isinstance(features, dict):
-            features["creator_prior_video_count"] = prior
-        author_counts[author_id] = prior + 1
-
-
-def _pair_applies_segment(
-    *,
-    query_row: Dict[str, Any],
-    candidate_row: Dict[str, Any],
-    segment_id: str,
-    creator_cold_start_threshold: int,
-) -> bool:
-    return segment_id in segment_candidates_for_pair(
-        query_row=query_row,
-        candidate_row=candidate_row,
-        creator_cold_threshold=creator_cold_start_threshold,
-    )
-
-
-def _segment_support_counts(
-    *,
-    rows_by_id: Dict[str, Dict[str, Any]],
-    pair_rows: Sequence[Dict[str, Any]],
-    objective: str,
-    segment_id: str,
-    creator_cold_start_threshold: int,
-) -> Dict[str, int]:
-    train_count = 0
-    validation_count = 0
-    for pair in pair_rows:
-        if str(pair.get("objective")) != objective:
-            continue
-        qid = str(pair.get("query_row_id"))
-        cid = str(pair.get("candidate_row_id"))
-        query_row = rows_by_id.get(qid)
-        candidate_row = rows_by_id.get(cid)
-        if query_row is None or candidate_row is None:
-            continue
-        if str(candidate_row.get("split")) != "train":
-            continue
-        if not _pair_applies_segment(
-            query_row=query_row,
-            candidate_row=candidate_row,
-            segment_id=segment_id,
-            creator_cold_start_threshold=creator_cold_start_threshold,
-        ):
-            continue
-        if str(query_row.get("split")) == "train":
-            train_count += 1
-        elif str(query_row.get("split")) == "validation":
-            validation_count += 1
+def _sparse_only_retrieval_weights() -> Dict[str, float]:
     return {
-        "train_pairs": train_count,
-        "validation_pairs": validation_count,
+        "lexical": 1.0,
+        "dense_text": 0.0,
+        "multimodal": 0.0,
+        "graph_dense": 0.0,
+        "trajectory_dense": 0.0,
     }
 
 
-def _pair_rows_for_segment(
+def _select_retriever_weight_variant(
     *,
-    rows_by_id: Dict[str, Dict[str, Any]],
-    pair_rows: Sequence[Dict[str, Any]],
-    objective: str,
-    segment_id: str,
-    creator_cold_start_threshold: int,
-) -> List[Dict[str, Any]]:
-    out: List[Dict[str, Any]] = []
-    for pair in pair_rows:
-        if str(pair.get("objective")) != objective:
-            continue
-        qid = str(pair.get("query_row_id"))
-        cid = str(pair.get("candidate_row_id"))
-        query_row = rows_by_id.get(qid)
-        candidate_row = rows_by_id.get(cid)
-        if query_row is None or candidate_row is None:
-            continue
-        if not _pair_applies_segment(
-            query_row=query_row,
-            candidate_row=candidate_row,
-            segment_id=segment_id,
-            creator_cold_start_threshold=creator_cold_start_threshold,
-        ):
-            continue
-        out.append(pair)
-    return out
-
-
-def _ranker_score(
-    *,
-    ranker: Any,
-    query_row: Dict[str, Any],
-    candidate_row: Dict[str, Any],
-    similarity: float,
-) -> Tuple[float, float]:
-    pair_vector = pair_feature_vector_array(
-        query_row=query_row,
-        candidate_row=candidate_row,
-        similarity=similarity,
-    )
-    if isinstance(ranker, RankerEnsembleModel):
-        mean_scores, std_scores = ranker.predict_stats(pair_vector)
-        return float(mean_scores[0]), float(std_scores[0])
-    if isinstance(ranker, ObjectiveRankerModel):
-        return float(ranker.predict_scores(pair_vector)[0]), 0.0
-    return float(similarity), 0.0
-
-
-def _evaluate_ranker_objective(
-    ranker: Any,
-    objective: str,
-    rows_by_id: Dict[str, Dict[str, Any]],
-    pair_rows: Sequence[Dict[str, Any]],
-    *,
-    segment_id: Optional[str] = None,
-    creator_cold_start_threshold: int = 10,
-) -> Dict[str, float]:
-    grouped: Dict[str, List[Dict[str, Any]]] = {}
-    for pair in pair_rows:
-        if str(pair.get("objective")) != objective:
-            continue
-        qid = str(pair.get("query_row_id"))
-        query_row = rows_by_id.get(qid)
-        candidate_row = rows_by_id.get(str(pair.get("candidate_row_id")))
-        if query_row is None or candidate_row is None:
-            continue
-        if str(query_row.get("split")) not in {"validation", "test"}:
-            continue
-        if segment_id is not None and not _pair_applies_segment(
-            query_row=query_row,
-            candidate_row=candidate_row,
-            segment_id=segment_id,
-            creator_cold_start_threshold=creator_cold_start_threshold,
-        ):
-            continue
-        score, _ = _ranker_score(
-            ranker=ranker,
-            query_row=query_row,
-            candidate_row=candidate_row,
-            similarity=float(pair.get("similarity") or 0.0),
-        )
-        grouped.setdefault(qid, []).append(
-            {
-                "candidate_row_id": str(pair.get("candidate_row_id")),
-                "score": score,
-                "relevance": float(pair.get("relevance_label") or 0.0),
-            }
-        )
-
-    query_payloads = []
-    for qid, items in grouped.items():
-        items.sort(key=lambda item: item["score"], reverse=True)
-        query_payloads.append({"query_id": qid, "items": items})
-    return evaluate_ranking(query_payloads, k_values=(10, 20))
-
-
-def _evaluate_segment_blended_objective(
-    *,
-    global_ranker: RankerEnsembleModel,
-    segment_ranker: RankerEnsembleModel,
-    objective: str,
-    rows_by_id: Dict[str, Dict[str, Any]],
-    pair_rows: Sequence[Dict[str, Any]],
-    segment_id: str,
-    creator_cold_start_threshold: int,
-) -> Dict[str, float]:
-    grouped: Dict[str, List[Dict[str, Any]]] = {}
-    for pair in pair_rows:
-        if str(pair.get("objective")) != objective:
-            continue
-        qid = str(pair.get("query_row_id"))
-        query_row = rows_by_id.get(qid)
-        candidate_row = rows_by_id.get(str(pair.get("candidate_row_id")))
-        if query_row is None or candidate_row is None:
-            continue
-        if str(query_row.get("split")) not in {"validation", "test"}:
-            continue
-        similarity = float(pair.get("similarity") or 0.0)
-        global_score, _ = _ranker_score(
-            ranker=global_ranker,
-            query_row=query_row,
-            candidate_row=candidate_row,
-            similarity=similarity,
-        )
-        use_segment = _pair_applies_segment(
-            query_row=query_row,
-            candidate_row=candidate_row,
-            segment_id=segment_id,
-            creator_cold_start_threshold=creator_cold_start_threshold,
-        )
-        if use_segment:
-            segment_mean, segment_std = _ranker_score(
-                ranker=segment_ranker,
-                query_row=query_row,
-                candidate_row=candidate_row,
-                similarity=similarity,
-            )
-            blend_weight = max(0.2, min(1.0, 1.0 - (segment_std / max(1e-6, segment_ranker.std_ref))))
-            score = (blend_weight * segment_mean) + ((1.0 - blend_weight) * global_score)
-        else:
-            score = global_score
-        grouped.setdefault(qid, []).append(
-            {
-                "candidate_row_id": str(pair.get("candidate_row_id")),
-                "score": float(score),
-                "relevance": float(pair.get("relevance_label") or 0.0),
-            }
-        )
-
-    query_payloads = []
-    for qid, items in grouped.items():
-        items.sort(key=lambda item: item["score"], reverse=True)
-        query_payloads.append({"query_id": qid, "items": items})
-    return evaluate_ranking(query_payloads, k_values=(10, 20))
-
-
-def _collect_calibration_samples(
-    *,
-    ranker_family: RankerFamilyModel,
-    objective: str,
-    rows_by_id: Dict[str, Dict[str, Any]],
-    pair_rows: Sequence[Dict[str, Any]],
-) -> List[Dict[str, Any]]:
-    out: List[Dict[str, Any]] = []
-    for pair in pair_rows:
-        if str(pair.get("objective")) != objective:
-            continue
-        qid = str(pair.get("query_row_id"))
-        cid = str(pair.get("candidate_row_id"))
-        query_row = rows_by_id.get(qid)
-        candidate_row = rows_by_id.get(cid)
-        if query_row is None or candidate_row is None:
-            continue
-        if str(query_row.get("split")) != "validation":
-            continue
-        score_payload = ranker_family.score_pair(
-            query_row=query_row,
-            candidate_row=candidate_row,
-            similarity=float(pair.get("similarity") or 0.0),
-        )
-        out.append(
-            {
-                "segment_id": str(score_payload.get("selected_ranker_id") or SEGMENT_GLOBAL),
-                "score_raw": float(score_payload.get("final_score") or 0.0),
-                "label": float(pair.get("relevance_label") or 0.0),
-            }
-        )
-    return out
-
-
-def _calibration_fallback_summary(
-    *,
-    calibration_bundle: ObjectiveSegmentCalibrators,
-    samples: Sequence[Dict[str, Any]],
+    learned_weights: Dict[str, float],
+    learned_validation: Dict[str, float],
+    sparse_baseline_weights: Dict[str, float],
+    sparse_validation: Dict[str, float],
+    learned_test: Optional[Dict[str, float]] = None,
+    sparse_test: Optional[Dict[str, float]] = None,
 ) -> Dict[str, Any]:
-    total = 0
-    fallback_total = 0
-    by_segment_total: Dict[str, int] = {}
-    by_segment_fallback: Dict[str, int] = {}
-    for sample in samples:
-        segment_id = str(sample.get("segment_id") or SEGMENT_GLOBAL)
-        score_raw = float(sample.get("score_raw") or 0.0)
-        result = calibration_bundle.calibrate(score_raw=score_raw, segment_id=segment_id)
-        total += 1
-        by_segment_total[segment_id] = by_segment_total.get(segment_id, 0) + 1
-        if bool(result.get("calibration_fallback_used")):
-            fallback_total += 1
-            by_segment_fallback[segment_id] = by_segment_fallback.get(segment_id, 0) + 1
+    learned_val = float(learned_validation.get("recall@100") or 0.0)
+    sparse_val = float(sparse_validation.get("recall@100") or 0.0)
+    selected_variant = "learned" if learned_val >= sparse_val else "sparse_baseline"
+    selected_weights = (
+        dict(learned_weights)
+        if selected_variant == "learned"
+        else dict(sparse_baseline_weights)
+    )
+    selected_val = learned_val if selected_variant == "learned" else sparse_val
+    competitor_val = sparse_val if selected_variant == "learned" else learned_val
+    validation_non_regression = selected_val >= competitor_val
+
+    test_non_regression: Optional[bool] = None
+    if isinstance(learned_test, dict) and isinstance(sparse_test, dict):
+        learned_test_val = float(learned_test.get("recall@100") or 0.0)
+        sparse_test_val = float(sparse_test.get("recall@100") or 0.0)
+        selected_test_val = (
+            learned_test_val if selected_variant == "learned" else sparse_test_val
+        )
+        competitor_test_val = (
+            sparse_test_val if selected_variant == "learned" else learned_test_val
+        )
+        test_non_regression = selected_test_val >= competitor_test_val
+
     return {
-        "total": total,
-        "fallback_total": fallback_total,
-        "fallback_rate": round(fallback_total / max(1, total), 6),
-        "by_segment": {
-            segment_id: {
-                "total": count,
-                "fallback_total": by_segment_fallback.get(segment_id, 0),
-                "fallback_rate": round(
-                    by_segment_fallback.get(segment_id, 0) / max(1, count),
-                    6,
-                ),
-            }
-            for segment_id, count in sorted(by_segment_total.items())
+        "metric_key": "recall@100",
+        "selected_variant": selected_variant,
+        "selected_weights": _normalize_retrieval_weights(selected_weights),
+        "validation": {
+            "learned": {
+                key: float(learned_validation.get(key) or 0.0)
+                for key in ("recall@50", "recall@100", "recall@200")
+            },
+            "sparse_baseline": {
+                key: float(sparse_validation.get(key) or 0.0)
+                for key in ("recall@50", "recall@100", "recall@200")
+            },
+            "selected_not_worse_than_competitor": bool(validation_non_regression),
+        },
+        "test": {
+            "learned": (
+                {
+                    key: float(learned_test.get(key) or 0.0)
+                    for key in ("recall@50", "recall@100", "recall@200")
+                }
+                if isinstance(learned_test, dict)
+                else None
+            ),
+            "sparse_baseline": (
+                {
+                    key: float(sparse_test.get(key) or 0.0)
+                    for key in ("recall@50", "recall@100", "recall@200")
+                }
+                if isinstance(sparse_test, dict)
+                else None
+            ),
+            "selected_not_worse_than_competitor": test_non_regression,
         },
     }
+
+
+def _branch_dropout_weights(
+    base_weights: Dict[str, float],
+    dropped_branches: Sequence[str],
+) -> Dict[str, float]:
+    dropped = {str(item) for item in dropped_branches}
+    proposal = {}
+    for key in RETRIEVAL_BRANCH_KEYS:
+        if key in dropped:
+            proposal[key] = 0.0
+            continue
+        proposal[key] = float(base_weights.get(key, 0.0))
+
+    surviving_keys = [key for key in RETRIEVAL_BRANCH_KEYS if key not in dropped]
+    surviving_total = sum(float(proposal.get(key, 0.0)) for key in surviving_keys)
+    if surviving_total <= 0.0:
+        if not surviving_keys:
+            return {key: 0.0 for key in RETRIEVAL_BRANCH_KEYS}
+        uniform = 1.0 / float(len(surviving_keys))
+        return {
+            key: (0.0 if key in dropped else uniform)
+            for key in RETRIEVAL_BRANCH_KEYS
+        }
+
+    normalized = _normalize_retrieval_weights(proposal)
+    for key in dropped:
+        if key in normalized:
+            normalized[key] = 0.0
+    surviving_norm = sum(normalized.get(key, 0.0) for key in surviving_keys)
+    if surviving_norm > 0.0:
+        for key in surviving_keys:
+            normalized[key] = float(normalized.get(key, 0.0)) / surviving_norm
+    return normalized
+
+
+def _retriever_ablation_variants(
+    base_weights: Dict[str, float],
+) -> Dict[str, Dict[str, Any]]:
+    variants: Dict[str, Dict[str, Any]] = {
+        "full": {
+            "dropped_branches": [],
+            "weights": _normalize_retrieval_weights(base_weights),
+        }
+    }
+    for branch in RETRIEVAL_BRANCH_KEYS:
+        variants[f"no_{branch}"] = {
+            "dropped_branches": [branch],
+            "weights": _branch_dropout_weights(base_weights, [branch]),
+        }
+    return variants
+
+
+def _metric_delta_block(
+    *,
+    baseline_metrics: Dict[str, float],
+    variant_metrics: Dict[str, float],
+) -> Dict[str, Dict[str, float]]:
+    out: Dict[str, Dict[str, float]] = {}
+    for key in ("recall@50", "recall@100", "recall@200"):
+        baseline = float(baseline_metrics.get(key) or 0.0)
+        variant = float(variant_metrics.get(key) or 0.0)
+        delta = variant - baseline
+        out[key] = {
+            "baseline": round(baseline, 6),
+            "variant": round(variant, 6),
+            "delta": round(delta, 6),
+            "delta_pp": round(delta * 100.0, 3),
+            "relative_delta_pct": round(((delta / baseline) * 100.0) if baseline > 0.0 else 0.0, 3),
+        }
+    return out
+
+
+def _pair_rows_for_objective(
+    pair_rows: Sequence[Dict[str, Any]],
+    objective: str,
+    target_source: str,
+) -> List[Dict[str, Any]]:
+    direct = [
+        row
+        for row in pair_rows
+        if str(row.get("objective")) == objective
+        and str(row.get("target_source") or "scalar_v1") == target_source
+    ]
+    if direct:
+        return direct
+    return [row for row in pair_rows if str(row.get("objective")) == objective]
 
 
 def _evaluate_retriever_objective(
@@ -702,6 +437,8 @@ def _evaluate_retriever_objective(
     relevance_by_query: Dict[str, Dict[str, float]],
     retrieve_k: int,
     max_age_days: int,
+    weight_override: Optional[Dict[str, float]] = None,
+    eval_split: Optional[str] = None,
 ) -> Dict[str, float]:
     pool_builder = TemporalCandidatePool(
         TemporalCandidatePoolConfig(
@@ -710,7 +447,10 @@ def _evaluate_retriever_objective(
             enforce_index_cutoff=True,
         )
     )
-    eval_queries = rows_split["validation"] + rows_split["test"]
+    if eval_split in {"train", "validation", "test"}:
+        eval_queries = list(rows_split.get(str(eval_split), []))
+    else:
+        eval_queries = rows_split["validation"] + rows_split["test"]
     query_payloads: List[Dict[str, Any]] = []
     for query in eval_queries:
         query_id = str(query.get("row_id"))
@@ -730,6 +470,7 @@ def _evaluate_retriever_objective(
             index_cutoff_time=query.get("as_of_time"),
             objective=objective,
             retrieval_constraints={"max_age_days": max_age_days},
+            weight_override=weight_override,
         )
         query_payloads.append(
             {
@@ -739,6 +480,71 @@ def _evaluate_retriever_objective(
             }
         )
     return evaluate_retrieval(query_payloads, top_k=retrieve_k)
+
+
+def _evaluate_retriever_ablation_objective(
+    *,
+    retriever: HybridRetriever,
+    objective: str,
+    rows_split: Dict[str, List[Dict[str, Any]]],
+    relevance_by_query: Dict[str, Dict[str, float]],
+    retrieve_k: int,
+    max_age_days: int,
+) -> Dict[str, Any]:
+    base_weights = retriever.branch_weights(objective)
+    variants = _retriever_ablation_variants(base_weights)
+    evaluated: Dict[str, Any] = {}
+    for name, variant in variants.items():
+        weights = variant["weights"]
+        metrics = _evaluate_retriever_objective(
+            retriever=retriever,
+            objective=objective,
+            rows_split=rows_split,
+            relevance_by_query=relevance_by_query,
+            retrieve_k=retrieve_k,
+            max_age_days=max_age_days,
+            weight_override=weights,
+        )
+        evaluated[name] = {
+            "dropped_branches": list(variant["dropped_branches"]),
+            "weights": {key: round(float(weights.get(key, 0.0)), 6) for key in RETRIEVAL_BRANCH_KEYS},
+            "metrics": {
+                "recall@50": round(float(metrics.get("recall@50") or 0.0), 6),
+                "recall@100": round(float(metrics.get("recall@100") or 0.0), 6),
+                "recall@200": round(float(metrics.get("recall@200") or 0.0), 6),
+            },
+        }
+
+    baseline_metrics = dict(evaluated["full"]["metrics"])
+    for payload in evaluated.values():
+        payload["delta_vs_full"] = _metric_delta_block(
+            baseline_metrics=baseline_metrics,
+            variant_metrics=payload["metrics"],
+        )
+
+    branch_lift = []
+    for branch in RETRIEVAL_BRANCH_KEYS:
+        variant = evaluated.get(f"no_{branch}")
+        if not isinstance(variant, dict):
+            continue
+        delta = (
+            variant.get("delta_vs_full", {})
+            .get("recall@100", {})
+            .get("delta")
+        )
+        branch_lift.append(
+            {
+                "branch": branch,
+                "recall@100_delta_without_branch": round(float(delta or 0.0), 6),
+            }
+        )
+    branch_lift.sort(key=lambda item: float(item["recall@100_delta_without_branch"]))
+
+    return {
+        "metric_key": "recall@100",
+        "variants": evaluated,
+        "branch_importance": branch_lift,
+    }
 
 
 def _learn_objective_blend_weights(
@@ -816,6 +622,144 @@ def _learn_objective_blend_weights(
     return best
 
 
+def _row_signal_hints(row: Dict[str, Any]) -> Dict[str, Any]:
+    features = row.get("features")
+    if not isinstance(features, dict):
+        return {}
+    out: Dict[str, Any] = {}
+    comment_intelligence = features.get("comment_intelligence")
+    if isinstance(comment_intelligence, dict):
+        out["comment_intelligence"] = comment_intelligence
+    trajectory = features.get("trajectory_features")
+    if isinstance(trajectory, dict):
+        out["trajectory_features"] = trajectory
+    return out
+
+
+def _row_candidate_payload(row: Dict[str, Any]) -> Dict[str, Any]:
+    topic_key = str(row.get("topic_key") or "").strip()
+    features = row.get("features")
+    if not isinstance(features, dict):
+        features = {}
+    payload = {
+        "candidate_id": str(row.get("row_id") or ""),
+        "row_id": str(row.get("row_id") or ""),
+        "video_id": str(row.get("video_id") or ""),
+        "author_id": str(row.get("author_id") or ""),
+        "text": row_text(row),
+        "caption": str(row.get("caption") or row_text(row)),
+        "hashtags": list(row.get("hashtags") or ([] if not topic_key else [f"#{topic_key}"])),
+        "keywords": list(row.get("keywords") or ([] if not topic_key else [topic_key])),
+        "search_query": row.get("search_query"),
+        "posted_at": row.get("posted_at"),
+        "as_of_time": row.get("as_of_time"),
+        "language": row.get("language") or features.get("language"),
+        "locale": row.get("locale"),
+        "content_type": row.get("content_type"),
+        "topic_key": topic_key or None,
+    }
+    signal_hints = _row_signal_hints(row)
+    if signal_hints:
+        payload["signal_hints"] = signal_hints
+    return payload
+
+
+def _row_query_payload(row: Dict[str, Any]) -> Dict[str, Any]:
+    topic_key = str(row.get("topic_key") or "").strip()
+    features = row.get("features")
+    if not isinstance(features, dict):
+        features = {}
+    return {
+        "query_id": str(row.get("row_id") or "query"),
+        "text": row_text(row),
+        "description": str(row.get("caption") or row_text(row)),
+        "hashtags": list(row.get("hashtags") or ([] if not topic_key else [f"#{topic_key}"])),
+        "mentions": [],
+        "content_type": row.get("content_type"),
+        "primary_cta": "none",
+        "language": row.get("language") or features.get("language"),
+        "locale": row.get("locale"),
+        "topic_key": topic_key or None,
+        "keywords": list(row.get("keywords") or []),
+    }
+
+
+def _evaluate_baseline_ranker_objective(
+    *,
+    objective: str,
+    rows_split: Dict[str, List[Dict[str, Any]]],
+    relevance_by_query: Dict[str, Dict[str, float]],
+    retrieve_k: int,
+    max_age_days: int,
+) -> Dict[str, float]:
+    pool_builder = TemporalCandidatePool(
+        TemporalCandidatePoolConfig(
+            max_age_days=max_age_days,
+            min_pool_size=30,
+            enforce_index_cutoff=True,
+        )
+    )
+    query_payloads: List[Dict[str, Any]] = []
+    for query_row in rows_split["validation"] + rows_split["test"]:
+        query_id = str(query_row.get("row_id") or "")
+        if not query_id:
+            continue
+        relevance = relevance_by_query.get(query_id, {})
+        if not relevance:
+            continue
+        query_as_of = parse_dt(query_row.get("as_of_time"))
+        if query_as_of is None:
+            continue
+        query_payload = _row_query_payload(query_row)
+        query_profile = build_query_profile(
+            objective=objective,
+            query=query_payload,
+            fallback_language=query_payload.get("language"),
+            fallback_locale=query_payload.get("locale"),
+            fallback_content_type=query_payload.get("content_type"),
+        )
+        pool = pool_builder.for_query(
+            query_row=query_row,
+            candidate_rows=rows_split["train"] + rows_split["validation"],
+            index_cutoff_time=query_row.get("as_of_time"),
+        )
+        prepared: List[Dict[str, Any]] = []
+        for candidate_row in pool:
+            prepared_candidate = prepare_candidate(
+                payload=_row_candidate_payload(candidate_row),
+                as_of=query_as_of,
+                query_profile=query_profile,
+                manifest_comment_lookup=lambda _row_id, _point_in_time: None,
+            )
+            if prepared_candidate is None or prepared_candidate.get("support_level") == "low":
+                continue
+            prepared.append(prepared_candidate)
+        shortlist, _ = retrieve_shortlist(
+            usable_candidates=prepared,
+            query_profile=query_profile,
+            retrieve_k=retrieve_k,
+        )
+        ranked, _ = rank_shortlist(
+            shortlist=shortlist,
+            query_profile=query_profile,
+            effective_objective=objective,
+            portfolio=None,
+            rankers_available=[objective],
+        )
+        items = [
+            {
+                "candidate_row_id": str(item.get("candidate_id") or ""),
+                "score": float(item.get("score") or 0.0),
+                "relevance": float(relevance.get(str(item.get("candidate_id") or ""), 0.0)),
+            }
+            for item in ranked
+            if str(item.get("candidate_id") or "")
+        ]
+        if items:
+            query_payloads.append({"query_id": query_id, "items": items})
+    return evaluate_ranking(query_payloads, k_values=(10, 20))
+
+
 def train_recommender_from_datamart(
     datamart: Dict[str, Any],
     artifact_root: Path,
@@ -827,7 +771,6 @@ def train_recommender_from_datamart(
     if not rows:
         raise ValueError("Training data mart has no rows.")
 
-    _annotate_creator_prior_video_counts(rows)
     graph_bundle = None
     graph_vectors_by_row: Dict[str, Sequence[float]] = {}
     graph_lookup: Dict[str, Dict[str, Sequence[float]]] = {}
@@ -881,6 +824,7 @@ def train_recommender_from_datamart(
                 config=trajectory_cfg,
             )
         annotate_rows_with_trajectory_features(rows, trajectory_bundle)
+
     rows_split = split_rows(rows)
     if not rows_split["train"]:
         raise ValueError("Training data mart has no train rows.")
@@ -895,6 +839,7 @@ def train_recommender_from_datamart(
     rankers_dir.mkdir(parents=True, exist_ok=True)
     metrics_dir.mkdir(parents=True, exist_ok=True)
     diagnostics_dir.mkdir(parents=True, exist_ok=True)
+
     graph_dir = bundle_dir / "graph"
     trajectory_dir = bundle_dir / "trajectory"
     if graph_bundle is not None:
@@ -921,7 +866,6 @@ def train_recommender_from_datamart(
             "embedding_count": trajectory_manifest.get("embedding_count"),
             "path": str(trajectory_dir / "manifest.json"),
         }
-    feature_schema_hash = registry.feature_schema_hash(FEATURE_NAMES)
 
     feature_manifest_id, feature_vectors_by_video = _load_feature_snapshot_vectors(
         cfg.feature_snapshot_manifest_path
@@ -944,26 +888,11 @@ def train_recommender_from_datamart(
 
     if graph_bundle is not None:
         graph_lookup = {
-            "video": {
-                key: list(value)
-                for key, value in graph_bundle.video_embeddings.items()
-            },
-            "creator": {
-                key: list(value)
-                for key, value in graph_bundle.creator_embeddings.items()
-            },
-            "hashtag": {
-                key: list(value)
-                for key, value in graph_bundle.hashtag_embeddings.items()
-            },
-            "audio_motif": {
-                key: list(value)
-                for key, value in graph_bundle.audio_embeddings.items()
-            },
-            "style_signature": {
-                key: list(value)
-                for key, value in graph_bundle.style_embeddings.items()
-            },
+            "video": {key: list(value) for key, value in graph_bundle.video_embeddings.items()},
+            "creator": {key: list(value) for key, value in graph_bundle.creator_embeddings.items()},
+            "hashtag": {key: list(value) for key, value in graph_bundle.hashtag_embeddings.items()},
+            "audio_motif": {key: list(value) for key, value in graph_bundle.audio_embeddings.items()},
+            "style_signature": {key: list(value) for key, value in graph_bundle.style_embeddings.items()},
         }
     if trajectory_bundle is not None:
         trajectory_lookup = {
@@ -1022,12 +951,8 @@ def train_recommender_from_datamart(
         },
     )
 
-    rows_by_id = _rows_by_id(rows)
-
-    # Diagnostics from negative sampler policy
-    neg_sampler = NegativeSampler(
-        NegativeSamplerConfig(seed=cfg.random_seed)
-    )
+    # Negative-sampling diagnostics are retained as a utility trace even though
+    # the old learned ranker family has been removed.
     sample_diagnostics: Dict[str, Any] = {}
     if rows_split["validation"]:
         query_row = rows_split["validation"][0]
@@ -1040,40 +965,34 @@ def train_recommender_from_datamart(
             index_cutoff_time=query_row.get("as_of_time"),
         )
         positives = pool[:3]
-        negatives = neg_sampler.sample(query_row=query_row, positives=positives, candidate_pool=pool)
+        negatives = NegativeSampler(
+            NegativeSamplerConfig(seed=cfg.random_seed)
+        ).sample(query_row=query_row, positives=positives, candidate_pool=pool)
         sample_diagnostics = {
             "query_row_id": query_row.get("row_id"),
             "pool_size": len(pool),
             "sample_positive_count": len(positives),
             "sample_negative_count": len(negatives),
-            "policy": {
-                "negatives_per_positive": neg_sampler.config.negatives_per_positive,
-                "hard_ratio": neg_sampler.config.hard_ratio,
-                "semihard_ratio": neg_sampler.config.semihard_ratio,
-                "easy_ratio": neg_sampler.config.easy_ratio,
-            },
+            "policy": asdict(NegativeSamplerConfig(seed=cfg.random_seed)),
         }
 
+    ranker_feature_schema_hash = registry.feature_schema_hash(BASELINE_RANKER_FEATURE_NAMES)
     objective_metrics: Dict[str, Dict[str, Any]] = {}
+    objective_diagnostics_manifest: Dict[str, Dict[str, str]] = {}
+    objective_ablation_manifest: Dict[str, Dict[str, str]] = {}
     trained_objectives: List[str] = []
     learned_objective_blend: Dict[str, Dict[str, float]] = {}
-    adaptive_selected_by_objective: Dict[str, bool] = {}
-    objective_diagnostics_manifest: Dict[str, Dict[str, str]] = {}
-    objective_calibration_manifest: Dict[str, Dict[str, str]] = {}
-    segment_support_by_objective: Dict[str, Dict[str, Dict[str, int]]] = {}
-    segment_promotion_by_objective: Dict[str, Dict[str, Dict[str, Any]]] = {}
+
     for objective in cfg.objectives:
         _, effective_objective = map_objective(objective)
         if effective_objective in trained_objectives:
             continue
 
         objective_pair_rows = _pair_rows_for_objective(
-            rows_by_id=rows_by_id,
             pair_rows=pair_rows,
             objective=effective_objective,
-            pair_target_source=cfg.pair_target_source,
+            target_source=cfg.pair_target_source,
         )
-        spec = OBJECTIVE_SPECS[effective_objective]
         relevance_by_query = _group_relevance_by_query(
             pair_rows=objective_pair_rows,
             objective=effective_objective,
@@ -1086,8 +1005,59 @@ def train_recommender_from_datamart(
             retrieve_k=cfg.retrieve_k,
             max_age_days=cfg.max_age_days,
         )
-        learned_objective_blend[effective_objective] = learned_weights
-        retriever.set_objective_blend({effective_objective: learned_weights})
+        sparse_baseline_weights = _sparse_only_retrieval_weights()
+        learned_validation_eval = _evaluate_retriever_objective(
+            retriever=retriever,
+            objective=effective_objective,
+            rows_split=rows_split,
+            relevance_by_query=relevance_by_query,
+            retrieve_k=cfg.retrieve_k,
+            max_age_days=cfg.max_age_days,
+            weight_override=learned_weights,
+            eval_split="validation",
+        )
+        sparse_validation_eval = _evaluate_retriever_objective(
+            retriever=retriever,
+            objective=effective_objective,
+            rows_split=rows_split,
+            relevance_by_query=relevance_by_query,
+            retrieve_k=cfg.retrieve_k,
+            max_age_days=cfg.max_age_days,
+            weight_override=sparse_baseline_weights,
+            eval_split="validation",
+        )
+        learned_test_eval = _evaluate_retriever_objective(
+            retriever=retriever,
+            objective=effective_objective,
+            rows_split=rows_split,
+            relevance_by_query=relevance_by_query,
+            retrieve_k=cfg.retrieve_k,
+            max_age_days=cfg.max_age_days,
+            weight_override=learned_weights,
+            eval_split="test",
+        )
+        sparse_test_eval = _evaluate_retriever_objective(
+            retriever=retriever,
+            objective=effective_objective,
+            rows_split=rows_split,
+            relevance_by_query=relevance_by_query,
+            retrieve_k=cfg.retrieve_k,
+            max_age_days=cfg.max_age_days,
+            weight_override=sparse_baseline_weights,
+            eval_split="test",
+        )
+        retriever_weight_gate = _select_retriever_weight_variant(
+            learned_weights=learned_weights,
+            learned_validation=learned_validation_eval,
+            sparse_baseline_weights=sparse_baseline_weights,
+            sparse_validation=sparse_validation_eval,
+            learned_test=learned_test_eval,
+            sparse_test=sparse_test_eval,
+        )
+        selected_retriever_weights = dict(retriever_weight_gate["selected_weights"])
+        learned_objective_blend[effective_objective] = selected_retriever_weights
+        retriever.set_objective_blend({effective_objective: selected_retriever_weights})
+
         retrieval_eval = _evaluate_retriever_objective(
             retriever=retriever,
             objective=effective_objective,
@@ -1096,310 +1066,78 @@ def train_recommender_from_datamart(
             retrieve_k=cfg.retrieve_k,
             max_age_days=cfg.max_age_days,
         )
-
-        baseline_ranker = ObjectiveRankerTrainer(
+        retriever_ablation = _evaluate_retriever_ablation_objective(
+            retriever=retriever,
             objective=effective_objective,
-            random_seed=cfg.random_seed,
-        ).train(rows_by_id=rows_by_id, pair_rows=objective_pair_rows)
-        baseline_ranker_eval = _evaluate_ranker_objective(
-            ranker=baseline_ranker,
+            rows_split=rows_split,
+            relevance_by_query=relevance_by_query,
+            retrieve_k=cfg.retrieve_k,
+            max_age_days=cfg.max_age_days,
+        )
+        ranker_eval = _evaluate_baseline_ranker_objective(
             objective=effective_objective,
-            rows_by_id=rows_by_id,
-            pair_rows=objective_pair_rows,
+            rows_split=rows_split,
+            relevance_by_query=relevance_by_query,
+            retrieve_k=cfg.retrieve_k,
+            max_age_days=cfg.max_age_days,
         )
 
-        selected_pair_rows = list(objective_pair_rows)
-        selected_ranker_eval = dict(baseline_ranker_eval)
-        selected_variant = "baseline"
-        adaptive_ranker_eval: Optional[Dict[str, float]] = None
-        adaptive_gate: Dict[str, Any] = {
-            "enabled": False,
-            "selected": False,
-            "reason": "adaptive_mining_disabled",
-            "threshold_ratio": 0.995,
-        }
-        mining_diagnostics: Dict[str, Any] = {
-            "enabled": False,
-            "mode": "fixed_v1",
-            "objective": effective_objective,
-        }
-
-        adaptive_enabled = (
-            cfg.negative_mining_mode == "adaptive_v2"
-            and bool(cfg.adaptive_negative_mining.enabled)
-        )
-        if adaptive_enabled:
-            adaptive_gate["enabled"] = True
-            miner = AdaptiveNegativeMiner(config=cfg.adaptive_negative_mining)
-            mined_rows, mining_diagnostics = miner.mine(
-                objective=effective_objective,
-                target_source=cfg.pair_target_source,
-                rows_by_id=rows_by_id,
-                train_rows=rows_split["train"],
-                base_pair_rows=objective_pair_rows,
-                retriever=retriever,
-                baseline_ranker=baseline_ranker,
-                max_age_days=cfg.max_age_days,
-            )
-            augmented_pair_rows = [*objective_pair_rows, *mined_rows]
-            adaptive_gate["mined_rows_total"] = len(mined_rows)
-            if mined_rows:
-                try:
-                    adaptive_ranker = ObjectiveRankerTrainer(
-                        objective=effective_objective,
-                        random_seed=cfg.random_seed,
-                    ).train(rows_by_id=rows_by_id, pair_rows=augmented_pair_rows)
-                    adaptive_ranker_eval = _evaluate_ranker_objective(
-                        ranker=adaptive_ranker,
-                        objective=effective_objective,
-                        rows_by_id=rows_by_id,
-                        pair_rows=objective_pair_rows,
-                    )
-                    baseline_ndcg = float(baseline_ranker_eval.get("ndcg@10", 0.0))
-                    baseline_mrr = float(baseline_ranker_eval.get("mrr@20", 0.0))
-                    adaptive_ndcg = float(adaptive_ranker_eval.get("ndcg@10", 0.0))
-                    adaptive_mrr = float(adaptive_ranker_eval.get("mrr@20", 0.0))
-                    adaptive_ok = (
-                        adaptive_ndcg >= (baseline_ndcg * 0.995)
-                        and adaptive_mrr >= (baseline_mrr * 0.995)
-                    )
-                    adaptive_gate["baseline"] = {
-                        "ndcg@10": baseline_ndcg,
-                        "mrr@20": baseline_mrr,
-                    }
-                    adaptive_gate["adaptive"] = {
-                        "ndcg@10": adaptive_ndcg,
-                        "mrr@20": adaptive_mrr,
-                    }
-                    adaptive_gate["selected"] = bool(adaptive_ok)
-                    adaptive_gate["reason"] = (
-                        "adaptive_passed_gate" if adaptive_ok else "adaptive_failed_gate"
-                    )
-                    if adaptive_ok:
-                        selected_pair_rows = list(augmented_pair_rows)
-                        selected_ranker_eval = dict(adaptive_ranker_eval)
-                        selected_variant = "adaptive"
-                except Exception as error:
-                    adaptive_gate["selected"] = False
-                    adaptive_gate["reason"] = "adaptive_training_failed"
-                    adaptive_gate["error"] = str(error)
-            else:
-                adaptive_gate["selected"] = False
-                adaptive_gate["reason"] = "no_mined_rows"
-
-        family_config = RankerFamilyConfig(
-            objective=effective_objective,
-            ensemble_size=cfg.ranker_ensemble_size,
-            random_seed=cfg.random_seed,
-            std_ref=cfg.ranker_uncertainty_std_ref,
-            creator_cold_threshold=cfg.creator_cold_start_threshold,
-        )
-        global_ensemble = RankerEnsembleModel.train(
-            config=family_config,
-            rows_by_id=rows_by_id,
-            pair_rows=selected_pair_rows,
-            segment_id=SEGMENT_GLOBAL,
-        )
-        global_ranker_eval = _evaluate_ranker_objective(
-            ranker=global_ensemble,
-            objective=effective_objective,
-            rows_by_id=rows_by_id,
-            pair_rows=objective_pair_rows,
-        )
-
-        segment_support: Dict[str, Dict[str, int]] = {}
-        segment_promotion: Dict[str, Dict[str, Any]] = {}
-        segment_ensembles: Dict[str, RankerEnsembleModel] = {}
-        promoted_segments: List[str] = []
-        for segment_id in RANKER_SEGMENTS:
-            support = _segment_support_counts(
-                rows_by_id=rows_by_id,
-                pair_rows=objective_pair_rows,
-                objective=effective_objective,
-                segment_id=segment_id,
-                creator_cold_start_threshold=cfg.creator_cold_start_threshold,
-            )
-            segment_support[segment_id] = support
-            eligible = (
-                support["train_pairs"] >= cfg.segment_min_train_pairs
-                and support["validation_pairs"] >= cfg.segment_min_validation_pairs
-            )
-            decision: Dict[str, Any] = {
-                "eligible": eligible,
-                "promoted": False,
-                "reason": "insufficient_support",
-                "support": support,
-                "slice_global_metrics": None,
-                "slice_segment_metrics": None,
-                "overall_blended_metrics": None,
-            }
-            if not eligible:
-                segment_promotion[segment_id] = decision
-                continue
-
-            try:
-                segment_train_pairs = _pair_rows_for_segment(
-                    rows_by_id=rows_by_id,
-                    pair_rows=selected_pair_rows,
-                    objective=effective_objective,
-                    segment_id=segment_id,
-                    creator_cold_start_threshold=cfg.creator_cold_start_threshold,
-                )
-                segment_ensemble = RankerEnsembleModel.train(
-                    config=family_config,
-                    rows_by_id=rows_by_id,
-                    pair_rows=segment_train_pairs,
-                    segment_id=segment_id,
-                )
-                segment_ensembles[segment_id] = segment_ensemble
-                slice_global_eval = _evaluate_ranker_objective(
-                    ranker=global_ensemble,
-                    objective=effective_objective,
-                    rows_by_id=rows_by_id,
-                    pair_rows=objective_pair_rows,
-                    segment_id=segment_id,
-                    creator_cold_start_threshold=cfg.creator_cold_start_threshold,
-                )
-                slice_segment_eval = _evaluate_ranker_objective(
-                    ranker=segment_ensemble,
-                    objective=effective_objective,
-                    rows_by_id=rows_by_id,
-                    pair_rows=objective_pair_rows,
-                    segment_id=segment_id,
-                    creator_cold_start_threshold=cfg.creator_cold_start_threshold,
-                )
-                overall_blended_eval = _evaluate_segment_blended_objective(
-                    global_ranker=global_ensemble,
-                    segment_ranker=segment_ensemble,
-                    objective=effective_objective,
-                    rows_by_id=rows_by_id,
-                    pair_rows=objective_pair_rows,
-                    segment_id=segment_id,
-                    creator_cold_start_threshold=cfg.creator_cold_start_threshold,
-                )
-                decision["slice_global_metrics"] = slice_global_eval
-                decision["slice_segment_metrics"] = slice_segment_eval
-                decision["overall_blended_metrics"] = overall_blended_eval
-
-                slice_pass = (
-                    float(slice_segment_eval.get("ndcg@10", 0.0))
-                    >= (float(slice_global_eval.get("ndcg@10", 0.0)) * 1.005)
-                    and float(slice_segment_eval.get("mrr@20", 0.0))
-                    >= (float(slice_global_eval.get("mrr@20", 0.0)) * 1.005)
-                )
-                overall_pass = (
-                    float(overall_blended_eval.get("ndcg@10", 0.0))
-                    >= (float(global_ranker_eval.get("ndcg@10", 0.0)) * 0.995)
-                    and float(overall_blended_eval.get("mrr@20", 0.0))
-                    >= (float(global_ranker_eval.get("mrr@20", 0.0)) * 0.995)
-                )
-                decision["slice_gate"] = bool(slice_pass)
-                decision["overall_gate"] = bool(overall_pass)
-                if slice_pass and overall_pass:
-                    promoted_segments.append(segment_id)
-                    decision["promoted"] = True
-                    decision["reason"] = "promotion_gate_passed"
-                else:
-                    decision["promoted"] = False
-                    decision["reason"] = "promotion_gate_failed"
-            except Exception as error:
-                decision["promoted"] = False
-                decision["reason"] = "segment_training_failed"
-                decision["error"] = str(error)
-
-            segment_promotion[segment_id] = decision
-
-        ranker_family = RankerFamilyModel(
-            objective=effective_objective,
-            global_ensemble=global_ensemble,
-            segment_ensembles=segment_ensembles,
-            promoted_segments=promoted_segments,
-            std_ref=cfg.ranker_uncertainty_std_ref,
-            creator_cold_threshold=cfg.creator_cold_start_threshold,
-        )
         ranker_output_dir = rankers_dir / effective_objective
-        ranker_family.save(ranker_output_dir)
-        calibration_samples = _collect_calibration_samples(
-            ranker_family=ranker_family,
-            objective=effective_objective,
-            rows_by_id=rows_by_id,
-            pair_rows=objective_pair_rows,
-        )
-        calibration_bundle = ObjectiveSegmentCalibrators.fit(
-            objective=effective_objective,
-            samples=calibration_samples,
-            known_segments=(SEGMENT_GLOBAL, *RANKER_SEGMENTS),
-            min_support=cfg.ranker_calibration_min_support,
-            compatibility={
-                "objective": effective_objective,
-                "feature_schema_hash": feature_schema_hash,
-                "ranker_family_schema_hash": _sha256_text(json.dumps(FEATURE_NAMES)),
-                "ranker_family_version": "ranker_family.v2",
-            },
-        )
-        calibration_path = ranker_output_dir / "calibration.json"
-        calibration_bundle.save(calibration_path)
-        calibration_fallback = _calibration_fallback_summary(
-            calibration_bundle=calibration_bundle,
-            samples=calibration_samples,
-        )
-        calibration_report_payload = {
+        ranker_output_dir.mkdir(parents=True, exist_ok=True)
+        baseline_manifest = {
+            "ranker_id": "baseline_weighted",
+            "version": BASELINE_RANKER_VERSION,
             "objective": effective_objective,
-            "target_definition": "p_relevance_ge_2",
-            "validation_samples": len(calibration_samples),
-            "summary": calibration_bundle.summary(),
-            "fallback": calibration_fallback,
+            "feature_schema_hash": ranker_feature_schema_hash,
+            "weights": OBJECTIVE_RANKING_WEIGHTS.get(
+                effective_objective,
+                DEFAULT_RANKING_WEIGHTS,
+            ),
+            "retriever_blend_weights": selected_retriever_weights,
         }
-        calibration_rel_path = f"diagnostics/objective_{effective_objective}_calibration.json"
-        calibration_report_path = bundle_dir / calibration_rel_path
-        calibration_text = json.dumps(calibration_report_payload, ensure_ascii=False, indent=2)
-        calibration_report_path.write_text(calibration_text, encoding="utf-8")
-        objective_calibration_manifest[effective_objective] = {
-            "path": calibration_rel_path,
-            "sha256": _sha256_text(calibration_text),
-        }
-        adaptive_selected_by_objective[effective_objective] = selected_variant == "adaptive"
-        segment_support_by_objective[effective_objective] = segment_support
-        segment_promotion_by_objective[effective_objective] = segment_promotion
+        (ranker_output_dir / "baseline_manifest.json").write_text(
+            json.dumps(baseline_manifest, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
 
-        objective_diagnostics_payload = {
+        diagnostics_payload = {
             "objective": effective_objective,
+            "ranker_id": "baseline_weighted",
+            "ranker_version": BASELINE_RANKER_VERSION,
+            "feature_schema_hash": ranker_feature_schema_hash,
+            "retriever_weight_gate": retriever_weight_gate,
+            "retriever_ablation": retriever_ablation,
+            "retriever_eval": retrieval_eval,
+            "ranker_eval": ranker_eval,
+            "pair_row_count": len(objective_pair_rows),
             "pair_target_source": cfg.pair_target_source,
-            "negative_mining_mode": cfg.negative_mining_mode,
-            "mining": mining_diagnostics,
-            "gate": adaptive_gate,
-            "ranker_baseline": baseline_ranker_eval,
-            "ranker_adaptive": adaptive_ranker_eval,
-            "ranker_selected": selected_ranker_eval,
-            "selected_variant": selected_variant,
-            "ranker_global": global_ranker_eval,
-            "ranker_family": {
-                "promoted_segments": promoted_segments,
-                "segment_support": segment_support,
-                "segment_promotion": segment_promotion,
-                "creator_cold_start_threshold": cfg.creator_cold_start_threshold,
-                "ensemble_size": cfg.ranker_ensemble_size,
-                "uncertainty_std_ref": cfg.ranker_uncertainty_std_ref,
-            },
-            "calibration": {
-                "summary": calibration_bundle.summary(),
-                "fallback": calibration_fallback,
-                "report_path": calibration_rel_path,
-            },
         }
-        diagnostics_rel_path = f"diagnostics/objective_{effective_objective}_negative_mining.json"
+        diagnostics_rel_path = f"diagnostics/objective_{effective_objective}_baseline.json"
         diagnostics_path = bundle_dir / diagnostics_rel_path
-        diagnostics_text = json.dumps(
-            objective_diagnostics_payload,
-            ensure_ascii=False,
-            indent=2,
-        )
+        diagnostics_text = json.dumps(diagnostics_payload, ensure_ascii=False, indent=2)
         diagnostics_path.write_text(diagnostics_text, encoding="utf-8")
         objective_diagnostics_manifest[effective_objective] = {
             "path": diagnostics_rel_path,
             "sha256": _sha256_text(diagnostics_text),
         }
 
+        ablation_rel_path = f"diagnostics/objective_{effective_objective}_ablation.json"
+        ablation_payload = {
+            "objective": effective_objective,
+            "retriever_weight_gate": retriever_weight_gate,
+            "retriever_ablation": retriever_ablation,
+            "retriever_blend_weights": selected_retriever_weights,
+            "retriever_eval": retrieval_eval,
+            "ranker_eval": ranker_eval,
+        }
+        ablation_text = json.dumps(ablation_payload, ensure_ascii=False, indent=2)
+        (bundle_dir / ablation_rel_path).write_text(ablation_text, encoding="utf-8")
+        objective_ablation_manifest[effective_objective] = {
+            "path": ablation_rel_path,
+            "sha256": _sha256_text(ablation_text),
+        }
+
+        spec = OBJECTIVE_SPECS[effective_objective]
         objective_metrics[effective_objective] = {
             "spec": {
                 "objective_id": spec.objective_id,
@@ -1409,24 +1147,11 @@ def train_recommender_from_datamart(
                 "calibration": spec.calibration,
             },
             "retriever": retrieval_eval,
-            "ranker": global_ranker_eval,
-            "ranker_baseline": baseline_ranker_eval,
-            "ranker_adaptive": adaptive_ranker_eval,
-            "ranker_selected_variant": selected_variant,
-            "adaptive_gate": adaptive_gate,
-            "backend": global_ensemble.models[0].backend,
-            "retriever_blend_weights": learned_weights,
-            "ranker_family": {
-                "global": global_ranker_eval,
-                "promoted_segments": promoted_segments,
-                "segment_support": segment_support,
-                "segment_promotion": segment_promotion,
-                "ensemble_size": cfg.ranker_ensemble_size,
-                "uncertainty_std_ref": cfg.ranker_uncertainty_std_ref,
-                "creator_cold_start_threshold": cfg.creator_cold_start_threshold,
-            },
-            "ranker_calibration": calibration_bundle.summary(),
-            "ranker_calibration_fallback": calibration_fallback,
+            "ranker": ranker_eval,
+            "backend": "baseline_weighted",
+            "retriever_blend_weights": selected_retriever_weights,
+            "retriever_weight_gate": retriever_weight_gate,
+            "retriever_ablation": retriever_ablation,
         }
         trained_objectives.append(effective_objective)
 
@@ -1450,8 +1175,9 @@ def train_recommender_from_datamart(
         "component": "recommender-learning-v1",
         "contract_version": cfg.contract_version,
         "datamart_version": cfg.datamart_version,
-        "feature_schema_hash": feature_schema_hash,
-        "ranker_family_schema_hash": _sha256_text(json.dumps(FEATURE_NAMES)),
+        "feature_schema_hash": ranker_feature_schema_hash,
+        "ranker_family_schema_hash": ranker_feature_schema_hash,
+        "ranker_family_version": BASELINE_RANKER_VERSION,
         "feature_manifest_id": datamart.get("source_manifest_id"),
         "feature_manifest_path": datamart.get("source_manifest_path"),
         "feature_snapshot_manifest_id": feature_manifest_id,
@@ -1485,26 +1211,9 @@ def train_recommender_from_datamart(
         "dense_model_name": cfg.dense_model_name,
         "random_seed": cfg.random_seed,
         "pair_target_source": cfg.pair_target_source,
-        "negative_mining_mode": cfg.negative_mining_mode,
-        "adaptive_negative_mining_config": asdict(cfg.adaptive_negative_mining),
-        "adaptive_selected_by_objective": adaptive_selected_by_objective,
-        "ranker_family": {
-            "version": "ranker_family.v2",
-            "segments": list(RANKER_SEGMENTS),
-            "creator_cold_start_threshold": cfg.creator_cold_start_threshold,
-            "ensemble_size": cfg.ranker_ensemble_size,
-            "uncertainty_std_ref": cfg.ranker_uncertainty_std_ref,
-            "ranker_calibration_min_support": cfg.ranker_calibration_min_support,
-            "segment_support_by_objective": segment_support_by_objective,
-            "segment_promotion_by_objective": segment_promotion_by_objective,
-        },
-        "ranker_calibration": {
-            "version": "ranker_calibration.v2",
-            "min_support": cfg.ranker_calibration_min_support,
-        },
         "policy_reranker": PolicyRerankerConfig().to_payload(),
         "objective_diagnostics": objective_diagnostics_manifest,
-        "objective_calibration_reports": objective_calibration_manifest,
+        "objective_ablation_reports": objective_ablation_manifest,
         "rows_total": len(rows),
         "pair_rows_total": len(pair_rows),
         "train_rows": len(rows_split["train"]),
@@ -1521,9 +1230,9 @@ def train_recommender_from_datamart(
             "temporal_shards": sorted(set(retriever.row_shards.values())),
             "index_cutoff_time": _to_utc_iso(datamart.get("generated_at")),
             "graph_bundle_id": retriever.graph_bundle_id,
-            "graph_version": retriever.graph_version,
+            "graph_version": retriever.graph_version or BASELINE_GRAPH_VERSION,
             "trajectory_manifest_id": retriever.trajectory_manifest_id,
-            "trajectory_version": retriever.trajectory_version,
+            "trajectory_version": retriever.trajectory_version or BASELINE_TRAJECTORY_VERSION,
         },
     }
     registry.write_manifest(bundle_dir, manifest)

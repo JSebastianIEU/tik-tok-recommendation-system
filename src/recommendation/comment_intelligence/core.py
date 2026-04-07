@@ -13,6 +13,7 @@ import numpy as np
 from pydantic import BaseModel, Field, model_validator
 
 from ..contracts import CanonicalComment, CanonicalCommentSnapshot, CanonicalDatasetBundle
+from ..semantic_processor import process_text
 
 try:
     from sentence_transformers import SentenceTransformer  # type: ignore
@@ -218,11 +219,14 @@ def _canonical_json(value: Any) -> str:
 
 
 def _norm_text(value: str) -> str:
-    return re.sub(r"\s+", " ", re.sub(r"[^a-zA-Z0-9#@? ]+", " ", value.lower())).strip()
+    processed = process_text(text=value)
+    semantic = processed.semantic_text.lower()
+    semantic = re.sub(r"[^\w\s#@?]+", " ", semantic, flags=re.UNICODE)
+    return re.sub(r"\s+", " ", semantic).strip()
 
 
 def _tokens(value: str) -> List[str]:
-    return [token for token in _norm_text(value).split(" ") if token]
+    return process_text(text=value).lexical_tokens
 
 
 def _content_tokens(value: str) -> List[str]:

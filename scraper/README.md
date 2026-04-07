@@ -141,7 +141,7 @@ This repo now includes both commands:
    ```
 5. **Scrape**:
    ```bash
-   python -m scraper scrape-all scraper/configs/full_scale.yaml --skip-existing
+   python -m scraper scrape-all scraper/configs/full_scale.yaml
    ```
 
 Data persists in Supabase. Teammates use the same `DATABASE_URL` to share data.
@@ -157,7 +157,7 @@ Set your Supabase Postgres URL, then run scraper commands normally:
 export DATABASE_URL="postgresql://postgres:<PASSWORD>@db.<PROJECT_REF>.supabase.co:5432/postgres"
 export MS_TOKEN="<your_ms_token>"
 python -m scraper init-db
-python -m scraper scrape-all scraper/configs/full_scale.yaml --skip-existing
+python -m scraper scrape-all scraper/configs/full_scale.yaml
 ```
 
 Anything persisted by the scraper writer is inserted into Supabase tables.
@@ -200,7 +200,7 @@ Use this flow when multiple teammates run the scraper locally and all write into
    ```
 4. Run assigned sources locally and write to shared Supabase:
    ```bash
-   python -m scraper scrape-all scraper/configs/full_scale.yaml --skip-existing
+   python -m scraper scrape-all scraper/configs/full_scale.yaml
    ```
 5. Coordinate source ownership to reduce overlap (split hashtags/keywords per teammate).
 6. Verify ingest:
@@ -211,12 +211,12 @@ Use this flow when multiple teammates run the scraper locally and all write into
 
 Notes:
 
-- Keep `--skip-existing` enabled to avoid duplicate writes.
+- Default behavior updates/upserts existing videos (fresh snapshots/metadata). Add `--skip-existing` only when you explicitly want insert-only behavior.
 - Use `--no-resume` only for intentional full reruns/debugging.
 - If direct DB host fails from local network, switch to Supabase Session Pooler connection string.
-- CI workflow defaults to `comments=0` and `replies=0` for stability. Run local/manual enrichment when you need comment depth.
+- CI scraper workflow defaults to `comments=0` and `replies=0` for stability. Run local/manual enrichment when you need comment depth.
 - Use GitHub workflow `.github/workflows/scraper-comments.yml` for manual comment-only enrichment runs.
-- `scraper-comments.yml` is also scheduled daily at `09:00 UTC` by default; disable with repository variable `SCRAPER_COMMENTS_SCHEDULE_ENABLED=false`.
+- `scraper-comments.yml` is decoupled from the core scraper pipeline and non-blocking. Its schedule is disabled by default (`SCRAPER_COMMENTS_SCHEDULE_ENABLED=false`).
 
 ### Option B: Local Docker (solo dev)
 
@@ -225,12 +225,13 @@ cd scraper && docker compose up -d
 export DATABASE_URL="postgresql://tiktok:tiktok@localhost:5433/tiktok"
 export MS_TOKEN="your_ms_token"
 python -m scraper init-db
-python -m scraper scrape-all scraper/configs/full_scale.yaml --skip-existing
+python -m scraper scrape-all scraper/configs/full_scale.yaml
 ```
 
 ### Tips
 
-- **`--skip-existing`**: Skips videos already in DB; use on repeated runs.
+- **Default update mode**: Existing videos are upserted so metadata/snapshots stay fresh.
+- **`--skip-existing`**: Optional insert-only mode when you want to avoid touching existing `video_id`s.
 - **`--init-db`**: Apply schema before first scrape.
 - **`--delay 10`**: Increase seconds between sources if rate-limited.
 - **Resume behavior**: `scrape-all` resumes by default and skips completed sources; use `--no-resume` to force rerun.
@@ -269,7 +270,7 @@ Use this when you want to run scraping on your own machine (more stable than CI 
    ```
 5. Run full-scale scraping:
    ```bash
-   python -m scraper scrape-all scraper/configs/full_scale.yaml --skip-existing --no-resume --comments 5 --replies 2 --delay 15
+   python -m scraper scrape-all scraper/configs/full_scale.yaml --no-resume --comments 5 --replies 2 --delay 15
    ```
 
 Notes:
@@ -293,7 +294,7 @@ If later you want DB persistence for the Selenium pipeline:
 ## CLI Commands
 
 - `python -m scraper run --config <path>`
-- `python -m scraper scrape-all <full_scale.yaml>` – hashtags + keywords into Supabase/Postgres (`--skip-existing` recommended)
+- `python -m scraper scrape-all <full_scale.yaml>` – hashtags + keywords into Supabase/Postgres (default behavior updates existing videos)
 - `python -m scraper scrape-comments --limit 300 --comments 5 --replies 2` – enrich comments for videos already stored in DB
 - `python -m scraper scrape-comments --max-attempts-per-video 5 --retry-backoff-base-sec 900 --stale-running-minutes 60` – tune retry/exhaustion behavior for comment enrichment jobs
 - `python -m scraper scrape-comments --max-existing-comments 2 --summary-path /tmp/comment_summary.json` – include low-coverage videos and write structured summary JSON

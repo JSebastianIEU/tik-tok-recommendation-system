@@ -2,32 +2,37 @@ import type {
   ComparableItem,
   DirectComparisonRow,
   ReportOutput,
-  ReportPolarity
+  ReportPolarity,
+  ReportReasoning,
+  ReportMeta
 } from "../../src/features/report/types";
 import type { DemoVideoRecord } from "../../src/services/data/types";
-import {
-  buildComparableNeighborhood,
-  buildNeighborhoodContrast,
-  type CandidateProfileCore,
-  type CandidateSignalProfile,
-  type ContrastClaim,
-  type ComparableNeighborhood,
-  type NeighborhoodCandidate,
-  type NeighborhoodContrast
-} from "../modeling";
+import type { RecommenderItem } from "../recommender/client";
+import type { CandidateSignalProfile } from "./signalProfile";
 import { HARD_CODED_EXTRACTED_KEYWORDS } from "../prompts/seedVideoContext";
 
 interface BuildLocalBaselineReportParams {
-  seed: DemoVideoRecord;
   candidates: DemoVideoRecord[];
   mentions: string[];
   hashtags: string[];
   description: string;
   candidatesK: number;
-  candidateProfile?: CandidateProfileCore;
+  objective: string;
+  recommenderItems: RecommenderItem[];
   candidateSignals?: CandidateSignalProfile;
-  comparableNeighborhood?: ComparableNeighborhood;
-  neighborhoodContrast?: NeighborhoodContrast;
+  meta: ReportMeta;
+  reasoning: ReportReasoning;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function average(values: number[]): number {
+  if (values.length === 0) {
+    return 0;
+  }
+  return values.reduce((sum, current) => sum + current, 0) / values.length;
 }
 
 function normalizeText(value: string): string {
@@ -54,44 +59,27 @@ function toTokens(values: string[]): string[] {
   );
 }
 
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
-}
-
-function average(values: number[]): number {
-  if (values.length === 0) {
-    return 0;
-  }
-
-  return values.reduce((sum, current) => sum + current, 0) / values.length;
-}
-
 function toDisplayAuthor(record: DemoVideoRecord): string {
   if (typeof record.author === "string") {
     return record.author;
   }
-
   if (record.author && typeof record.author === "object") {
     const authorRecord = record.author as Record<string, unknown>;
     if (typeof authorRecord.username === "string") {
       return `@${authorRecord.username.replace(/^@/, "")}`;
     }
   }
-
   return "@creator";
 }
 
 function extractVideoUrl(record: DemoVideoRecord): string {
-  const value = record.video_url;
-  return typeof value === "string" ? value : "";
+  return typeof record.video_url === "string" ? record.video_url : "";
 }
 
 function toComparableMetrics(record: DemoVideoRecord): ComparableItem["metrics"] {
   const views = Math.max(1, record.metrics.views);
   const engagementRate =
-    ((record.metrics.likes + record.metrics.comments_count + record.metrics.shares) / views) *
-    100;
-
+    ((record.metrics.likes + record.metrics.comments_count + record.metrics.shares) / views) * 100;
   return {
     views: record.metrics.views,
     likes: record.metrics.likes,
@@ -101,16 +89,8 @@ function toComparableMetrics(record: DemoVideoRecord): ComparableItem["metrics"]
   };
 }
 
-function buildMatchedKeywords(
-  record: DemoVideoRecord,
-  queryTokens: string[]
-): string[] {
-  const candidateTokens = toTokens([
-    record.caption,
-    ...record.keywords,
-    ...record.hashtags
-  ]);
-
+function buildMatchedKeywords(record: DemoVideoRecord, queryTokens: string[]): string[] {
+  const candidateTokens = toTokens([record.caption, ...record.keywords, ...record.hashtags]);
   const keywordTokens = toTokens(HARD_CODED_EXTRACTED_KEYWORDS);
   const matched = unique(
     candidateTokens.filter((token) => queryTokens.includes(token) || keywordTokens.includes(token))
@@ -118,54 +98,27 @@ function buildMatchedKeywords(
   return matched.length > 0 ? matched : record.keywords.slice(0, 4);
 }
 
-function toComparableItem(
-  neighborhoodCandidate: NeighborhoodCandidate,
-  index: number,
-  queryTokens: string[]
-): ComparableItem {
-  const record = neighborhoodCandidate.record;
-  return {
-    id: `${record.video_id}-${index + 1}`,
-    caption: record.caption,
-    author: toDisplayAuthor(record),
-    video_url: extractVideoUrl(record),
-    thumbnail_url: "",
-    hashtags: record.hashtags.slice(0, 5),
-    similarity: Number(neighborhoodCandidate.similarity.toFixed(2)),
-    metrics: toComparableMetrics(record),
-    matched_keywords: buildMatchedKeywords(record, queryTokens),
-    observations: [
-      `Composite score ${(neighborhoodCandidate.composite_score * 100).toFixed(1)}/100 with residual ${neighborhoodCandidate.residual_log_views.toFixed(2)}.`,
-      `Neighborhood reasons: ${neighborhoodCandidate.ranking_reasons.join(", ")}.`,
-      "Signals combine text, hashtags, intent/format alignment, and candidate profile similarity."
-    ]
-  };
+function buildObservationLines(item: RecommenderItem | undefined): string[] {
+  if (!item) {
+    return ["Returned as a fallback comparable from the local candidate pool."];
+  }
+  const scoreParts = item.score_components ?? {};
+  const reasons = (item.ranking_reasons ?? []).join(", ");
+  return [
+    `Baseline rank score ${(item.score * 100).toFixed(1)}/100.`,
+    reasons ? `Ranking reasons: ${reasons}.` : "Ranking reasons were not returned.",
+    `Semantic ${(Number(scoreParts.semantic_relevance ?? 0) * 100).toFixed(0)}/100, intent ${(Number(scoreParts.intent_alignment ?? 0) * 100).toFixed(0)}/100, usefulness ${(Number(scoreParts.reference_usefulness ?? 0) * 100).toFixed(0)}/100, confidence ${(Number(scoreParts.support_confidence ?? 0) * 100).toFixed(0)}/100.`
+  ];
 }
 
-function pickDisplayNeighborhood(
-  neighborhood: ComparableNeighborhood,
-  maxItems = 8
-): NeighborhoodCandidate[] {
-  const out: NeighborhoodCandidate[] = [];
-  const seen = new Set<string>();
-  const ordered = [
-    ...neighborhood.content_twins,
-    ...neighborhood.similar_overperformers,
-    ...neighborhood.similar_underperformers
-  ];
-
-  for (const item of ordered) {
-    if (out.length >= maxItems) {
-      break;
-    }
-    if (seen.has(item.candidate_key)) {
-      continue;
-    }
-    seen.add(item.candidate_key);
-    out.push(item);
+function toConfidenceLabel(value: number): ComparableItem["confidence_label"] {
+  if (value < 0.45) {
+    return "Low confidence";
   }
-
-  return out;
+  if (value < 0.75) {
+    return "Medium confidence";
+  }
+  return "High confidence";
 }
 
 function estimateUploadedVideoStats(
@@ -187,16 +140,17 @@ function estimateUploadedVideoStats(
   const keywordBoost = HARD_CODED_EXTRACTED_KEYWORDS.length;
   const pacingBoost = candidateSignals ? candidateSignals.structure.pacing_score * 10 : 0;
   const clarityBoost = candidateSignals ? candidateSignals.transcript_ocr.clarity_score * 8 : 0;
-  const hookBoost = candidateSignals ? Math.max(0, 4 - candidateSignals.structure.hook_timing_seconds) * 3 : 0;
+  const hookBoost = candidateSignals
+    ? Math.max(0, 4 - candidateSignals.structure.hook_timing_seconds) * 3
+    : 0;
 
-  const hook = clamp(50 + keywordBoost * 4 + (descWords > 20 ? 6 : 0) + hookBoost + pacingBoost * 0.35, 40, 93);
-  const clarity = clamp(
-    56 + Math.min(descWords, 60) * 0.5 + mentions.length * 2 + clarityBoost,
-    45,
-    95
+  const hook = clamp(
+    50 + keywordBoost * 4 + (descWords > 20 ? 6 : 0) + hookBoost + pacingBoost * 0.35,
+    40,
+    93
   );
+  const clarity = clamp(56 + Math.min(descWords, 60) * 0.5 + mentions.length * 2 + clarityBoost, 45, 95);
   const retention = clamp(48 + hook * 0.28 + clarity * 0.2, 45, 96);
-
   const hashtagDensity = clamp(hashtags.length / Math.max(descWords, 8), 0.02, 0.45);
   const engagementRate = clamp(
     3.5 + hook * 0.05 + clarity * 0.03 + (candidateSignals?.audio.music_presence_score ?? 0.4),
@@ -235,7 +189,6 @@ function buildDirectComparison(
   const avgCtaClarity = average(
     comparables.map((item) => Math.min(100, 50 + item.matched_keywords.length * 8))
   );
-
   const toPercentScale = (value: number, maxExpected: number): number =>
     clamp((value / maxExpected) * 100, 4, 100);
 
@@ -277,162 +230,134 @@ function buildDirectComparison(
 
 function inferTopic(text: string): string {
   const normalized = normalizeText(text);
-
   if (/(hook|start|first|opening)/.test(normalized)) {
     return "hook";
   }
-
   if (/(cta|follow|comment|action)/.test(normalized)) {
     return "cta";
   }
-
   if (/(edit|cut|subtitle|pace)/.test(normalized)) {
     return "editing";
   }
-
   if (/(clear|clarity|understand|confus)/.test(normalized)) {
     return "clarity";
   }
-
   return "engagement";
 }
 
 function inferPolarity(text: string): ReportPolarity {
   const normalized = normalizeText(text);
-
   if (/[?]/.test(text) || /^(how|what|where|why)\b/.test(normalized)) {
     return "Question";
   }
-
   if (/(not|dont|hard|boring|bad|pointless|difficult)/.test(normalized)) {
     return "Negative";
   }
-
   return "Positive";
 }
 
-function buildRelevanceNote(topic: string, polarity: ReportPolarity): string {
-  if (polarity === "Question") {
-    return "This question suggests viewers still need context. Add a clearer setup in the first 2 seconds and reinforce intent with on-screen text.";
-  }
-
-  if (polarity === "Negative") {
-    return "This signals friction. Tighten your opening copy and show a stronger concrete outcome earlier in the video.";
-  }
-
-  if (topic === "cta") {
-    return "This is a positive CTA signal. Keep your closing ask specific and easy to answer in one comment.";
-  }
-
-  return "This confirms an element that already resonates. Keep this pattern and make it more explicit in your next iteration.";
-}
-
-function buildRelevantComments(
-  rankedComparables: NeighborhoodCandidate[]
-): ReportOutput["relevant_comments"]["items"] {
+function buildRelevantComments(candidates: DemoVideoRecord[]): ReportOutput["relevant_comments"]["items"] {
   const items: ReportOutput["relevant_comments"]["items"] = [];
-
-  for (const comparable of rankedComparables.slice(0, 8)) {
-    for (const comment of comparable.record.comments.slice(0, 2)) {
+  for (const candidate of candidates.slice(0, 8)) {
+    for (const comment of candidate.comments.slice(0, 2)) {
       if (items.length >= 10) {
         return items;
       }
-
       const topic = inferTopic(comment);
       const polarity = inferPolarity(comment);
-
       items.push({
         id: `comment-${items.length + 1}`,
         text: comment,
         topic,
         polarity,
-        relevance_note: buildRelevanceNote(topic, polarity)
+        relevance_note:
+          polarity === "Question"
+            ? "This question highlights missing context. Clarify the promise earlier and add a concrete visual example."
+            : polarity === "Negative"
+              ? "This signals friction. Tighten the opening copy and make the outcome easier to understand."
+              : "This response suggests a pattern worth reinforcing in the opening and CTA."
       });
     }
   }
-
   return items;
 }
 
 function buildRecommendations(
-  candidateProfile?: CandidateProfileCore,
-  candidateSignals?: CandidateSignalProfile,
-  comparableNeighborhood?: ComparableNeighborhood,
-  neighborhoodContrast?: NeighborhoodContrast
+  objective: string,
+  candidateSignals: CandidateSignalProfile | undefined,
+  recommenderItems: RecommenderItem[],
+  reasoning: ReportReasoning
 ): ReportOutput["recommendations"]["items"] {
-  if (neighborhoodContrast && neighborhoodContrast.claims.length > 0) {
-    const toPriority = (claim: ContrastClaim): "High" | "Medium" | "Low" => {
-      if (claim.action_confidence >= 0.72) {
-        return "High";
-      }
-      if (claim.action_confidence >= 0.45) {
-        return "Medium";
-      }
-      return "Low";
-    };
-
-    const toEffort = (claim: ContrastClaim): "Low" | "Medium" | "High" => {
-      if (claim.domain === "focus" || claim.domain === "clarity") {
-        return "Low";
-      }
-      if (claim.domain === "engagement" || claim.domain === "shareability") {
-        return "Medium";
-      }
-      return "High";
-    };
-
-    return neighborhoodContrast.claims.slice(0, 3).map((claim, index) => ({
-      id: claim.claim_id || `rec-${index + 1}`,
-      title: claim.recommended_action,
-      priority: toPriority(claim),
-      effort: toEffort(claim),
-      evidence: `${claim.statement} Pattern confidence ${(claim.pattern_confidence * 100).toFixed(
-        0
-      )}/100. Features: ${claim.supporting_feature_keys.join(", ")}.`
+  const units = reasoning.recommendation_units;
+  if (units.length > 0) {
+    return units.map((unit) => ({
+      id: unit.recommendation_id,
+      title: unit.action,
+      priority: unit.priority,
+      effort: unit.effort,
+      evidence: unit.rationale,
+      rationale: unit.rationale,
+      confidence_label: toConfidenceLabel(unit.confidence),
+      effect_area: unit.expected_effect_area,
+      caveats: unit.caveats,
+      evidence_refs: unit.evidence_refs
     }));
   }
-
-  const pacingScore = candidateSignals ? Math.round(candidateSignals.structure.pacing_score * 100) : null;
-  const clarityScore = candidateSignals ? Math.round(candidateSignals.transcript_ocr.clarity_score * 100) : null;
-  const topicText = candidateProfile ? candidateProfile.tags.topic_tags.slice(0, 2).join(", ") : "your niche";
-  const ctaLabel = candidateProfile ? candidateProfile.intent.primary_cta : "comment";
-  const neighborhoodConfidence = comparableNeighborhood
-    ? Math.round(comparableNeighborhood.confidence.overall * 100)
+  const topItem = recommenderItems[0];
+  const topReasons = (topItem?.ranking_reasons ?? []).slice(0, 2).join(", ");
+  const clarityScore = candidateSignals
+    ? Math.round(candidateSignals.transcript_ocr.clarity_score * 100)
     : null;
-
+  const pacingScore = candidateSignals
+    ? Math.round(candidateSignals.structure.pacing_score * 100)
+    : null;
   return [
     {
       id: "rec-1",
-      title: "Open with a one-line promise and an immediate visual proof of that outcome.",
+      title:
+        "Strengthen the opening promise so the comparable match is obvious within the first seconds.",
       priority: "High",
       effort: "Low",
       evidence:
         pacingScore === null
-          ? "Based on recurring patterns in top comparable videos from the local dataset."
-          : `Pacing signal is ${pacingScore}/100. Neighborhood confidence is ${neighborhoodConfidence ?? 0}/100. Higher-performing comparables in ${topicText} establish value in the opening seconds.`
+          ? "Top-ranked references are winning on relevance and opening clarity."
+          : `Signal pacing is ${pacingScore}/100. The highest-ranked comparables concentrate their value proposition earlier.`,
+      rationale:
+        "The best comparable set wins by making the outcome clearer earlier in the video.",
+      confidence_label: "Medium confidence",
+      effect_area: "hook",
+      caveats: [],
+      evidence_refs: []
     },
     {
       id: "rec-2",
-      title: "Reduce generic tags and keep 3-5 focused hashtags aligned with intent and topic.",
-      priority: "Medium",
-      effort: "Low",
+      title: "Sharpen the framing to match the intent cues the best comparables share.",
+      priority: objective === "conversion" ? "High" : "Medium",
+      effort: "Medium",
       evidence:
-        candidateProfile
-          ? `Current objective is '${candidateProfile.intent.objective}' with topic tags ${topicText}. Hashtag specificity is a top differentiator in the comparable set.`
-          : "Hashtag density and topic alignment are stronger in higher-performing comparables."
+        topReasons
+          ? `Top Python ranker reasons: ${topReasons}.`
+          : "The recommender is rewarding stronger intent alignment than the current draft shows.",
+      rationale: "Intent alignment is lagging behind broad topic similarity.",
+      confidence_label: "Medium confidence",
+      effect_area: "format",
+      caveats: [],
+      evidence_refs: []
     },
     {
       id: "rec-3",
-      title:
-        ctaLabel === "none"
-          ? "Add a specific CTA in the final seconds to increase meaningful comments."
-          : `End with a specific '${ctaLabel}' CTA to increase meaningful responses.`,
-      priority: "High",
-      effort: "Medium",
+      title: "Make the CTA more explicit and easier to act on.",
+      priority: "Medium",
+      effort: "Low",
       evidence:
         clarityScore === null
-          ? "Comment patterns show clearer CTA phrasing drives more engaged responses."
-          : `Transcript/OCR clarity is ${clarityScore}/100. Overperformer vs underperformer contrast indicates clearer CTA phrasing correlates with stronger comment quality.`
+          ? "High-ranked references make the next step clearer."
+          : `Transcript/OCR clarity is ${clarityScore}/100. Clearer end-state language should improve comparability and response quality.`,
+      rationale: "Clearer viewer action should improve downstream response quality.",
+      confidence_label: "Medium confidence",
+      effect_area: "cta",
+      caveats: [],
+      evidence_refs: []
     }
   ];
 }
@@ -446,86 +371,67 @@ export function buildLocalBaselineReport(
     hashtags,
     description,
     candidatesK,
-    candidateProfile,
+    objective,
+    recommenderItems,
     candidateSignals,
-    comparableNeighborhood,
-    neighborhoodContrast
+    meta,
+    reasoning
   } = params;
-
-  const queryTokens = candidateProfile
-    ? unique([
-        ...candidateProfile.tokens.description_tokens,
-        ...candidateProfile.tokens.hashtag_tokens,
-        ...candidateProfile.tokens.keyphrases.flatMap((phrase) => phrase.split(" ")),
-        ...candidateProfile.tags.topic_tags.flatMap((tag) => tag.split("_")),
-        ...candidateProfile.tags.format_tags.flatMap((tag) => tag.split("_")),
-        ...toTokens(HARD_CODED_EXTRACTED_KEYWORDS)
-      ])
-    : toTokens([
-        description,
-        ...mentions,
-        ...hashtags,
-        ...HARD_CODED_EXTRACTED_KEYWORDS
-      ]);
-
-  const neighborhood =
-    comparableNeighborhood ??
-    (candidateProfile
-      ? buildComparableNeighborhood({
-          candidateProfile,
-          candidateSignals,
-          records: candidates
-        })
-      : null);
-  const contrast =
-    neighborhoodContrast ??
-    (candidateProfile && neighborhood
-      ? buildNeighborhoodContrast({
-          candidateProfile,
-          candidateSignals,
-          neighborhood
-        })
-      : null);
-
-  const selectedNeighborhoodComparables = neighborhood
-    ? pickDisplayNeighborhood(neighborhood, 8)
-    : [];
-  const comparables = selectedNeighborhoodComparables.map((entry, index) =>
-    toComparableItem(entry, index, queryTokens)
-  );
+  const queryTokens = toTokens([description, ...mentions, ...hashtags, ...HARD_CODED_EXTRACTED_KEYWORDS]);
+  const itemByCandidateId = new Map(recommenderItems.map((item) => [item.candidate_id, item]));
+  const selectedCandidates = candidates.slice(0, 8);
+  const comparables = selectedCandidates.map((record, index) => ({
+    id: `${record.video_id}-${index + 1}`,
+    candidate_id: record.video_id,
+    caption: record.caption,
+    author: toDisplayAuthor(record),
+    video_url: extractVideoUrl(record),
+    thumbnail_url: "",
+    hashtags: record.hashtags.slice(0, 5),
+    similarity: Number((itemByCandidateId.get(record.video_id)?.score ?? 0.5).toFixed(2)),
+    support_level: (itemByCandidateId.get(record.video_id)?.support_level as ComparableItem["support_level"]) ?? "unknown",
+    confidence_label: toConfidenceLabel(
+      Number(itemByCandidateId.get(record.video_id)?.score_components?.support_confidence ?? 0.5)
+    ),
+    metrics: toComparableMetrics(record),
+    matched_keywords: buildMatchedKeywords(record, queryTokens),
+    observations: buildObservationLines(itemByCandidateId.get(record.video_id)),
+    why_this_was_chosen:
+      (itemByCandidateId.get(record.video_id)?.ranking_reasons ?? []).length > 0
+        ? `Chosen for ${(itemByCandidateId.get(record.video_id)?.ranking_reasons ?? []).slice(0, 2).join(" and ")}.`
+        : "Chosen as one of the strongest comparable references in the ranked set.",
+    ranking_reasons: (itemByCandidateId.get(record.video_id)?.ranking_reasons ?? []).slice(0, 4),
+    score_components: {
+      semantic_relevance: Number(itemByCandidateId.get(record.video_id)?.score_components?.semantic_relevance ?? 0),
+      intent_alignment: Number(itemByCandidateId.get(record.video_id)?.score_components?.intent_alignment ?? 0),
+      reference_usefulness: Number(itemByCandidateId.get(record.video_id)?.score_components?.reference_usefulness ?? 0),
+      support_confidence: Number(itemByCandidateId.get(record.video_id)?.score_components?.support_confidence ?? 0)
+    },
+    retrieval_branches: Object.entries(itemByCandidateId.get(record.video_id)?.retrieval_branch_scores ?? {})
+      .filter(([, score]) => typeof score === "number" && score > 0)
+      .map(([branch]) => branch)
+  }));
 
   const yourEstimate = estimateUploadedVideoStats(description, hashtags, mentions, candidateSignals);
-  const directRows = buildDirectComparison(comparables, yourEstimate);
 
   return {
+    meta,
     header: {
       title: "Report",
-      subtitle: "Comparison based on local dataset candidates",
+      subtitle: "Python-ranked comparison based on local dataset candidates",
       badges: {
         candidates_k: candidatesK,
-        model: "DeepSeek Reasoner",
+        model: "Python Baseline Ranker",
         mode: "Guided Demo"
       },
       disclaimer:
-        "Estimated report generated from local dataset signals and uploaded-video analysis context."
+        "Estimated report generated from Python recommender outputs, local dataset metadata, and uploaded-video signal context."
     },
     executive_summary: {
       metrics: [
-        {
-          id: "retention-estimated",
-          label: "Estimated retention",
-          value: `${yourEstimate.retention}%`
-        },
-        {
-          id: "hook-strength",
-          label: "Hook strength",
-          value: `${yourEstimate.hook}/100`
-        },
-        {
-          id: "message-clarity",
-          label: "Message clarity",
-          value: `${yourEstimate.clarity}/100`
-        },
+        { id: "retention-estimated", label: "Estimated retention", value: `${yourEstimate.retention}%` },
+        { id: "hook-strength", label: "Hook strength", value: `${yourEstimate.hook}/100` },
+        { id: "message-clarity", label: "Message clarity", value: `${yourEstimate.clarity}/100` },
         {
           id: "competitiveness",
           label: "Competitiveness vs comparables (percentile)",
@@ -534,44 +440,31 @@ export function buildLocalBaselineReport(
       ],
       extracted_keywords: [...HARD_CODED_EXTRACTED_KEYWORDS],
       meaning_points: [
-        "Your current concept aligns well with proven creator/business content themes in this local dataset.",
-        "Top comparables consistently establish value in the first seconds and close with a direct CTA.",
+        "The report is grounded in the Python recommender and deterministic reasoning layer.",
+        "Top comparables are selected by semantic relevance, intent alignment, reference usefulness, and support confidence.",
         candidateSignals
           ? `Signal extractors estimate pacing score ${Math.round(candidateSignals.structure.pacing_score * 100)}/100 and transcript clarity ${Math.round(candidateSignals.transcript_ocr.clarity_score * 100)}/100.`
-          : "Keyword alignment is strong; the main opportunity is sharper opening clarity and pacing.",
-        contrast && contrast.claims.length > 0
-          ? `Neighborhood contrast suggests: ${contrast.claims[0].title} (confidence ${Math.round(
-              contrast.claims[0].pattern_confidence * 100
-            )}/100).`
-          : "Contrast evidence is limited; recommendations are based on broader neighborhood patterns."
+          : "Signal extractors were unavailable, so only metadata and ranked comparables were used.",
+        ...(reasoning.explanation_units.slice(0, 2).map((item) => item.statement)),
+        recommenderItems[0]
+          ? `Highest-ranked comparable score ${(recommenderItems[0].score * 100).toFixed(1)}/100 with reasons ${(recommenderItems[0].ranking_reasons ?? []).slice(0, 2).join(", ")}.`
+          : "No ranked comparable evidence was returned."
       ],
       summary_text:
-        "Your uploaded video concept is competitive in topic relevance. The strongest improvements are in the first two seconds and CTA specificity."
+        "The strongest next improvements are a clearer opening promise, tighter intent framing, and a more explicit CTA."
     },
     comparables,
     direct_comparison: {
-      rows: directRows,
-      note: neighborhood
-        ? `Estimated from local dataset candidates. Neighborhood confidence: ${Math.round(
-            neighborhood.confidence.overall * 100
-          )}/100${
-            contrast
-              ? `; contrast confidence: ${Math.round(contrast.neighborhood_confidence * 100)}/100`
-              : ""
-          }.`
-        : "Estimated from local dataset candidates."
+      rows: buildDirectComparison(comparables, yourEstimate),
+      note: "Comparison rows are estimated from the displayed Python-ranked comparables."
     },
     relevant_comments: {
-      items: buildRelevantComments(selectedNeighborhoodComparables),
+      items: buildRelevantComments(selectedCandidates),
       disclaimer: "Comments come from the local test dataset."
     },
     recommendations: {
-      items: buildRecommendations(
-        candidateProfile,
-        candidateSignals,
-        neighborhood ?? undefined,
-        contrast ?? undefined
-      )
-    }
+      items: buildRecommendations(objective, candidateSignals, recommenderItems, reasoning)
+    },
+    reasoning
   };
 }

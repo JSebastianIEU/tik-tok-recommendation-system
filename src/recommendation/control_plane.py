@@ -36,6 +36,12 @@ class DriftThresholds:
     label_relative_mean_delta: float = 0.20
     policy_fallback_rate: float = 0.05
     policy_wow_fallback_delta_pp: float = 0.02
+    policy_author_cap_drop_rate: float = 0.20
+    policy_strict_language_drop_rate: float = 0.20
+    policy_strict_locale_drop_rate: float = 0.20
+    min_feature_samples: int = 25
+    min_label_samples: int = 25
+    min_policy_samples: int = 25
 
 
 def classify_censorship_reason(
@@ -195,59 +201,152 @@ def summarize_drift(
     policy_current: Dict[str, float],
     thresholds: DriftThresholds = DriftThresholds(),
 ) -> Dict[str, Any]:
+    def _enough(expected_count: int, actual_count: int, minimum: int) -> bool:
+        required = max(1, int(minimum))
+        return int(expected_count) >= required and int(actual_count) >= required
+
     feature_drift: Dict[str, Dict[str, float]] = {}
     feature_breach_mandatory = False
     feature_breach_optional = False
+    feature_support: Dict[str, Dict[str, Any]] = {}
     for key, expected_values in feature_expected.items():
         actual_values = feature_actual.get(key, [])
+        expected_count = len(expected_values)
+        actual_count = len(actual_values)
+        support_ok = _enough(
+            expected_count=expected_count,
+            actual_count=actual_count,
+            minimum=thresholds.min_feature_samples,
+        )
         psi_value = population_stability_index(expected_values, actual_values)
         feature_drift[key] = {"psi": round(psi_value, 6)}
-        if key.startswith("mandatory_") and psi_value > thresholds.feature_psi_mandatory:
+        feature_support[key] = {
+            "expected_count": int(expected_count),
+            "actual_count": int(actual_count),
+            "min_required": int(max(1, thresholds.min_feature_samples)),
+            "sufficient": bool(support_ok),
+        }
+        if (
+            support_ok
+            and key.startswith("mandatory_")
+            and psi_value > thresholds.feature_psi_mandatory
+        ):
             feature_breach_mandatory = True
-        if key.startswith("optional_") and psi_value > thresholds.feature_psi_optional:
+        if (
+            support_ok
+            and key.startswith("optional_")
+            and psi_value > thresholds.feature_psi_optional
+        ):
             feature_breach_optional = True
 
     label_drift: Dict[str, Dict[str, float]] = {}
     label_breach = False
+    label_support: Dict[str, Dict[str, Any]] = {}
     for key, expected_values in label_expected.items():
         actual_values = label_actual.get(key, [])
+        expected_count = len(expected_values)
+        actual_count = len(actual_values)
+        support_ok = _enough(
+            expected_count=expected_count,
+            actual_count=actual_count,
+            minimum=thresholds.min_label_samples,
+        )
         ks_value = ks_statistic(expected_values, actual_values)
         mean_delta = relative_mean_delta(expected_values, actual_values)
         label_drift[key] = {
             "ks": round(ks_value, 6),
             "relative_mean_delta": round(mean_delta, 6),
         }
-        if ks_value > thresholds.label_ks or mean_delta > thresholds.label_relative_mean_delta:
+        label_support[key] = {
+            "expected_count": int(expected_count),
+            "actual_count": int(actual_count),
+            "min_required": int(max(1, thresholds.min_label_samples)),
+            "sufficient": bool(support_ok),
+        }
+        if support_ok and (
+            ks_value > thresholds.label_ks
+            or mean_delta > thresholds.label_relative_mean_delta
+        ):
             label_breach = True
 
+    policy_baseline_count = int(policy_baseline.get("sample_count") or 0)
+    policy_current_count = int(policy_current.get("sample_count") or 0)
+    policy_support_ok = _enough(
+        expected_count=policy_baseline_count,
+        actual_count=policy_current_count,
+        minimum=thresholds.min_policy_samples,
+    )
     baseline_fallback = float(policy_baseline.get("fallback_rate") or 0.0)
     current_fallback = float(policy_current.get("fallback_rate") or 0.0)
     policy_delta = current_fallback - baseline_fallback
+    current_author_cap_drop_rate = float(policy_current.get("author_cap_drop_rate") or 0.0)
+    current_strict_language_drop_rate = float(policy_current.get("strict_language_drop_rate") or 0.0)
+    current_strict_locale_drop_rate = float(policy_current.get("strict_locale_drop_rate") or 0.0)
     policy_drift = {
         "fallback_rate": round(current_fallback, 6),
         "fallback_rate_wow_delta": round(policy_delta, 6),
         "constraint_tier_3_rate": round(float(policy_current.get("constraint_tier_3_rate") or 0.0), 6),
-        "author_cap_drop_rate": round(float(policy_current.get("author_cap_drop_rate") or 0.0), 6),
-        "strict_language_drop_rate": round(
-            float(policy_current.get("strict_language_drop_rate") or 0.0), 6
+        "author_cap_drop_rate": round(current_author_cap_drop_rate, 6),
+        "strict_language_drop_rate": round(current_strict_language_drop_rate, 6),
+        "strict_locale_drop_rate": round(current_strict_locale_drop_rate, 6),
+        "sample_count": int(policy_current_count),
+        "baseline_sample_count": int(policy_baseline_count),
+    }
+    policy_breach_components = {
+        "fallback_rate": current_fallback > thresholds.policy_fallback_rate,
+        "fallback_wow_delta": policy_delta > thresholds.policy_wow_fallback_delta_pp,
+        "author_cap_drop_rate": (
+            current_author_cap_drop_rate > thresholds.policy_author_cap_drop_rate
+        ),
+        "strict_language_drop_rate": (
+            current_strict_language_drop_rate > thresholds.policy_strict_language_drop_rate
+        ),
+        "strict_locale_drop_rate": (
+            current_strict_locale_drop_rate > thresholds.policy_strict_locale_drop_rate
         ),
     }
-    policy_breach = (
-        current_fallback > thresholds.policy_fallback_rate
-        or policy_delta > thresholds.policy_wow_fallback_delta_pp
+    policy_breach = policy_support_ok and (
+        any(bool(value) for value in policy_breach_components.values())
     )
+
+    feature_any_sufficient = any(item.get("sufficient") for item in feature_support.values())
+    label_any_sufficient = any(item.get("sufficient") for item in label_support.values())
+    support_insufficient = not (feature_any_sufficient and label_any_sufficient and policy_support_ok)
 
     if feature_breach_mandatory or label_breach or policy_breach:
         severity = "critical"
     elif feature_breach_optional:
         severity = "warning"
+    elif support_insufficient:
+        severity = "insufficient_data"
     else:
         severity = "ok"
+
+    if severity == "critical":
+        trigger_recommendation = "retrain_candidate"
+    elif severity == "warning":
+        trigger_recommendation = "monitor"
+    elif severity == "insufficient_data":
+        trigger_recommendation = "insufficient_data"
+    else:
+        trigger_recommendation = "none"
 
     return {
         "feature_drift": feature_drift,
         "label_drift": label_drift,
         "policy_drift": policy_drift,
+        "policy_breach_components": policy_breach_components,
+        "support": {
+            "feature": feature_support,
+            "label": label_support,
+            "policy": {
+                "baseline_count": int(policy_baseline_count),
+                "current_count": int(policy_current_count),
+                "min_required": int(max(1, thresholds.min_policy_samples)),
+                "sufficient": bool(policy_support_ok),
+            },
+            "streams_sufficient": bool(feature_any_sufficient and label_any_sufficient and policy_support_ok),
+        },
         "breaches": {
             "feature_mandatory": feature_breach_mandatory,
             "feature_optional": feature_breach_optional,
@@ -255,9 +354,7 @@ def summarize_drift(
             "policy": policy_breach,
         },
         "severity": severity,
-        "trigger_recommendation": (
-            "retrain_candidate" if severity == "critical" else "monitor" if severity == "warning" else "none"
-        ),
+        "trigger_recommendation": trigger_recommendation,
     }
 
 
@@ -266,11 +363,23 @@ def should_trigger_retrain(
     recent_severities: Sequence[str],
     scheduled_due: bool,
     consecutive_critical_required: int = 2,
+    recent_trigger_recommendations: Optional[Sequence[str]] = None,
 ) -> Tuple[bool, str]:
     normalized = [str(item).strip().lower() for item in recent_severities if str(item).strip()]
+    trigger_normalized: Optional[List[str]] = None
+    if recent_trigger_recommendations is not None:
+        trigger_normalized = [
+            str(item).strip().lower() for item in recent_trigger_recommendations if str(item).strip()
+        ]
     trailing_critical = 0
-    for severity in reversed(normalized):
+    for idx, severity in enumerate(reversed(normalized)):
         if severity == "critical":
+            if trigger_normalized is not None:
+                trigger_idx = len(trigger_normalized) - 1 - idx
+                if trigger_idx < 0 or trigger_idx >= len(trigger_normalized):
+                    break
+                if trigger_normalized[trigger_idx] != "retrain_candidate":
+                    break
             trailing_critical += 1
         else:
             break
@@ -314,4 +423,3 @@ __all__ = [
     "classify_censorship_reason",
     "compute_objective_values_from_snapshot",
 ]
-

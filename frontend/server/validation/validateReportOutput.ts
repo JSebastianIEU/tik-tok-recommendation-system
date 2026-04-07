@@ -31,14 +31,21 @@ function validateComparableItem(value: unknown): value is ComparableItem {
 
   if (
     !isString(value.id) ||
+    !isString(value.candidate_id) ||
     !isString(value.caption) ||
     !isString(value.author) ||
     !isString(value.video_url) ||
     !isString(value.thumbnail_url) ||
     !isStringArray(value.hashtags) ||
     !isNumber(value.similarity) ||
+    !isString(value.support_level) ||
+    !isString(value.confidence_label) ||
     !isStringArray(value.matched_keywords) ||
-    !isStringArray(value.observations)
+    !isStringArray(value.observations) ||
+    !isString(value.why_this_was_chosen) ||
+    !isStringArray(value.ranking_reasons) ||
+    !isObject(value.score_components) ||
+    !isStringArray(value.retrieval_branches)
   ) {
     return false;
   }
@@ -52,7 +59,11 @@ function validateComparableItem(value: unknown): value is ComparableItem {
     isNumber(value.metrics.likes) &&
     isNumber(value.metrics.comments_count) &&
     isNumber(value.metrics.shares) &&
-    isString(value.metrics.engagement_rate)
+    isString(value.metrics.engagement_rate) &&
+    isNumber(value.score_components.semantic_relevance) &&
+    isNumber(value.score_components.intent_alignment) &&
+    isNumber(value.score_components.reference_usefulness) &&
+    isNumber(value.score_components.support_confidence)
   );
 }
 
@@ -62,14 +73,34 @@ export function validateReportOutput(value: unknown): value is ReportOutput {
   }
 
   const {
+    meta,
     header,
     executive_summary,
     comparables,
     direct_comparison,
     relevant_comments,
     recommendations,
+    reasoning,
     explainability
   } = value;
+
+  if (!isObject(meta)) {
+    return false;
+  }
+
+  if (
+    !isString(meta.request_id) ||
+    !isString(meta.objective) ||
+    !isString(meta.objective_effective) ||
+    !isString(meta.generated_at) ||
+    !isString(meta.recommender_source) ||
+    typeof meta.fallback_mode !== "boolean" ||
+    !isString(meta.evidence_label) ||
+    !isString(meta.confidence_label) ||
+    (meta.fallback_reason !== undefined && meta.fallback_reason !== null && !isString(meta.fallback_reason))
+  ) {
+    return false;
+  }
 
   if (!isObject(header) || !isObject(header.badges)) {
     return false;
@@ -166,10 +197,29 @@ export function validateReportOutput(value: unknown): value is ReportOutput {
       isString(item.title) &&
       (item.priority === "High" || item.priority === "Medium" || item.priority === "Low") &&
       (item.effort === "Low" || item.effort === "Medium" || item.effort === "High") &&
-      isString(item.evidence)
+      isString(item.evidence) &&
+      isString(item.rationale) &&
+      isString(item.confidence_label) &&
+      isString(item.effect_area) &&
+      Array.isArray(item.caveats) &&
+      isStringArray(item.caveats) &&
+      Array.isArray(item.evidence_refs) &&
+      isStringArray(item.evidence_refs)
     );
   });
   if (!recommendationsOk) {
+    return false;
+  }
+
+  if (!isObject(reasoning)) {
+    return false;
+  }
+  if (
+    !isObject(reasoning.evidence_pack) ||
+    !Array.isArray(reasoning.explanation_units) ||
+    !Array.isArray(reasoning.recommendation_units) ||
+    !isObject(reasoning.reasoning_metadata)
+  ) {
     return false;
   }
 

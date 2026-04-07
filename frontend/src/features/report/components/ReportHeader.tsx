@@ -1,8 +1,9 @@
-﻿import { CollapseIcon, ExpandIcon, ExportIcon } from "./ReportIcons";
-import type { ReportHeaderData } from "../types";
+import { CollapseIcon, ExpandIcon, ExportIcon } from "./ReportIcons";
+import type { ReportHeaderData, ReportMeta } from "../types";
 
 interface ReportHeaderProps {
   header: ReportHeaderData;
+  meta: ReportMeta;
   isExpanded: boolean;
   onToggleExpand: () => void;
   onShowPreview: () => void;
@@ -10,7 +11,7 @@ interface ReportHeaderProps {
 }
 
 export function ReportHeader(props: ReportHeaderProps): JSX.Element {
-  const { header, isExpanded, onToggleExpand, onShowPreview, onExport } = props;
+  const { header, meta, isExpanded, onToggleExpand, onShowPreview, onExport } = props;
 
   return (
     <header className="report-header">
@@ -23,6 +24,9 @@ export function ReportHeader(props: ReportHeaderProps): JSX.Element {
         <span className="report-chip">Candidates: k={header.badges.candidates_k}</span>
         <span className="report-chip">Model: {header.badges.model}</span>
         <span className="report-chip">Mode: {header.badges.mode}</span>
+        <span className="report-chip">{meta.evidence_label}</span>
+        <span className="report-chip">{meta.confidence_label}</span>
+        {meta.fallback_mode ? <span className="report-chip">Fallback active</span> : null}
       </div>
 
       <div className="report-header-actions">

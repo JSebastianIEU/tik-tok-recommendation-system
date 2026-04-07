@@ -5,9 +5,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from src.recommendation import (
     BuildTrainingDataMartConfig,
@@ -136,6 +141,13 @@ def main() -> int:
         help="Pair labeling source used for datamart pair_rows.",
     )
     parser.add_argument(
+        "--pair-objective",
+        type=str,
+        default="engagement",
+        choices=["reach", "engagement", "conversion"],
+        help="Objective used when materializing datamart pair_rows.",
+    )
+    parser.add_argument(
         "--enable-trajectory-labels",
         dest="enable_trajectory_labels",
         action="store_true",
@@ -170,6 +182,7 @@ def main() -> int:
         track=args.track,
         min_history_hours=args.min_history_hours,
         label_window_hours=args.label_window_hours,
+        pair_objective=str(args.pair_objective),
         pair_target_source=args.pair_target_source,
         enable_trajectory_labels=bool(args.enable_trajectory_labels),
         as_of_run_time=(

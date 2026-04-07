@@ -74,12 +74,60 @@ def test_drift_metrics_and_thresholds():
         feature_actual={"mandatory_score": [2.0, 2.1, 2.2]},
         label_expected={"primary_24h": [0.1, 0.2, 0.3]},
         label_actual={"primary_24h": [1.0, 1.1, 1.2]},
-        policy_baseline={"fallback_rate": 0.01},
-        policy_current={"fallback_rate": 0.10},
-        thresholds=DriftThresholds(),
+        policy_baseline={"fallback_rate": 0.01, "sample_count": 30},
+        policy_current={"fallback_rate": 0.10, "sample_count": 30},
+        thresholds=DriftThresholds(
+            min_feature_samples=1,
+            min_label_samples=1,
+            min_policy_samples=1,
+        ),
     )
     assert summary["severity"] == "critical"
     assert summary["trigger_recommendation"] == "retrain_candidate"
+
+
+def test_drift_summary_marks_insufficient_data_when_support_is_too_low():
+    summary = summarize_drift(
+        feature_expected={"mandatory_score": [0.1]},
+        feature_actual={"mandatory_score": [3.0]},
+        label_expected={"primary_24h": [0.1]},
+        label_actual={"primary_24h": [1.2]},
+        policy_baseline={"fallback_rate": 0.01, "sample_count": 1},
+        policy_current={"fallback_rate": 0.80, "sample_count": 1},
+        thresholds=DriftThresholds(
+            min_feature_samples=10,
+            min_label_samples=10,
+            min_policy_samples=10,
+        ),
+    )
+    assert summary["severity"] == "insufficient_data"
+    assert summary["trigger_recommendation"] == "insufficient_data"
+    assert summary["support"]["streams_sufficient"] is False
+    assert summary["breaches"]["policy"] is False
+
+
+def test_drift_policy_breach_triggers_on_strict_language_drop_rate():
+    summary = summarize_drift(
+        feature_expected={"mandatory_score": [0.1, 0.2, 0.3]},
+        feature_actual={"mandatory_score": [0.1, 0.21, 0.31]},
+        label_expected={"primary_24h": [0.1, 0.2, 0.3]},
+        label_actual={"primary_24h": [0.1, 0.2, 0.3]},
+        policy_baseline={"fallback_rate": 0.01, "sample_count": 50},
+        policy_current={
+            "fallback_rate": 0.01,
+            "sample_count": 50,
+            "strict_language_drop_rate": 0.35,
+        },
+        thresholds=DriftThresholds(
+            min_feature_samples=1,
+            min_label_samples=1,
+            min_policy_samples=1,
+            policy_strict_language_drop_rate=0.20,
+        ),
+    )
+    assert summary["breaches"]["policy"] is True
+    assert summary["policy_breach_components"]["strict_language_drop_rate"] is True
+    assert summary["severity"] == "critical"
 
 
 def test_should_trigger_retrain_with_consecutive_critical():
@@ -90,6 +138,17 @@ def test_should_trigger_retrain_with_consecutive_critical():
     )
     assert triggered is True
     assert reason == "drift_trigger"
+
+
+def test_should_not_trigger_retrain_for_critical_without_retrain_recommendation():
+    triggered, reason = should_trigger_retrain(
+        recent_severities=["critical", "critical"],
+        recent_trigger_recommendations=["insufficient_data", "insufficient_data"],
+        scheduled_due=False,
+        consecutive_critical_required=2,
+    )
+    assert triggered is False
+    assert reason == "no_trigger"
 
 
 def test_build_retrain_decision_payload_shape():
@@ -105,4 +164,3 @@ def test_build_retrain_decision_payload_shape():
     assert decision["selected_bundle_id"] == "bundle-123"
     assert decision["promoted"] is True
     assert "generated_at" in decision
-

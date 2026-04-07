@@ -1,7 +1,8 @@
-﻿import { useEffect, useState } from "react";
-import type { ReportOutput } from "../../report/types";
+import { useEffect, useState } from "react";
+import { sendReportFeedback } from "../../../services/api/reportFeedbackApi";
 import type { IChatService } from "../../../services/contracts/IChatService";
 import type { ChatMessage } from "../../../services/contracts/models";
+import type { ReportOutput } from "../../report/types";
 
 interface UseChatPanelParams {
   chatService: IChatService;
@@ -76,6 +77,21 @@ export function useChatPanel(params: UseChatPanelParams): UseChatPanelResult {
     setError(null);
 
     try {
+      await sendReportFeedback({
+        request_id: report.meta.request_id,
+        event_name: "report_followup_asked",
+        entity_type: "chat",
+        section: "chat",
+        objective_effective: report.meta.objective_effective,
+        experiment_id: report.meta.experiment_id ?? undefined,
+        variant: report.meta.variant ?? undefined,
+        signal_strength: "medium",
+        label_direction: "positive",
+        metadata: {
+          history_size: history.length
+        }
+      });
+
       const assistantReply = await chatService.sendMessage({
         question: trimmed,
         report,

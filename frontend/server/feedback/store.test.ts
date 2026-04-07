@@ -30,3 +30,15 @@ test("FeedbackEventStore remains disabled cleanly without db url", async () => {
   assert.equal(status.error, "feedback_store_disabled");
 });
 
+test("disabled feedback store returns null creator preference profile", async () => {
+  const store = new FeedbackEventStore({
+    enabled: true,
+    dbUrl: ""
+  });
+  await store.init();
+  const profile = await store.loadCreatorPreferenceProfile({
+    creatorId: "creator-1",
+    objectiveEffective: "engagement"
+  });
+  assert.equal(profile, null);
+});

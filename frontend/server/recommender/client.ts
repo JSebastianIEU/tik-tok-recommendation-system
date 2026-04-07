@@ -13,6 +13,8 @@ export interface RecommenderQueryPayload {
   text?: string;
   topic_key?: string;
   author_id?: string;
+  audience?: string | Record<string, unknown>;
+  primary_cta?: string;
   language?: string;
   locale?: string;
   content_type?: string;
@@ -60,7 +62,8 @@ export interface RecommenderRequestPayload {
   objective: string;
   as_of_time: string;
   query: RecommenderQueryPayload;
-  candidates: RecommenderCandidatePayload[];
+  candidates?: RecommenderCandidatePayload[];
+  user_context?: Record<string, unknown>;
   language?: string;
   locale?: string;
   content_type?: string;
@@ -172,14 +175,28 @@ export interface RecommenderItem {
   candidate_id: string;
   rank: number;
   score: number;
+  author_id?: string;
+  topic_key?: string;
+  content_type?: string;
+  language?: string;
+  locale?: string;
+  hashtags?: string[];
+  keywords?: string[];
   score_raw?: number;
   score_calibrated?: number;
+  baseline_score?: number;
+  learned_score?: number;
+  user_affinity_score?: number;
+  creator_retrieval_score?: number;
   policy_penalty?: number;
   policy_bonus?: number;
   policy_adjusted_score?: number;
   calibration_trace?: Record<string, unknown>;
   policy_trace?: Record<string, unknown>;
   portfolio_trace?: Record<string, unknown>;
+  learned_trace?: Record<string, unknown>;
+  user_affinity_trace?: Record<string, unknown>;
+  creator_retrieval_trace?: Record<string, unknown>;
   similarity: {
     sparse: number;
     dense: number;
@@ -191,6 +208,8 @@ export interface RecommenderItem {
     multimodal?: number;
     graph_dense?: number;
     trajectory_dense?: number;
+    creator_affinity?: number;
+    fused_base?: number;
     fused?: number;
   };
   graph_trace?: {
@@ -311,8 +330,11 @@ export interface RecommenderResponsePayload {
   portfolio_metadata?: Record<string, unknown>;
   calibration_metadata?: Record<string, unknown>;
   explainability_metadata?: Record<string, unknown>;
+  retrieval_personalization_metadata?: Record<string, unknown>;
   routing_decision?: Record<string, unknown>;
   compatibility_status?: Record<string, unknown>;
+  learned_reranker_metadata?: Record<string, unknown>;
+  user_adaptation_metadata?: Record<string, unknown>;
   fallback_reason?: string | null;
   latency_breakdown_ms?: Record<string, number>;
   circuit_state?: Record<string, unknown>;

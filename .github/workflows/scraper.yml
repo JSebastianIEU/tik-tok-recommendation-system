@@ -8,10 +8,10 @@ on:
         required: true
         default: "scraper/configs/full_scale.yaml"
       skip_existing:
-        description: "Skip already persisted videos"
+        description: "Skip already persisted videos (false = update/upsert existing videos)"
         required: true
         type: boolean
-        default: true
+        default: false
       no_resume:
         description: "Ignore checkpoint table and rerun all sources"
         required: true
@@ -60,7 +60,7 @@ jobs:
       MS_TOKEN: ${{ secrets.MS_TOKEN }}
       SCRAPER_SCHEDULE_ENABLED: ${{ vars.SCRAPER_SCHEDULE_ENABLED || 'true' }}
       SCRAPER_CONFIG_PATH: ${{ vars.SCRAPER_CONFIG_PATH || 'scraper/configs/full_scale.yaml' }}
-      SCRAPER_SKIP_EXISTING: ${{ vars.SCRAPER_SKIP_EXISTING || 'true' }}
+      SCRAPER_SKIP_EXISTING: ${{ vars.SCRAPER_SKIP_EXISTING || 'false' }}
       SCRAPER_NO_RESUME: ${{ vars.SCRAPER_NO_RESUME || 'true' }}
       SCRAPER_COMMENTS: ${{ vars.SCRAPER_COMMENTS || '0' }}
       SCRAPER_REPLIES: ${{ vars.SCRAPER_REPLIES || '0' }}
