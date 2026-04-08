@@ -3,8 +3,6 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-import numpy as np
-
 from src.recommendation import BuildTrainingDataMartConfig, CanonicalDatasetBundle, build_training_data_mart
 from src.recommendation.learning import RecommenderRuntime, RecommenderTrainingConfig, train_recommender_from_datamart
 from src.recommendation.learning.retriever import HybridRetriever, HybridRetrieverTrainerConfig

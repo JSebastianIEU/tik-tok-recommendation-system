@@ -7,7 +7,7 @@ fastapi = pytest.importorskip("fastapi")
 testclient = pytest.importorskip("fastapi.testclient")
 
 from src.recommendation import service  # noqa: E402
-from src.recommendation.learning.inference import ArtifactCompatibilityError
+from src.recommendation.learning.inference import ArtifactCompatibilityError  # noqa: E402
 
 
 class _FakeRuntime:
