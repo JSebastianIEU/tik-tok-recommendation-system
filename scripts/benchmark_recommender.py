@@ -5,7 +5,10 @@ from __future__ import annotations
 
 import argparse
 import json
-import resource
+try:
+    import resource
+except ImportError:
+    resource = None  # Windows compatibility
 import statistics
 import time
 from pathlib import Path
@@ -28,6 +31,13 @@ def _percentile(values: List[float], pct: float) -> float:
 
 
 def _maxrss_mb() -> float:
+    if resource is None:
+        # Windows: use psutil if available, otherwise return 0
+        try:
+            import psutil
+            return round(psutil.Process().memory_info().rss / (1024 * 1024), 2)
+        except ImportError:
+            return 0.0
     # On macOS ru_maxrss is bytes, on Linux it's KB.
     value = float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
     if value > 10_000_000:

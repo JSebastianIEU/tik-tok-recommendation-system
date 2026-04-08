@@ -221,3 +221,7 @@ __marimo__/
 # Generated model/data artifacts
 artifacts/
 *.pkl
+.claude/
+data/real/
+artifacts/
+frontend/.env.local
