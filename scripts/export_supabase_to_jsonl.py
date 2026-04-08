@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,7 +26,7 @@ def main() -> int:
     output_path = Path("data/real/tiktok_posts_real.jsonl")
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    print(f"Connecting to database...")
+    print("Connecting to database...")
     conn = psycopg.connect(db_url)
     cur = conn.cursor()
 
@@ -121,6 +122,17 @@ def main() -> int:
         video_id = d["video_id"]
         caption = (d["caption"] or "").replace("\n", " ").replace("\r", " ").replace("\u2028", " ").replace("\u2029", " ").replace("\x0b", " ").replace("\x0c", " ").replace("\x1c", " ").replace("\x1d", " ").replace("\x1e", " ").replace("\x85", " ")
 
+        # Extract inline hashtags from caption and merge with bridge table
+        inline_tags = [t.lower() for t in re.findall(r"#\w+", caption)]
+        bridge_tags = hashtag_map.get(video_id, [])
+        bridge_lower = [t.lower() if t.startswith("#") else f"#{t.lower()}" for t in bridge_tags]
+        seen_tags: set[str] = set()
+        merged_tags: list[str] = []
+        for tag in inline_tags + bridge_lower:
+            if tag not in seen_tags:
+                seen_tags.add(tag)
+                merged_tags.append(tag)
+
         # Extract keywords from caption (simple word extraction)
         words = caption.replace("#", "").split()
         keywords = [w for w in words if len(w) > 3][:5]
@@ -139,7 +151,7 @@ def main() -> int:
             "video_id": video_id,
             "video_url": d["url"] or f"https://www.tiktok.com/video/{video_id}",
             "caption": caption,
-            "hashtags": hashtag_map.get(video_id, []),
+            "hashtags": merged_tags,
             "keywords": keywords,
             "search_query": search_query,
             "posted_at": posted_at_str,
