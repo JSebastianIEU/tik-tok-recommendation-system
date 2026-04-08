@@ -572,6 +572,7 @@ def test_learned_reranker_training_and_runtime_integration(tmp_path: Path):
         candidates=candidates,
         top_k=5,
         retrieve_k=20,
+        routing={"stage_budgets_ms": {"retrieval": 5000, "ranking": 5000}},
         debug=True,
     )
     assert learned_response["learned_reranker_metadata"]["enabled"] is True
