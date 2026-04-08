@@ -365,3 +365,63 @@ def metrics() -> Dict[str, Any]:
             _metrics.get("fabric_missingness_reason_total", {})
         ),
     }
+
+
+# ---------------------------------------------------------------------------
+# Hashtag recommendation endpoint
+# ---------------------------------------------------------------------------
+
+class HashtagSuggestRequest(BaseModel):
+    caption: str
+    k: int = Field(default=10, ge=1, le=50)
+    top_n: int = Field(default=10, ge=1, le=50)
+    exclude_tags: List[str] = Field(default_factory=list)
+    include_neighbours: bool = False
+
+
+def _hashtag_recommender_dir() -> Path:
+    configured = os.getenv("HASHTAG_RECOMMENDER_DIR", "").strip()
+    if configured:
+        return Path(configured)
+    return Path("artifacts/hashtag_recommender")
+
+
+_hashtag_recommender = None
+
+
+@app.post("/v1/hashtags/suggest")
+def suggest_hashtags(request: HashtagSuggestRequest) -> Dict[str, Any]:
+    global _hashtag_recommender
+    if _hashtag_recommender is None:
+        try:
+            from .hashtag_recommender import HashtagRecommender
+            _hashtag_recommender = HashtagRecommender.load(_hashtag_recommender_dir())
+        except Exception as error:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": "hashtag_recommender_unavailable",
+                    "reason": str(error),
+                },
+            ) from error
+
+    started = time.perf_counter()
+    if request.include_neighbours:
+        result = _hashtag_recommender.recommend_with_neighbours(
+            caption=request.caption,
+            k=request.k,
+            top_n=request.top_n,
+        )
+    else:
+        hashtags = _hashtag_recommender.recommend(
+            caption=request.caption,
+            k=request.k,
+            top_n=request.top_n,
+            exclude_tags=request.exclude_tags,
+        )
+        result = {"hashtags": hashtags}
+
+    elapsed_ms = (time.perf_counter() - started) * 1000.0
+    result["latency_ms"] = round(elapsed_ms, 2)
+    result["corpus_size"] = len(_hashtag_recommender.corpus_captions)
+    return result
