@@ -250,7 +250,8 @@ def train_phase2_reranker(
     )
     bootstrap_pairwise_rows = []
     if bootstrap_datamart_json is not None:
-        datamart_payload = json.loads(bootstrap_datamart_json.read_text(encoding="utf-8"))
+        with open(bootstrap_datamart_json, "r", encoding="utf-8") as f:
+            datamart_payload = json.load(f)
         bootstrap_pairwise_rows = materialize_datamart_bootstrap_rows(
             datamart=datamart_payload,
             bundle_dir=base_bundle_dir,

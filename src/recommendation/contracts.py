@@ -1456,7 +1456,8 @@ def load_bundle_from_manifest(manifest_ref: Path | str) -> CanonicalDatasetBundl
             bundle_file = manifest_path.parent / bundle_file
     if not bundle_file.exists():
         bundle_file = manifest_path.parent / "bundle.json"
-    payload = json.loads(bundle_file.read_text(encoding="utf-8"))
+    with open(bundle_file, "r", encoding="utf-8") as _bf:
+        payload = json.load(_bf)
     bundle = CanonicalDatasetBundle.model_validate(payload)
     expected_manifest_id = str(manifest.get("manifest_id") or "")
     if expected_manifest_id and bundle.manifest_id != expected_manifest_id:

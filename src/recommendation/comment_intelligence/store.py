@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from pydantic import BaseModel, Field
+
+logger = logging.getLogger(__name__)
 
 from ..contracts import CanonicalDatasetBundle
 from .core import (
@@ -48,11 +51,12 @@ def _json_default(value: Any) -> Any:
 
 def _read_jsonl(path: Path) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        raw = line.strip()
-        if not raw:
-            continue
-        rows.append(json.loads(raw))
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            raw = line.strip()
+            if not raw:
+                continue
+            rows.append(json.loads(raw))
     return rows
 
 
@@ -65,6 +69,7 @@ def _write_rows(rows: List[Dict[str, Any]], output_base: Path) -> Tuple[str, str
         pd.DataFrame(rows).to_parquet(parquet_path, index=False)
         return str(parquet_path), "parquet"
     except Exception:
+        logger.debug("pandas/parquet unavailable, falling back to JSONL", exc_info=True)
         jsonl_path = output_base.with_suffix(".jsonl")
         with jsonl_path.open("w", encoding="utf-8") as handle:
             for row in rows:
@@ -83,6 +88,7 @@ def _load_rows(file_path: Path, file_format: str) -> List[Dict[str, Any]]:
             frame = pd.read_parquet(file_path)
             return frame.to_dict(orient="records")
         except Exception:
+            logger.debug("Failed to read parquet %s, trying JSONL fallback", file_path, exc_info=True)
             fallback_jsonl = file_path.with_suffix(".jsonl")
             if fallback_jsonl.exists():
                 return _read_jsonl(fallback_jsonl)

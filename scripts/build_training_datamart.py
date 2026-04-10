@@ -14,29 +14,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from scripts._utils import parse_iso_datetime, to_jsonable
 from src.recommendation import (
     BuildTrainingDataMartConfig,
     build_training_data_mart_from_manifest,
     build_training_data_mart_from_jsonl,
 )
-
-
-def _parse_iso_datetime(value: str) -> datetime:
-    normalized = value.replace("Z", "+00:00")
-    parsed = datetime.fromisoformat(normalized)
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
-
-
-def _to_jsonable(value: Any) -> Any:
-    if isinstance(value, datetime):
-        return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
-    if isinstance(value, dict):
-        return {key: _to_jsonable(inner) for key, inner in value.items()}
-    if isinstance(value, list):
-        return [_to_jsonable(inner) for inner in value]
-    return value
 
 
 def _parse_csv_int_triplet(value: str) -> tuple[int, int, int]:
@@ -63,6 +46,35 @@ def _parse_trajectory_weights_json(value: str | None) -> Dict[str, Dict[str, flo
             "late": float(weights.get("late", 0.0)),
         }
     return out
+
+
+def _stream_write_datamart(mart: Dict[str, Any], output_path: Path) -> None:
+    """Write datamart JSON in a streaming fashion to avoid MemoryError.
+
+    The 'rows' and 'pair_rows' arrays can be enormous. Instead of serializing
+    the entire dict to one string, we write top-level keys one at a time and
+    stream array elements individually.
+    """
+    large_array_keys = {"rows", "pair_rows"}
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write("{\n")
+        keys = list(mart.keys())
+        for i, key in enumerate(keys):
+            comma = ",\n" if i < len(keys) - 1 else "\n"
+            value = mart[key]
+            if key in large_array_keys and isinstance(value, list):
+                f.write(f'  {json.dumps(key)}: [\n')
+                for j, item in enumerate(value):
+                    item_comma = ",\n" if j < len(value) - 1 else "\n"
+                    f.write(f'    {json.dumps(to_jsonable(item), ensure_ascii=False)}{item_comma}')
+                f.write(f"  ]{comma}")
+            else:
+                serialized = json.dumps(to_jsonable(value), indent=2, ensure_ascii=False)
+                # Indent the value to align with key
+                indented = serialized.replace("\n", "\n  ")
+                f.write(f'  {json.dumps(key)}: {indented}{comma}')
+        f.write("}\n")
 
 
 def main() -> int:
@@ -186,7 +198,7 @@ def main() -> int:
         pair_target_source=args.pair_target_source,
         enable_trajectory_labels=bool(args.enable_trajectory_labels),
         as_of_run_time=(
-            _parse_iso_datetime(args.as_of_run_time) if args.as_of_run_time else None
+            parse_iso_datetime(args.as_of_run_time) if args.as_of_run_time else None
         ),
         trajectory_windows_hours=_parse_csv_int_triplet(args.trajectory_windows_hours),
         comment_feature_manifest_path=(
@@ -208,7 +220,7 @@ def main() -> int:
         raw_jsonl = args.input_jsonl.read_text(encoding="utf-8")
         mart = build_training_data_mart_from_jsonl(
             raw_jsonl=raw_jsonl,
-            as_of_time=_parse_iso_datetime(args.as_of_time),
+            as_of_time=parse_iso_datetime(args.as_of_time),
             source="script_build_training_datamart",
             config=config,
             strict_timestamps=args.strict_timestamps,
@@ -217,10 +229,8 @@ def main() -> int:
         )
 
     args.output_json.parent.mkdir(parents=True, exist_ok=True)
-    args.output_json.write_text(
-        json.dumps(_to_jsonable(mart), indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    # Stream-write to avoid MemoryError from json.dumps on large datamarts
+    _stream_write_datamart(mart, args.output_json)
 
     print(f"Wrote datamart to {args.output_json}")
     print(f"Rows: {mart['stats']['rows_total']}, pairs: {mart['stats']['pair_rows_total']}")
