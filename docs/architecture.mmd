@@ -1,0 +1,157 @@
+graph TD
+    subgraph INGESTION["Data Ingestion"]
+        SC["TikTok Scraper"]
+        DB[("Supabase PostgreSQL<br/>34K videos | 20K comments<br/>40K hashtags | 25K authors")]
+        SC -->|"psycopg"| DB
+    end
+
+    subgraph BACKFILL["Hashtag Backfill"]
+        BF["backfill_video_hashtags.py<br/>regex #tag from captions<br/>93.8% coverage"]
+        DB --> BF --> DB
+    end
+
+    subgraph EXPORT["Contract Export"]
+        EX["export_db_contract_bundle.py"]
+        CB["CanonicalDatasetBundle<br/>videos + snapshots + comments<br/>+ authors + hashtags"]
+        DB --> EX --> CB
+    end
+
+    subgraph COMMENT_INT["Comment Intelligence"]
+        CI["build_comment_intelligence_snapshot.py"]
+        CIS["CommentIntelligenceSnapshot<br/>8 intent classes<br/>hybrid alignment SBERT"]
+        CTP["CommentTransferPriors<br/>hashtag-scoped priors"]
+        CB --> CI --> CIS
+        CIS --> CTP
+    end
+
+    subgraph DATAMART["Training DataMart"]
+        DM["build_training_datamart.py"]
+        DMO["datamart.v1 JSON<br/>features + labels + targets_z<br/>+ pair_rows + trajectory"]
+        CB --> DM
+        CIS --> DM
+        CTP --> DM
+        DM --> DMO
+    end
+
+    subgraph PHASE1["Phase 1: Recommender Training"]
+        TR["train_recommender.py"]
+        DMO --> TR
+
+        subgraph RETRIEVER["Hybrid Retriever - 5 Branches"]
+            R1["Semantic Dense 0.25<br/>SBERT all-MiniLM-L6-v2<br/>FAISS IndexFlatIP"]
+            R2["Sparse Hashtag 0.45<br/>Jaccard similarity"]
+            R3["Structured Compat 0.25<br/>duration/music/language"]
+            R4["Graph DNA 0.10<br/>node2vec + TruncatedSVD"]
+            R5["Trajectory 0.00<br/>spike/balanced/durable"]
+        end
+
+        subgraph RANKER["Baseline Ranker"]
+            RK["4-Component Weighted Score<br/>Semantic 0.40 | Intent 0.30<br/>Reference 0.20 | Support 0.10"]
+        end
+
+        TR --> RETRIEVER
+        TR --> RANKER
+    end
+
+    subgraph PHASE2["Phase 2: Learned Reranker"]
+        RR["train_phase2_reranker.py"]
+        LR["LearnedPairwiseReranker<br/>LightGBM 31 features<br/>conservative residual policy"]
+        DMO --> RR --> LR
+    end
+
+    subgraph CALIBRATION["Score Calibration"]
+        FC["fit_fabric_calibration.py"]
+        CAL["Calibrator<br/>slope/bias + piecewise bins<br/>per-block calibration"]
+        DMO --> FC --> CAL
+    end
+
+    subgraph ARTIFACTS["Trained Artifacts"]
+        A1["Retriever Indexes<br/>FAISS + hashtag vocab"]
+        A2["Ranker Manifest<br/>weights + thresholds"]
+        A3["Reranker Model<br/>LightGBM .txt"]
+        A4["Graph Bundle<br/>embeddings + edges"]
+        A5["Calibration JSON<br/>per-block params"]
+        A6["Comment Snapshots<br/>parquet + manifest"]
+        RETRIEVER --> A1
+        RANKER --> A2
+        LR --> A3
+        R4 --> A4
+        CAL --> A5
+        CIS --> A6
+    end
+
+    subgraph SERVICE["FastAPI Service :8081"]
+        EP1["POST /v1/recommendations"]
+        EP2["POST /v1/fabric/extract"]
+        EP3["GET /v1/health"]
+        EP4["GET /v1/compatibility"]
+        EP5["GET /v1/metrics"]
+    end
+
+    A1 & A2 & A3 & A4 & A5 & A6 --> SERVICE
+
+    subgraph RUNTIME["10-Stage Recommendation Pipeline"]
+        S1["1. Routing"] --> S2["2. Query Profile"]
+        S2 --> S3["3. Retrieval<br/>5-branch hybrid"]
+        S3 --> S4["4. Score Fusion<br/>weighted merge"]
+        S4 --> S5["5. Baseline Ranking<br/>4-component score"]
+        S5 --> S6["6. Learned Reranker<br/>LightGBM residual"]
+        S6 --> S7["7. User Affinity<br/>creator-scoped<br/>max shift 0.08"]
+        S7 --> S8["8. Calibration<br/>piecewise linear"]
+        S8 --> S9["9. Policy Enforcement<br/>author caps | freshness<br/>diversity | locale"]
+        S9 --> S10["10. Output<br/>top-K + explanations"]
+    end
+
+    EP1 --> RUNTIME
+
+    subgraph FABRIC["Feature Fabric"]
+        FF1["TextFeatures<br/>caption + hashtags"]
+        FF2["StructureFeatures<br/>duration + counts"]
+        FF3["AudioFeatures<br/>tempo + energy + loudness"]
+        FF4["VisualFeatures<br/>scenes + motion + fps"]
+    end
+
+    EP2 --> FABRIC
+
+    subgraph VIDEO["Video Analysis Pipeline"]
+        VA1["Decord<br/>dense 1fps sampling"]
+        VA2["CLIP ViT-B/32<br/>frame embeddings"]
+        VA3["BLIP-base<br/>scene captioning"]
+        VA4["faster-whisper<br/>transcription"]
+        VA5["YAKE<br/>keyword extraction"]
+        VA6["librosa<br/>audio analysis"]
+    end
+
+    VIDEO --> FABRIC
+
+    subgraph HASHTAG_REC["Hashtag Recommender"]
+        HR["SBERT + FAISS IndexFlatIP<br/>39,606 hashtags<br/>LRU embedding cache"]
+    end
+
+    FABRIC --> HASHTAG_REC
+
+    subgraph ORCHESTRATOR["Full Pipeline Orchestrator"]
+        FP["train_full_pipeline.py<br/>7 steps chained<br/>backfill -> export -> comments<br/>-> datamart -> train -> rerank -> calibrate"]
+    end
+
+    FP -.->|"orchestrates"| BACKFILL
+    FP -.->|"orchestrates"| EXPORT
+    FP -.->|"orchestrates"| COMMENT_INT
+    FP -.->|"orchestrates"| DATAMART
+    FP -.->|"orchestrates"| PHASE1
+    FP -.->|"orchestrates"| PHASE2
+    FP -.->|"orchestrates"| CALIBRATION
+
+    classDef ingestion fill:#e1f5fe,stroke:#0288d1
+    classDef training fill:#f3e5f5,stroke:#7b1fa2
+    classDef artifact fill:#fff3e0,stroke:#ef6c00
+    classDef service fill:#e8f5e9,stroke:#2e7d32
+    classDef runtime fill:#fce4ec,stroke:#c62828
+    classDef video fill:#f1f8e9,stroke:#558b2f
+
+    class SC,DB,BF ingestion
+    class EX,CB,CI,CIS,CTP,DM,DMO,TR,RR,LR,FC,CAL training
+    class A1,A2,A3,A4,A5,A6 artifact
+    class EP1,EP2,EP3,EP4,EP5,HR service
+    class S1,S2,S3,S4,S5,S6,S7,S8,S9,S10 runtime
+    class VA1,VA2,VA3,VA4,VA5,VA6 video

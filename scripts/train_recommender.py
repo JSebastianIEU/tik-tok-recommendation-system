@@ -7,21 +7,13 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from scripts._utils import to_jsonable
 from src.recommendation.learning import RecommenderTrainingConfig, train_recommender_from_datamart
-
-
-def _to_jsonable(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {key: _to_jsonable(inner) for key, inner in value.items()}
-    if isinstance(value, list):
-        return [_to_jsonable(inner) for inner in value]
-    return value
 
 
 def main() -> int:
@@ -166,7 +158,8 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    datamart = json.loads(args.datamart_json.read_text(encoding="utf-8"))
+    with open(args.datamart_json, "r", encoding="utf-8") as f:
+        datamart = json.load(f)
     objectives = [item.strip() for item in args.objectives.split(",") if item.strip()]
     result = train_recommender_from_datamart(
         datamart=datamart,
@@ -218,7 +211,7 @@ def main() -> int:
         except OSError:
             latest_link.write_text(str(bundle_dir.resolve()), encoding="utf-8")
 
-    print(json.dumps(_to_jsonable(result), indent=2, ensure_ascii=False))
+    print(json.dumps(to_jsonable(result), indent=2, ensure_ascii=False))
     return 0
 
 

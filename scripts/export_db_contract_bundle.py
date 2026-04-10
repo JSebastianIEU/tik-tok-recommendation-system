@@ -16,15 +16,8 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from scraper.db.client import get_connection
+from scripts._utils import parse_iso_datetime
 from src.recommendation import CanonicalDatasetBundle, build_contract_manifest
-
-
-def _parse_iso_datetime(value: str) -> datetime:
-    normalized = value.replace("Z", "+00:00")
-    parsed = datetime.fromisoformat(normalized)
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
 
 
 def _normalize_dt(value: Any) -> Optional[datetime]:
@@ -35,7 +28,7 @@ def _normalize_dt(value: Any) -> Optional[datetime]:
     text = str(value).strip()
     if not text:
         return None
-    return _parse_iso_datetime(text)
+    return parse_iso_datetime(text)
 
 
 def _to_non_negative_int(value: Any) -> int:
@@ -337,8 +330,8 @@ def main() -> int:
     if not str(args.db_url).strip():
         raise SystemExit("DATABASE_URL or --db-url is required.")
 
-    as_of_time = _parse_iso_datetime(args.as_of_time)
-    since = _parse_iso_datetime(args.since) if args.since else None
+    as_of_time = parse_iso_datetime(args.as_of_time)
+    since = parse_iso_datetime(args.since) if args.since else None
     bundle = export_bundle_from_db(
         db_url=str(args.db_url).strip(),
         as_of_time=as_of_time,

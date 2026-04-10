@@ -8,19 +8,12 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+from scripts._utils import parse_iso_datetime
 from src.recommendation import (
     build_contract_manifest,
     build_feature_snapshot_manifest,
     validate_raw_dataset_jsonl_against_contract,
 )
-
-
-def _parse_iso_datetime(value: str) -> datetime:
-    normalized = value.replace("Z", "+00:00")
-    parsed = datetime.fromisoformat(normalized)
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
 
 
 def main() -> int:
@@ -53,7 +46,7 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    as_of = _parse_iso_datetime(args.as_of_time)
+    as_of = parse_iso_datetime(args.as_of_time)
     raw = args.input_jsonl.read_text(encoding="utf-8")
     validated = validate_raw_dataset_jsonl_against_contract(
         raw_jsonl=raw,
