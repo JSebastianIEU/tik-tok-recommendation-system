@@ -2,7 +2,7 @@
 pandas>=2.1
 matplotlib>=3.8
 seaborn>=0.13
-jupyter>=1.0
-papermill>=2.6
+marimo>=0.22
+sqlalchemy>=2.0
 PyYAML>=6.0
 psycopg[binary]>=3.1

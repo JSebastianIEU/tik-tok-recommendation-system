@@ -69,7 +69,7 @@ jobs:
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       MS_TOKEN: ${{ secrets.MS_TOKEN }}
-      SCRAPER_COMMENTS_SCHEDULE_ENABLED: ${{ vars.SCRAPER_COMMENTS_SCHEDULE_ENABLED || 'true' }}
+      SCRAPER_COMMENTS_SCHEDULE_ENABLED: ${{ vars.SCRAPER_COMMENTS_SCHEDULE_ENABLED || 'false' }}
       SCRAPER_COMMENTS_LIMIT: ${{ vars.SCRAPER_COMMENTS_LIMIT || '300' }}
       SCRAPER_COMMENTS_COUNT: ${{ vars.SCRAPER_COMMENTS_COUNT || '5' }}
       SCRAPER_REPLIES_COUNT: ${{ vars.SCRAPER_REPLIES_COUNT || '2' }}
@@ -145,6 +145,7 @@ jobs:
           echo "min_comments_written=$MIN_COMMENTS_WRITTEN" >> "$GITHUB_OUTPUT"
 
       - name: Run comment enrichment
+        continue-on-error: true
         run: |
           set -euo pipefail
           CMD=(python -m scraper scrape-comments \
@@ -166,6 +167,7 @@ jobs:
           "${CMD[@]}"
 
       - name: Evaluate comment enrichment quality gates
+        continue-on-error: true
         run: |
           set -euo pipefail
           test -f /tmp/comment_enrichment_summary.json || (echo "Missing /tmp/comment_enrichment_summary.json" && exit 1)

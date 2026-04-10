@@ -1,0 +1,254 @@
+# Recommendation Components (Python)
+
+This package contains Python-native recommendation modeling components.
+
+## Implemented
+
+- `contracts.py`:
+  - canonical contract entities (`contract.v2`, additive-compatible with `contract.v1`)
+  - raw JSONL normalization to canonical bundle
+  - duplicate `video_id` support as time-series snapshots (single canonical video + many snapshots)
+  - bitemporal observation fields (`event_time`, `ingested_at`, `source_watermark_time`)
+  - late-arrival classification (`on_time`, `late_within_grace`, `late_out_of_watermark`)
+  - append+supersede lineage (`supersedes_observation_id`, `superseded_by_observation_id`)
+  - per-record quality scores/tiers and quarantine telemetry
+  - immutable content-addressed manifest export + replay loader
+  - referential integrity checks
+  - point-in-time (`as_of_time`) policy checks
+  - pre/post-publication feature access policy checks
+  - timestamp precedence for snapshots with optional strict mode
+- `datamart.py`:
+  - training data mart builder (`datamart.v1`)
+  - split-aware, train-only normalization for targets
+  - additive trajectory labels from snapshot time-series (`t0/t6/t24/t96`)
+  - strict per-objective/component availability masks + objective/component reason codes (no imputation)
+  - explicit run cutoff (`as_of_run_time`) for bitemporal visibility (`event_time<=boundary`, `ingested_at<=run_cutoff`)
+  - trajectory z-score normalization fitted on train split only
+  - objective composite trajectory targets with configurable weights
+  - pair label source switch (`scalar_v1` vs `trajectory_v2_composite`)
+  - trajectory-aware pair censorship for both query and candidate rows
+  - right-censoring for incomplete horizons
+  - train-safe author-baseline residualization (leave-one-out for train rows)
+  - deterministic time-based train/validation/test splits
+  - typed output contracts (`TrainingRow`, `PairTrainingRow`, `TrainingDataMart`)
+  - structured exclusion telemetry (`excluded_video_records`, `excluded_by_reason`)
+  - optional manifest-aware dataset pinning (`source_manifest_id`, `source_manifest_path`)
+  - optional pair-row generation for retrieval/ranking training
+- `fabric/`:
+  - Python-first multimodal feature/signal fabric (`fabric.v2`)
+  - registry-driven deterministic extractors
+  - typed missingness semantics
+  - calibrated confidence per extractor
+  - segment-aware structure features (hook / mid / payoff windows)
+  - feature snapshot store + manifest writer for offline precompute
+  - rollout promotion gate evaluator (coverage, latency, PSI, quality regression)
+- `comment_intelligence/`:
+  - deterministic comment-intelligence extraction (`comment_intelligence.v2`)
+  - 8-class intent taxonomy, confusion/help indices, sentiment dynamics, reply-graph metrics
+  - comment-to-content alignment signals (`alignment_score`, `value_prop_coverage`, `on_topic_ratio`, `artifact_drift_ratio`, `alignment_shift_early_late`)
+  - hybrid lexical + local embedding scoring with deterministic hash-embedding fallback
+  - snapshot manifest builder and transfer-prior builder (batch-first, no LLM dependency)
+- `learning/`:
+  - temporal candidate pooling (`candidate_as_of_time < query_as_of_time`)
+  - deterministic negative sampling (hard / semi-hard / easy mix)
+  - multi-index retriever training/inference:
+    - lexical branch (BM25-or-TFIDF)
+    - dense-text branch (sentence-transformers-or-char-TFIDF, optional FAISS)
+    - multimodal branch (fabric-precomputed vectors, optional FAISS)
+    - graph branch (Creator DNA x Video DNA node2vec-like embeddings, optional FAISS)
+    - trajectory branch (growth-shape embedding from `t0/t6/t24/t96` profiles, optional FAISS)
+  - objective-conditioned fusion weights (`reach`, `engagement`, `conversion`) learned offline and artifactized
+  - validation-time non-regression gate against sparse-only baseline (`recall@100`) before promoting learned blend weights
+  - legacy ensemble/segment learned-ranker infrastructure has been removed from the active code path
+  - `train_recommender_from_datamart(...)` now builds baseline-compatible recommender bundles:
+    - retriever artifact
+    - per-objective baseline ranker manifests
+    - objective metrics and retriever ablation diagnostics
+  - runtime has been reset to a checkpoint baseline architecture:
+    - shared semantic preprocessing now separates semantic text from hashtags/mentions and preserves emoji signal for dense semantics while demojizing lexical text for sparse matching
+    - bundle-backed retriever artifacts (`bundle_dir/retriever`) are now the primary retrieval path when available:
+      - dense text retrieval over cleaned semantic text
+      - sparse lexical retrieval over demojized lexical text
+      - full-corpus or caller-scoped retrieval using the bundle index
+    - legacy request-candidate shortlist retrieval remains only as a fallback path when no compatible retriever artifact is present or when scoped candidates are outside the bundle index
+    - weighted baseline ranking over semantic relevance, intent alignment, reference usefulness, and support confidence
+    - support-tiered candidate handling (`full`, `partial`, `low`) remains available, but support completeness is no longer boosted inside retrieval fusion
+    - additive structured query support for `audience`, `primary_cta`, `language`, `locale`, and `content_type`
+    - step-aligned Python modules now own the baseline runtime logic:
+      - `semantic_processor.py`
+      - `query_contract.py`
+      - `candidate_support.py`
+      - `retrieval_baseline.py`
+      - `ranking_baseline.py`
+      - `explainability_baseline.py`
+      - `inference.py` as orchestration/runtime only
+  - manifest/routing/compatibility checks remain in place for serving safety
+  - comment manifest lookup remains available for traceable comment-alignment hints
+  - baseline calibration metadata is served as an identity/compatibility layer rather than the removed segment calibrator bundle
+  - minimal policy enforcement remains in place for author cap and optional strict language/locale filtering
+  - Phase 2 learned reranker is now available as an additive path on top of the baseline runtime:
+    - feedback-driven pairwise training rows are materialized from `rec_request_events`, `rec_served_outputs`, and `rec_ui_feedback_events`
+    - feedback pair construction is now exposure-aware and can be restricted to a top-of-list served rank band via `--feedback-max-served-rank`
+    - explicit comparable semantics are treated separately from weak opens: `saved` > `relevant` > `not_relevant`, while opens remain weak evidence and unlabeled items are not treated as negatives
+    - request-level `comparable_no_good_options` events are preserved as negative pool-quality signals for analytics, retrain support gating, and future weak-pool modeling
+    - local `/labeling` review sessions can also be materialized into pairwise rows by rerunning the frozen candidate pools through the current baseline feature path
+    - bootstrap pairwise training rows can also be materialized from datamart `pair_rows` by reconstructing query-local candidate pools from the source canonical manifest and scoring them through the current baseline runtime
+    - bootstrap training may need `--bootstrap-include-neutral-pairs` when the datamart mostly contains `rel3 > rel1` supervision rather than `rel3 > rel0`
+    - the learned model uses the current baseline feature contract rather than the removed datamart ranker family
+    - runtime loads `rankers/<objective>/learned_reranker/manifest.json` only when the feature schema is compatible
+    - learned inference now uses a conservative residual policy: shortlist signal must clear a minimum gate, and low-support models are prevented from promoting candidates far outside the baseline head before enough supervision exists
+    - baseline ranking remains the fallback and reference path when no learned artifact exists, when portfolio mode is enabled, when the conservative gate abstains, or when artifact loading fails
+    - per-item responses now include additive `baseline_score`, `learned_score`, and `learned_trace` when the learned reranker is active
+  - human-labeled comparable benchmark support is now available for the Phase 2 bootstrap path:
+    - DB-backed benchmark packs can be generated from real historical videos with a fixed comparable label pool per query
+    - benchmark cases preserve the frozen baseline ordering for side-by-side offline comparison
+    - labeled benchmark cases can be evaluated against any bundle with `ndcg@m`, `mrr@m`, and `recall@m`
+    - benchmark labels follow a simple `good|unclear|bad` rubric, with `good > bad` reserved for early pairwise bootstrap training
+    - a separate disposable UI labeling flow is available at `/labeling`, backed by source packs in `artifacts/benchmarks` and review sessions in `artifacts/labeling_sessions`
+    - UI review sessions use the product-shaped labels `saved|relevant|not_relevant` without mutating the original benchmark/training source file
+  - Phase 3 user-aware adaptation is now available as a query-first additive path:
+    - gateway request traces persist `request_context` so creator-scoped history can be rebuilt from live feedback instead of one-off labeling sessions
+    - the Node feedback store can aggregate creator preference profiles from explicit comparable feedback (`saved`, `relevant`, `not_relevant`) with recency decay and objective-aware slices
+    - Python recommendation requests now accept additive `user_context` payloads without requiring external clients to send user ids directly
+    - runtime applies a confidence-gated user-affinity blend after global ranking:
+      - positive and negative creator memory are tracked separately
+      - personalization only nudges candidates that already satisfy a minimum query-relevance guard
+      - low-confidence creator profiles abstain cleanly instead of forcing personalization
+    - per-item responses now include additive `user_affinity_score` and `user_affinity_trace`
+    - top-level responses now include additive `user_adaptation_metadata`
+  - Phase 4 creator-aware retrieval is now available as a bounded extension of the bundle retriever:
+    - creator feedback profiles now preserve additive candidate-memory slices (`positive_candidate_ids`, `negative_candidate_ids`) alongside symbolic topic/hashtag preferences
+    - bundle retrieval can now consume additive `user_context` candidate memory and build creator-conditioned retrieval scores from available embedding branches
+    - retrieval personalization is query-first and confidence-gated:
+      - creator memory only nudges candidates that already clear a query-similarity guard
+      - positive and negative creator memory are kept separate
+      - personalization abstains when explicit history is too weak or when the retriever bundle lacks usable embedding branches
+    - per-item responses now include additive `creator_retrieval_score` and `creator_retrieval_trace`
+    - top-level responses now include additive `retrieval_personalization_metadata`
+  - ranker pair-target source selection (`scalar_v1` or `trajectory_v2_composite`)
+  - trajectory modeling subsystem (`trajectory.v2`) with artifactized profiles, embeddings, and regimes (`spike|balanced|durable`)
+  - manifest-backed runtime comment feature lookup for train/serve parity (with request-hint fallback)
+  - artifact registry + compatibility checks + offline evaluator metrics
+- `service.py`:
+  - FastAPI serving layer:
+    - `GET /v1/health`
+    - `GET /v1/compatibility`
+  - `POST /v1/recommendations`
+    - `POST /v1/fabric/extract`
+    - `GET /v1/metrics`
+  - recommendation requests support additive optional filters:
+    - `language`, `locale`, `content_type`, `candidate_ids`
+    - `candidates` may be omitted/empty when Python should retrieve directly from the bundle index
+    - additive `user_context` for creator-aware ranking adjustments built by the gateway from prior explicit feedback
+    - query-level `audience` and `primary_cta`
+    - `policy_overrides` (`strict_language`, `strict_locale`, `max_items_per_author`)
+    - `portfolio` (`enabled`, `weights.reach|conversion|durability`, `risk_aversion`, `candidate_pool_cap`)
+    - `graph_controls` (`enable_graph_branch`)
+    - `trajectory_controls` (`enabled`)
+    - `explainability` (`enabled`, `top_features`, `neighbor_k`, `run_counterfactuals`)
+    - `routing` (`objective_requested`, `objective_effective`, `track`, `allow_fallback`, `required_compat`)
+  - recommendation responses include additive retriever metadata:
+    - `retrieval_mode`, `constraint_tier_used`, `retriever_artifact_version`
+    - `graph_bundle_id`, `graph_version`, `graph_coverage`, `graph_fallback_mode`
+    - `trajectory_manifest_id`, `trajectory_version`, `trajectory_mode`, `trajectory_prediction`
+    - `portfolio_mode`, `portfolio_metadata`
+    - per-item `retrieval_branch_scores`
+    - per-item `graph_trace`
+    - per-item `trajectory_trace`
+    - per-item `portfolio_trace`
+  - recommendation responses include additive calibration/policy metadata:
+    - top-level: `calibration_version`, `calibration_metadata`, `policy_version`, `policy_metadata`
+    - per-item: `score_raw`, `score_calibrated`, `policy_adjusted_score`, `calibration_trace`, `policy_trace`
+  - recommendation responses include additive explainability metadata:
+    - top-level: `explainability_metadata`
+    - per-item: `evidence_cards`, `temporal_confidence_band`, `counterfactual_scenarios`
+  - recommendation responses include additive routing/compatibility observability:
+    - `routing_decision`, `compatibility_status`, `fallback_reason`, `latency_breakdown_ms`
+  - recommendation responses include additive traceability metadata:
+    - `request_id`, `experiment_id`, `variant`
+    - `learned_reranker_metadata`, `user_adaptation_metadata`
+  - explicit degradable error payloads when runtime/models are unavailable
+  - bundle diagnostics include objective ablation reports (`diagnostics/objective_<objective>_ablation.json`)
+- `control_plane.py`:
+  - censorship-safe outcome attribution helpers (`24h`, `96h`)
+  - drift metrics (PSI / KS / relative mean delta)
+  - drift severity summarization and retrain trigger policy helpers
+  - retrain decision payload builder
+  - immediate-feedback-aware control-plane support for explicit comparable/recommendation signals
+
+## Entry points
+
+- `build_training_data_mart(bundle, config=...)`
+- `build_training_data_mart_from_jsonl(raw_jsonl, as_of_time, config=..., strict_timestamps=False, fail_on_warnings=False)`
+- `build_training_data_mart_from_manifest(manifest_ref, config=...)`
+- `build_contract_manifest(bundle, manifest_root, ...)`
+- `build_feature_snapshot_manifest(bundle, output_root, mode=...)`
+- `build_comment_intelligence_snapshot_manifest(bundle, as_of_time, output_root, mode=...)`
+- `build_comment_transfer_priors(snapshot_manifest, output_root, ...)`
+- `train_recommender_from_datamart(datamart, artifact_root, config=...)`
+- `RecommenderRuntime(bundle_dir).recommend(...)`
+- `scripts/build_human_comparable_benchmark.py`
+- `scripts/eval_human_comparable_benchmark.py`
+- `scripts/run_outcome_attribution.py`
+- `scripts/run_drift_monitor.py`
+- `scripts/run_experiment_analysis.py`
+- `scripts/run_retrain_controller.py`
+- `scripts/run_live_e2e_validation.py`
+- `scripts/train_phase2_reranker.py`
+
+## Ops
+
+- `scripts/perf_smoke_trajectory_datamart.py`: quick p50/p95 overhead benchmark for trajectory-enabled datamart builds.
+- `scripts/build_retriever_index.py`: build retriever-only artifacts from datamart.
+- `scripts/build_creator_dna_graph.py`: build graph bundle artifacts from datamart rows.
+- `scripts/build_trajectory_artifact.py`: build trajectory profile/embedding artifacts from datamart rows.
+- `scripts/fit_retriever_fusion.py`: fit and persist objective-conditioned fusion weights.
+- `scripts/eval_retriever.py`: retrieval-only Recall@K evaluation report.
+- `scripts/run_outcome_attribution.py`: writes `rec_outcome_events` from served outputs + snapshot lineage.
+- `scripts/run_drift_monitor.py`: writes `rec_drift_daily` and emits `drift_report.json`.
+- `scripts/run_experiment_analysis.py`: objective-level control vs treatment KPI report with immediate explicit-feedback metrics first and delayed outcomes as secondary support.
+- `scripts/run_retrain_controller.py`: scheduled/trigger retrain decision + `rec_retrain_runs`, gated by strong feedback support before auto-triggering drift retrains, with explicit positive/negative contrast requirements when comparable feedback is available.
+- `scripts/run_live_e2e_validation.py`: live Node->Python->feedback->control-plane validation with optional failure injection (`compat_mismatch`, `python_down`), plus artifact report at `artifacts/control_plane/live_e2e_validation_report.json`.
+  - validation traffic now follows a deterministic objective/variant matrix (`reach|engagement|conversion` × `control|treatment`) to guarantee experiment arm coverage in each run.
+- `scripts/train_phase2_reranker.py`: clones a baseline recommender bundle, materializes pairwise comparable-preference rows from feedback tables, local `--labeling-session-json` files, and/or an optional datamart bootstrap file, trains per-objective learned reranker artifacts, and optionally updates `artifacts/recommender/latest`.
+- `scripts/build_training_datamart.py`: now supports both `--pair-target-source` and `--pair-objective`, so objective-specific pair supervision can be generated intentionally instead of assuming the default `engagement` pair task.
+- `scripts/build_human_comparable_benchmark.py`: samples real DB-backed query videos, freezes a comparable label pool per query, and writes a human-labeling benchmark pack.
+- `scripts/eval_human_comparable_benchmark.py`: reruns a bundle against the labeled benchmark pool and reports bundle-vs-frozen-baseline offline ranking metrics.
+
+Control-plane hygiene:
+- Feedback events now carry traffic tags (`traffic_class`, `is_synthetic`, `injected_failure`).
+- `run_outcome_attribution.py`, `run_drift_monitor.py`, and `run_experiment_analysis.py` exclude synthetic traffic by default.
+- Those jobs also exclude injected-failure chaos traffic by default unless `--include-injected-failures` is set.
+- Drift monitoring uses support-aware gating (`min_feature_samples`, `min_label_samples`, `min_policy_samples`) and emits `severity="insufficient_data"` when windows are too thin for trigger-eligible drift.
+- Policy drift rates (`author_cap_drop_rate`, `strict_language_drop_rate`) are derived from persisted request-level `policy_metadata` traces, not static placeholders.
+- Policy breach detection considers fallback instability plus thresholded policy-drop rates (`author_cap`, `strict_language`, `strict_locale`) when support is sufficient.
+- Gateway mismatch telemetry now classifies both `required_compat_mismatch` and `incompatible_artifact` as compatibility mismatches for consistent counters.
+- Experiment analysis guardrails now derive `policy_violation_rate` and policy-drop slices from persisted `policy_metadata` traces.
+- Immediate explicit feedback (`comparable_marked_*`, `recommendation_marked_*`, saves) is now the primary experiment-evaluation signal when support is sufficient; delayed 24h/96h outcomes remain secondary support rather than the only KPI source.
+- Session-level `comparable_no_good_options` events are now counted alongside explicit comparable labels so weak candidate pools show up in experiment analysis and drift-support evidence instead of being silently skipped.
+- Drift monitoring now prefers strong explicit-feedback distributions for label drift when available, falling back to delayed outcomes only when immediate feedback is too sparse.
+- Experiment analysis emits an additive `comparison` block (control vs treatment deltas + evidence sufficiency thresholds on matured 24h/96h samples).
+- Retrain controller applies additional drift-trigger support gates on recent matured outcomes (`min_matured_24h`, `min_matured_96h`) before enabling drift-triggered retrains.
+- Promotion non-regression checks include both ranker quality (`NDCG@10`, `MRR@20`) and retriever quality (`Recall@100`) per objective.
+- Inference/explainability hardening now sanitizes non-finite calibrated scores and applies deterministic tie-break ordering for stable repeated calls.
+- Use `--include-synthetic` only for explicit validation/debug runs.
+
+### Live E2E Validation
+
+Launch both services, validate live recommendation responses, verify feedback persistence,
+run daily control-plane jobs, and execute failure injection checks:
+
+```bash
+PYTHONPATH=. python3 scripts/run_live_e2e_validation.py \
+  --launch-python \
+  --launch-node \
+  --inject-compat-mismatch \
+  --inject-python-down \
+  --run-control-plane \
+  --db-url "$DATABASE_URL"
+```
+
+Notes:
+- `--inject-python-down` requires `--launch-python` so the script can terminate/recover the managed process.
+- If `--db-url` is omitted, feedback DB checks and control-plane jobs are skipped.
+- Process logs are written under `artifacts/control_plane/live_e2e_logs/`.

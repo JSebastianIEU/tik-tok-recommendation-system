@@ -101,10 +101,10 @@ Use the same Supabase connection string you used in Step 3.
 
 2. **Scrape into Supabase**:
    ```bash
-   python -m scraper scrape-all scraper/configs/full_scale.yaml --skip-existing
+   python -m scraper scrape-all scraper/configs/full_scale.yaml
    ```
 
-New scrapes will go to Supabase. `--skip-existing` skips videos already in the DB (including migrated ones).
+New scrapes will go to Supabase. Default behavior updates/upserts existing videos so snapshot data stays fresh. Add `--skip-existing` only for insert-only runs.
 
 ---
 
@@ -116,7 +116,7 @@ New scrapes will go to Supabase. `--skip-existing` skips videos already in the D
 | 2 | Get Supabase URI from Dashboard → Settings → Database |
 | 3 | `psql "SUPABASE_URI" < backup.sql` |
 | 4 | Set `DATABASE_URL` in `scraper/.env` |
-| 5 | `python -m scraper scrape-all scraper/configs/full_scale.yaml --skip-existing` |
+| 5 | `python -m scraper scrape-all scraper/configs/full_scale.yaml` |
 
 ---
 

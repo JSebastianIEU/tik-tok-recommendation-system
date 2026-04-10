@@ -18,7 +18,7 @@ This project is configured and ready to be deployed on Vercel. Follow these step
 2. **Configure Build Settings**
    - **Root Directory**: Leave blank (project root) or set to `.`
    - **Build Command**: `npm run build` (Vercel will auto-detect this)
-   - **Output Directory**: `mvp-mock-ui/dist` (Vercel will auto-detect this from vite.config.ts)
+   - **Output Directory**: `frontend/dist` (Vercel will auto-detect this from vite.config.ts)
    - **Install Command**: `npm install` (default)
 
 3. **Environment Variables** (if needed)
@@ -42,7 +42,7 @@ This project is configured and ready to be deployed on Vercel. Follow these step
 ### Project Structure
 
 ```
-mvp-mock-ui/
+frontend/
 ├── src/                 # React source code
 │   ├── components/      # React components
 │   ├── services/        # API and utility services
