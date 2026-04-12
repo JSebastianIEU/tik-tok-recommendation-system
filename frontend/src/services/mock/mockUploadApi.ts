@@ -25,7 +25,16 @@ function cloneAnalysisResult(result: VideoAnalysisResult): VideoAnalysisResult {
     suggestedEdits: [...result.suggestedEdits],
     metrics: { ...result.metrics },
     signal_hints: result.signal_hints ? { ...result.signal_hints } : undefined,
-    asset: result.asset ? { ...result.asset } : undefined
+    asset: result.asset ? { ...result.asset } : undefined,
+    transcript: result.transcript,
+    ocr_text: result.ocr_text,
+    video_caption: result.video_caption,
+    detected_language: result.detected_language,
+    visual_features: result.visual_features
+      ? { ...result.visual_features }
+      : undefined,
+    timeline: result.timeline?.map((entry) => ({ ...entry })),
+    duration_seconds: result.duration_seconds
   };
 }
 

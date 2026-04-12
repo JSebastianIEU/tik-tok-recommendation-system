@@ -77,6 +77,23 @@ export interface FrameTimelineEntry {
   relevance_score: number;
 }
 
+/** Mirrors server `UploadedVideoAsset` without `storage_path` (public JSON). */
+export interface UploadedVideoAsset {
+  asset_id: string;
+  checksum_sha256: string;
+  file_name: string;
+  mime_type: string;
+  size_bytes: number;
+  stored_at: string;
+  duration_seconds?: number;
+  width?: number;
+  height?: number;
+  fps?: number;
+  has_audio: boolean;
+  has_video: boolean;
+  orientation: "portrait" | "landscape" | "square" | "unknown";
+}
+
 export interface VideoAnalysisResult {
   asset_id: string;
   summary: string;
@@ -84,6 +101,9 @@ export interface VideoAnalysisResult {
   suggestedEdits: string[];
   metrics: VideoMetrics;
   signal_hints?: SignalHintsPayload;
+  /** Present when analysis came from `/upload-video` ingest. */
+  asset?: UploadedVideoAsset;
+  analysis_provider?: string;
   transcript?: string;
   ocr_text?: string;
   video_caption?: string;

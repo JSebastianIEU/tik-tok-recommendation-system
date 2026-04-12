@@ -18,5 +18,8 @@ export function createUploadAnalysisProvider(
     });
   }
 
+  // Future: e.g. `python` / `remote` provider returning AssetAnalysisResult with
+  // transcript, timeline, visual_features (see uploads/contracts.ts).
+
   throw new Error(`Unsupported upload analysis provider: ${provider}`);
 }

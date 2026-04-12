@@ -355,6 +355,10 @@ export function useUploadWorkflow(
           analysis.signal_hints,
           requestSignalHints
         );
+        const reportSignalHints = mergeSignalHints(
+          mergedSignalHints,
+          buildSignalHints(formValues, analysis)
+        );
 
         const elapsedMs = Date.now() - taskStartedAt;
         const remainingBeforeReportStep = Math.max(
@@ -376,7 +380,7 @@ export function useUploadWorkflow(
           content_type: formValues.content_type,
           primary_cta: formValues.primary_cta,
           locale: formValues.locale,
-          signal_hints: mergedSignalHints
+          signal_hints: reportSignalHints
         });
 
         return { analysis, report };

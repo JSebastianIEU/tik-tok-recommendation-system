@@ -59,6 +59,8 @@ function metadataPathFor(uploadsDir: string, assetId: string): string {
 function toAnalysisPayload(record: UploadedAssetRecord): UploadedVideoAnalysisPayload {
   const { asset, analysis, signal_hints, analysis_provider } = record;
   const { storage_path: _storagePath, ...publicAsset } = asset;
+  const durationSeconds =
+    record.duration_seconds ?? publicAsset.duration_seconds;
   return {
     asset_id: record.asset_id,
     summary: analysis.summary,
@@ -67,7 +69,14 @@ function toAnalysisPayload(record: UploadedAssetRecord): UploadedVideoAnalysisPa
     metrics: { ...analysis.metrics },
     signal_hints: { ...signal_hints },
     asset: publicAsset,
-    analysis_provider
+    analysis_provider,
+    transcript: record.transcript,
+    ocr_text: record.ocr_text,
+    video_caption: record.video_caption,
+    detected_language: record.detected_language,
+    visual_features: record.visual_features,
+    timeline: record.timeline,
+    duration_seconds: durationSeconds
   };
 }
 
@@ -155,7 +164,14 @@ export async function ingestUploadedVideo(
     },
     signal_hints: analyzed.signal_hints,
     analysis: analyzed.analysis,
-    analysis_provider: params.analysisProvider.providerId
+    analysis_provider: params.analysisProvider.providerId,
+    transcript: analyzed.transcript,
+    ocr_text: analyzed.ocr_text,
+    video_caption: analyzed.video_caption,
+    detected_language: analyzed.detected_language,
+    visual_features: analyzed.visual_features,
+    timeline: analyzed.timeline,
+    duration_seconds: analyzed.duration_seconds
   };
   await fs.writeFile(metadataPathFor(uploadsDir, assetId), `${JSON.stringify(record, null, 2)}\n`, "utf8");
 

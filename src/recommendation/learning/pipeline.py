@@ -617,6 +617,20 @@ def _learn_objective_blend_weights(
         eval_slice = rng.sample(labeled, blend_search_max_eval_queries)
 
     step_values = _blend_weight_grid_step_values(blend_grid_levels)
+    current_weights = retriever.branch_weights(objective)
+    active_branches = [
+        b
+        for b in ["lexical", "dense_text", "multimodal", "graph_dense", "trajectory_dense"]
+        if current_weights.get(b, 0.0) > 0
+    ]
+    if len(active_branches) < 2:
+        active_branches = ["lexical", "dense_text", "multimodal"]
+    inactive_branches = [
+        b
+        for b in ["lexical", "dense_text", "multimodal", "graph_dense", "trajectory_dense"]
+        if b not in active_branches
+    ]
+
     candidates: List[Dict[str, float]] = []
     if len(active_branches) == 2:
         for v in step_values:
