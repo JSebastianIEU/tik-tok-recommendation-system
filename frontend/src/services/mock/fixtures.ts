@@ -1,6 +1,8 @@
 ﻿import type { VideoAnalysisResult } from "../contracts/models";
 
 export const MOCK_ANALYSIS_RESULT: VideoAnalysisResult = {
+  asset_id: "mock-upload-asset",
+  analysis_provider: "mock",
   summary:
     "The concept has strong potential, but the opening hook should become more direct to improve first-second retention.",
   keyTopics: [
@@ -19,6 +21,30 @@ export const MOCK_ANALYSIS_RESULT: VideoAnalysisResult = {
     retention: 78,
     hookStrength: 71,
     clarity: 84
+  },
+  signal_hints: {
+    duration_seconds: 32,
+    transcript_text: "Mock transcript",
+    estimated_scene_cuts: 14,
+    visual_motion_score: 0.46,
+    speech_seconds: 21,
+    music_seconds: 11,
+    fps: 30
+  },
+  asset: {
+    asset_id: "mock-upload-asset",
+    checksum_sha256: "mock",
+    file_name: "mock-video.mp4",
+    mime_type: "video/mp4",
+    size_bytes: 1024,
+    stored_at: "2026-01-01T00:00:00.000Z",
+    duration_seconds: 32,
+    width: 1080,
+    height: 1920,
+    fps: 30,
+    has_audio: true,
+    has_video: true,
+    orientation: "portrait"
   }
 };
 

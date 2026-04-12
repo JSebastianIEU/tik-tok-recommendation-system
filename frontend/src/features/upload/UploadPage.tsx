@@ -11,6 +11,7 @@ import { PreviewThumbnailCard } from "./components/PreviewThumbnailCard";
 import { ProcessingCard } from "./components/ProcessingCard";
 import { UploadCard } from "./components/UploadCard";
 import { UploadForm } from "./components/UploadForm";
+import { VideoTimeline } from "./components/VideoTimeline";
 import { useUploadWorkflow } from "./hooks/useUploadWorkflow";
 
 interface UploadPageProps {
@@ -30,7 +31,9 @@ export function UploadPage(props: UploadPageProps): JSX.Element {
       ? "merged"
       : uploadWorkflow.phase === "done"
         ? "results"
-        : "split";
+        : uploadWorkflow.selectedFile
+          ? "split"
+          : "upload";
 
   useEffect(() => {
     if (uploadWorkflow.phase !== "done") {
@@ -49,10 +52,19 @@ export function UploadPage(props: UploadPageProps): JSX.Element {
         onRetry={uploadWorkflow.retryProcessing}
       />
     ) : layoutMode === "results" ? (
-      <PreviewThumbnailCard
-        videoUrl={uploadWorkflow.previewUrl}
-        fileName={uploadWorkflow.selectedFile?.name ?? null}
-      />
+      <>
+        <PreviewThumbnailCard
+          videoUrl={uploadWorkflow.previewUrl}
+          fileName={uploadWorkflow.selectedFile?.name ?? null}
+        />
+        {uploadWorkflow.analysisResult?.timeline &&
+          uploadWorkflow.analysisResult.timeline.length > 0 && (
+            <VideoTimeline
+              timeline={uploadWorkflow.analysisResult.timeline}
+              duration={uploadWorkflow.analysisResult.duration_seconds ?? 0}
+            />
+          )}
+      </>
     ) : (
       <UploadCard
         fileName={uploadWorkflow.selectedFile?.name ?? null}
@@ -76,6 +88,7 @@ export function UploadPage(props: UploadPageProps): JSX.Element {
       <UploadForm
         values={uploadWorkflow.formValues}
         disabled={uploadWorkflow.isBusy}
+        isAnalyzing={uploadWorkflow.isAnalyzing}
         error={uploadWorkflow.error}
         onDescriptionChange={uploadWorkflow.setDescription}
         onMentionsChange={uploadWorkflow.setMentions}
@@ -100,6 +113,7 @@ export function UploadPage(props: UploadPageProps): JSX.Element {
 
       <FloatingChatWidget
         report={uploadWorkflow.reportResult}
+        videoAnalysis={uploadWorkflow.analysisResult}
         chatService={chatService}
         resetKey={uploadWorkflow.uploadSession}
       />

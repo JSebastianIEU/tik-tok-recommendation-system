@@ -1,0 +1,6 @@
+# Optional VLM dependencies — GPU only (~2GB+ download on first use)
+# Install with: pip install -r requirements-vlm.txt
+torch>=2.1
+transformers>=4.40
+bitsandbytes>=0.43
+accelerate>=0.28

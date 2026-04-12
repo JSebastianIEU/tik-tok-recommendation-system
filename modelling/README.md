@@ -1,6 +1,9 @@
 # Modelling Workspace
 
-This folder tracks recommendation architecture decisions and data contracts shared across the system.
+This folder tracks modelling contracts and design notes that sit alongside the implemented recommendation platform.
+
+> Status note: this is a supporting design workspace, not the primary source of truth for the live runtime.
+> For the current implemented architecture, start with [docs/architecture/recommender_overview.md](/Users/ayoisthegoat/Desktop/Education/Chatbots/Tik-Tok/Tik-Tok-Recommendation-System/docs/architecture/recommender_overview.md) and `src/recommendation/`.
 
 ## Current Scope
 
@@ -20,9 +23,11 @@ This folder tracks recommendation architecture decisions and data contracts shar
 
 ## Runtime Location
 
-- `frontend/server/modeling`: Step 1 core profile, Part 2 deterministic extractors, Step 2 retrieval/neighborhood, Step 3 contrast.
-- `src/recommendation`: Data Contract Layer (`contract.v2`), Feature/Signal Fabric (`fabric.v2`), and Training Data Mart (`datamart.v1`).
-- This folder remains the source of truth for product-facing modelling specs and evolution notes.
+- `src/recommendation`: current implementation for contracts, datamart, fabric, comment intelligence, learning, runtime inference, and service boundaries.
+- `frontend/server/`: current Node gateway for product-facing report generation, recommender proxying, fallback handling, and feedback capture.
+- `modelling/`: supporting design references and evolution notes.
+
+Treat `src/recommendation` and `frontend/server/` as the source of truth for behavior. Treat this folder as design context.
 
 ## Modeling Progress
 

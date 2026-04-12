@@ -19,6 +19,7 @@ export interface RecommenderQueryPayload {
   locale?: string;
   content_type?: string;
   as_of_time?: string;
+  signal_hints?: Record<string, unknown>;
 }
 
 export interface RecommenderCandidatePayload {
@@ -58,11 +59,21 @@ export interface RoutingContractPayload {
   };
 }
 
+export interface CorpusScopePayload {
+  topic_key?: string;
+  language?: string;
+  locale?: string;
+  content_type?: string;
+  max_candidates?: number;
+  exclude_video_ids?: string[];
+}
+
 export interface RecommenderRequestPayload {
   objective: string;
   as_of_time: string;
   query: RecommenderQueryPayload;
   candidates?: RecommenderCandidatePayload[];
+  corpus_scope?: CorpusScopePayload;
   user_context?: Record<string, unknown>;
   language?: string;
   locale?: string;
@@ -382,6 +393,43 @@ interface FabricResultFailure {
 
 export type FabricResult = FabricResultSuccess | FabricResultFailure;
 
+export interface HashtagSuggestPayload {
+  caption: string;
+  k?: number;
+  top_n?: number;
+  exclude_tags?: string[];
+  include_neighbours?: boolean;
+}
+
+export interface HashtagSuggestion {
+  hashtag: string;
+  score: number;
+  frequency: number;
+  avg_engagement: number;
+}
+
+export interface HashtagSuggestResponsePayload {
+  suggestions: HashtagSuggestion[];
+  neighbours?: Array<{
+    caption: string;
+    hashtags: string[];
+    similarity: number;
+  }>;
+}
+
+interface HashtagResultSuccess {
+  ok: true;
+  payload: HashtagSuggestResponsePayload;
+}
+
+interface HashtagResultFailure {
+  ok: false;
+  error: string;
+  status?: number;
+}
+
+export type HashtagResult = HashtagResultSuccess | HashtagResultFailure;
+
 interface RequestOptions {
   timeoutMs?: number;
 }
@@ -532,4 +580,39 @@ export async function requestFabricSignals(
     }
   }
   return { ok: false, error: lastError, status: lastStatus };
+}
+
+export async function requestHashtagSuggestions(
+  payload: HashtagSuggestPayload
+): Promise<HashtagResult> {
+  if (!RECOMMENDER_ENABLED) {
+    return { ok: false, error: "Recommender is disabled by configuration." };
+  }
+  const url = `${RECOMMENDER_BASE_URL.replace(/\/+$/, "")}/v1/hashtags/suggest`;
+  try {
+    const response = await fetchWithTimeout(
+      url,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload)
+      },
+      Math.max(500, RECOMMENDER_TIMEOUT_MS)
+    );
+    if (!response.ok) {
+      const raw = await response.text();
+      return {
+        ok: false,
+        error: raw || `Hashtag suggest request failed with status ${response.status}`,
+        status: response.status
+      };
+    }
+    const parsed = (await response.json()) as HashtagSuggestResponsePayload;
+    return { ok: true, payload: parsed };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : "Hashtag suggest request failed."
+    };
+  }
 }

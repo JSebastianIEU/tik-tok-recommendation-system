@@ -61,6 +61,7 @@ function buildValidReport(): ReportOutput {
         score_components: {
           semantic_relevance: 0.7,
           intent_alignment: 0.9,
+          performance_quality: 0.6,
           reference_usefulness: 0.8,
           support_confidence: 0.85
         },
@@ -141,6 +142,7 @@ function buildValidReport(): ReportOutput {
             score_components: {
               semantic_relevance: 0.7,
               intent_alignment: 0.9,
+              performance_quality: 0.6,
               reference_usefulness: 0.8,
               support_confidence: 0.85
             },
@@ -158,6 +160,7 @@ function buildValidReport(): ReportOutput {
           score_component_averages: {
             semantic_relevance: 0.7,
             intent_alignment: 0.9,
+            performance_quality: 0.6,
             reference_usefulness: 0.8,
             support_confidence: 0.85
           }

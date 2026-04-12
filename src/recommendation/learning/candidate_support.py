@@ -199,6 +199,22 @@ def coerce_trajectory_features(payload: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _extract_engagement_metrics(payload: Dict[str, Any]) -> Dict[str, float]:
+    """Pull raw engagement numbers from the candidate payload for ranking."""
+    views = max(0, int(payload.get("views") or payload.get("plays") or 0))
+    likes = max(0, int(payload.get("likes") or 0))
+    comments = max(0, int(payload.get("comments_count") or payload.get("comments") or 0))
+    shares = max(0, int(payload.get("shares") or 0))
+    engagement_rate = (likes + comments + shares) / max(1, views)
+    return {
+        "views": float(views),
+        "likes": float(likes),
+        "comments": float(comments),
+        "shares": float(shares),
+        "engagement_rate": round_score(min(engagement_rate, 1.0), 6),
+    }
+
+
 def prepare_candidate(
     *,
     payload: Dict[str, Any],
@@ -327,6 +343,7 @@ def prepare_candidate(
         "support_level": support_level,
         "support_score": support_score,
         "support_flags": support_flags,
+        "engagement_metrics": _extract_engagement_metrics(payload),
         "raw_payload": payload,
         "retrieval_branch_scores": {
             "semantic": 0.0,

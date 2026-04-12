@@ -15,8 +15,14 @@ def main() -> int:
     parser.add_argument(
         "--bundle-dir",
         type=str,
-        default="artifacts/recommender/latest",
+        default="artifacts/recommender_real/latest",
         help="Path to recommender bundle directory.",
+    )
+    parser.add_argument(
+        "--corpus-bundle-path",
+        type=str,
+        default="",
+        help="Path to artifact bundle JSON used for corpus_scope resolution.",
     )
     args = parser.parse_args()
 
@@ -24,6 +30,13 @@ def main() -> int:
     if os.path.isfile(bundle_dir):
         bundle_dir = Path(bundle_dir).read_text(encoding="utf-8").strip()
     os.environ["RECOMMENDER_BUNDLE_DIR"] = bundle_dir
+
+    if args.corpus_bundle_path:
+        os.environ.setdefault("RECOMMENDER_CORPUS_BUNDLE_PATH", args.corpus_bundle_path)
+    elif not os.environ.get("RECOMMENDER_CORPUS_BUNDLE_PATH"):
+        default_corpus = str(Path("artifacts/contracts/latest_supabase_bundle.json"))
+        if os.path.isfile(default_corpus):
+            os.environ["RECOMMENDER_CORPUS_BUNDLE_PATH"] = default_corpus
     try:
         import uvicorn  # type: ignore
     except Exception as exc:  # pragma: no cover

@@ -9,6 +9,8 @@ from pathlib import Path
 from statistics import mean, median
 from typing import Any, Dict, Iterable, List, Tuple
 
+from src.common.schemas import compute_engagement_rate, compute_engagement_total
+
 
 _NUMERIC_METRICS = ("views", "likes", "comments_count", "shares")
 _WORD_RE = re.compile(r"[A-Za-z0-9']+")
@@ -107,18 +109,29 @@ def _normalize_hashtag(tag: str) -> str:
 
 
 def _engagement(post: Dict[str, Any]) -> Dict[str, float]:
-    likes = float(_safe_int(post.get("likes")) or 0)
-    comments = float(_safe_int(post.get("comments_count")) or 0)
-    shares = float(_safe_int(post.get("shares")) or 0)
-    views = float(_safe_int(post.get("views")) or 0)
+    likes_i = _safe_int(post.get("likes")) or 0
+    comments_i = _safe_int(post.get("comments_count")) or 0
+    shares_i = _safe_int(post.get("shares")) or 0
+    views_i = _safe_int(post.get("views")) or 0
 
-    total = likes + comments + shares
-    rate = (total / views) if views > 0 else 0.0
+    total = float(
+        compute_engagement_total(
+            likes=likes_i, comments_count=comments_i, shares=shares_i
+        )
+    )
+    rate = float(
+        compute_engagement_rate(
+            likes=likes_i,
+            comments_count=comments_i,
+            shares=shares_i,
+            views=views_i,
+        )
+    )
     return {
-        "likes": likes,
-        "comments_count": comments,
-        "shares": shares,
-        "views": views,
+        "likes": float(likes_i),
+        "comments_count": float(comments_i),
+        "shares": float(shares_i),
+        "views": float(views_i),
         "engagement_total": total,
         "engagement_rate": rate,
     }
@@ -276,7 +289,8 @@ def compute_stats(jsonl_path: Path) -> Dict[str, Any]:
         "provided_keyword_frequency": top_provided_keywords,
         "notes": {
             "engagement_total_definition": "likes + comments_count + shares",
-            "engagement_rate_definition": "(likes + comments_count + shares) / views",
+            "engagement_rate_definition": "(likes + comments_count + shares) / max(views, 1)",
+            "engagement_schema_source": "src.common.schemas.compute_engagement_total / compute_engagement_rate",
             "text_baseline": "caption_length and hashtag_count correlations; simple caption token frequency",
         },
     }
@@ -381,6 +395,11 @@ def write_report(stats: Dict[str, Any], report_path: Path) -> None:
     md.append("# Baseline Analytics Report (Sprint 1)")
     md.append("")
     md.append(f"Generated from mocked TikTok JSONL. Posts analyzed: **{n}**.")
+    md.append("")
+    md.append(
+        "**Engagement definitions** match the mock JSONL schema in `src/common/schemas.py` "
+        "(`compute_engagement_total`, `compute_engagement_rate`; same as `TikTokPost` computed fields)."
+    )
     md.append("")
     md.append("## What we computed")
     md.append("- Descriptive distributions for likes/views/comments/shares and derived engagement.")

@@ -28,7 +28,7 @@ Generate a benchmark JSON from real DB-backed videos and the current recommender
 ```bash
 DATABASE_URL=... python3 scripts/build_human_comparable_benchmark.py \
   --db-url "$DATABASE_URL" \
-  --bundle-dir artifacts/recommender/latest \
+  --bundle-dir artifacts/recommender_real/latest \
   --output-path artifacts/benchmarks/human_comparable_benchmark.json \
   --objectives engagement \
   --query-count 24 \
@@ -51,7 +51,7 @@ second source file, for example:
 ```bash
 DATABASE_URL=... python3 scripts/build_human_comparable_benchmark.py \
   --db-url "$DATABASE_URL" \
-  --bundle-dir artifacts/recommender/latest \
+  --bundle-dir artifacts/recommender_real/latest \
   --output-path artifacts/benchmarks/human_comparable_training_seed.json \
   --objectives engagement \
   --query-count 24 \
@@ -114,7 +114,7 @@ Once labels are filled in:
 
 ```bash
 python3 scripts/eval_human_comparable_benchmark.py \
-  --bundle-dir artifacts/recommender/latest \
+  --bundle-dir artifacts/recommender_real/latest \
   --benchmark-json artifacts/benchmarks/human_comparable_benchmark.json \
   --output-path artifacts/benchmarks/human_comparable_benchmark_eval.json
 ```

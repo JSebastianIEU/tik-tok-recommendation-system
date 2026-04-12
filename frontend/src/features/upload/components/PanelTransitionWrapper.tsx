@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-export type LayoutMode = "split" | "merged" | "results";
+export type LayoutMode = "upload" | "split" | "merged" | "results";
 
 interface PanelTransitionWrapperProps {
   mode: LayoutMode;

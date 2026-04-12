@@ -586,8 +586,8 @@ def test_build_training_data_mart_uses_train_only_stats_for_zscores():
     assert len(train_rows) == 3
 
     train_reach = [row["labels"]["future_reach_log_delta"] for row in train_rows]
-    train_engagement = [row["labels"]["future_engagement_rate"] for row in train_rows]
-    train_conversion = [row["labels"]["future_shares_per_1k_views"] for row in train_rows]
+    train_engagement = [math.log1p(row["labels"]["future_engagement_rate"]) for row in train_rows]
+    train_conversion = [math.log1p(row["labels"]["future_shares_per_1k_views"]) for row in train_rows]
 
     reach_mean = sum(train_reach) / len(train_reach)
     engagement_mean = sum(train_engagement) / len(train_engagement)
@@ -614,7 +614,7 @@ def test_build_training_data_mart_uses_train_only_stats_for_zscores():
         assert row["targets_z"]["engagement"] == pytest.approx(
             round(
                 expected(
-                    row["labels"]["future_engagement_rate"],
+                    math.log1p(row["labels"]["future_engagement_rate"]),
                     engagement_mean,
                     engagement_std,
                 ),
@@ -624,7 +624,7 @@ def test_build_training_data_mart_uses_train_only_stats_for_zscores():
         assert row["targets_z"]["conversion"] == pytest.approx(
             round(
                 expected(
-                    row["labels"]["future_shares_per_1k_views"],
+                    math.log1p(row["labels"]["future_shares_per_1k_views"]),
                     conversion_mean,
                     conversion_std,
                 ),
@@ -850,12 +850,19 @@ def test_build_training_data_mart_pair_target_source_trajectory_skips_unavailabl
     )
     assert len(mart["pair_rows"]) > 0
     assert all(pair["target_source"] == "trajectory_v2_composite" for pair in mart["pair_rows"])
-    assert all(pair["query_video_id"] != "v2" for pair in mart["pair_rows"])
-    assert all(pair["candidate_video_id"] != "v2" for pair in mart["pair_rows"])
-    assert all(pair["availability_mask"]["query_objective_available"] is True for pair in mart["pair_rows"])
+    # Check engagement pairs specifically (v2 should be excluded for engagement objective)
+    eng_pairs = [p for p in mart["pair_rows"] if p["objective"] == "engagement"]
+    assert len(eng_pairs) > 0
+    assert all(pair["query_video_id"] != "v2" for pair in eng_pairs)
+    assert all(pair["candidate_video_id"] != "v2" for pair in eng_pairs)
+    assert all(pair["availability_mask"]["query_objective_available"] is True for pair in eng_pairs)
     assert mart["stats"]["pair_rows_dropped_unavailable_target"] > 0
-    assert mart["stats"]["pair_rows_dropped_by_reason"]["query_target_unavailable"] > 0
-    assert mart["stats"]["pair_rows_dropped_by_reason"]["candidate_target_unavailable"] > 0
+    drop_reasons = mart["stats"]["pair_rows_dropped_by_reason"]
+    # Keys are now prefixed with objective name since pair rows are built for all objectives
+    has_query_drop = any(k.endswith("_query_target_unavailable") for k in drop_reasons)
+    has_candidate_drop = any(k.endswith("_candidate_target_unavailable") for k in drop_reasons)
+    assert has_query_drop, f"Expected *_query_target_unavailable in {drop_reasons}"
+    assert has_candidate_drop, f"Expected *_candidate_target_unavailable in {drop_reasons}"
 
 
 def test_build_training_data_mart_output_validates_against_schema():

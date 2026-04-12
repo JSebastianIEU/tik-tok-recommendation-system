@@ -62,6 +62,7 @@ function validateComparableItem(value: unknown): value is ComparableItem {
     isString(value.metrics.engagement_rate) &&
     isNumber(value.score_components.semantic_relevance) &&
     isNumber(value.score_components.intent_alignment) &&
+    isNumber(value.score_components.performance_quality) &&
     isNumber(value.score_components.reference_usefulness) &&
     isNumber(value.score_components.support_confidence)
   );

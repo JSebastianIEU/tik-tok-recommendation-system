@@ -156,6 +156,25 @@ def main() -> int:
         default=None,
         help="Optional trajectory artifact manifest path/dir.",
     )
+    parser.add_argument(
+        "--blend-grid-levels",
+        type=int,
+        default=3,
+        help=(
+            "Points per axis in the retriever branch-weight grid search (2–11). "
+            "Lower is faster (default 3 => [0, 0.5, 1.0], 15 weight tuples). "
+            "Legacy full search used 5 levels (70 tuples) and could run for hours on large datamarts."
+        ),
+    )
+    parser.add_argument(
+        "--blend-max-eval-queries",
+        type=int,
+        default=128,
+        help=(
+            "Max labeled validation queries used when fitting per-objective retriever blend weights. "
+            "Caps retrieve() calls during grid search."
+        ),
+    )
     args = parser.parse_args()
 
     with open(args.datamart_json, "r", encoding="utf-8") as f:
@@ -195,6 +214,8 @@ def main() -> int:
             trajectory_manifest_path=args.trajectory_manifest_path,
             contract_version=str(datamart.get("source_contract_version", "contract.v2")),
             datamart_version=str(datamart.get("version", "datamart.v1")),
+            blend_grid_levels=max(2, min(11, int(args.blend_grid_levels))),
+            blend_search_max_eval_queries=max(8, int(args.blend_max_eval_queries)),
         ),
     )
     bundle_dir = Path(result["bundle_dir"])

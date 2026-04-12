@@ -454,8 +454,9 @@ class FeatureFabric:
         caption = _safe_text(request.caption)
         transcript = _safe_text(request.transcript_text)
         ocr_text = _safe_text(request.ocr_text)
+        video_caption = _safe_text((request.hints or {}).get("video_caption", ""))
         hashtags = _safe_list(request.hashtags)
-        combined = " ".join([caption, transcript, ocr_text, " ".join(hashtags), " ".join(_safe_list(request.keywords))]).strip()
+        combined = " ".join([caption, transcript, ocr_text, video_caption, " ".join(hashtags), " ".join(_safe_list(request.keywords))]).strip()
         tokens = _tokens(combined)
         unique_tokens = set(tokens)
         cta_count = sum(1 for token in tokens if token in CTA_TERMS)
@@ -500,7 +501,7 @@ class FeatureFabric:
             "keyphrase_count": min(len(_safe_list(request.keywords)), 32),
             "cta_keyword_count": cta_count,
             "clarity_score": round(clarity_raw, 6),
-            "confidence": self.calibrators["text"].apply(raw=_clamp(0.62 + 0.08 * (1 if transcript else 0) + 0.06 * (1 if ocr_text else 0), 0.0, 1.0)).model_dump(mode="python"),
+            "confidence": self.calibrators["text"].apply(raw=_clamp(0.62 + 0.08 * (1 if transcript else 0) + 0.06 * (1 if ocr_text else 0) + 0.08 * (1 if video_caption else 0), 0.0, 1.0)).model_dump(mode="python"),
             "missing": missing,
         }
 

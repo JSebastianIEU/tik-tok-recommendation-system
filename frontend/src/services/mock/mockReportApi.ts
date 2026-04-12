@@ -347,6 +347,7 @@ export function generateMockReport(
         score_components: {
           semantic_relevance: similarity.score,
           intent_alignment: clamp(similarity.score - 0.08, 0, 1),
+          performance_quality: clamp(similarity.score - 0.06, 0, 1),
           reference_usefulness: clamp(similarity.score - 0.04, 0, 1),
           support_confidence: 0.72
         },
@@ -528,6 +529,7 @@ export function generateMockReport(
           score_component_averages: {
             semantic_relevance: 0.7,
             intent_alignment: 0.62,
+            performance_quality: 0.55,
             reference_usefulness: 0.66,
             support_confidence: 0.72
           }

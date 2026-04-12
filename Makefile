@@ -1,4 +1,4 @@
-.PHONY: lint test validate-data baseline query datamart feature-snapshot fabric-hourly fabric-daily comment-snapshot comment-priors comment-hourly comment-daily eval-fabric-rollout eval-comment-rollout train-recommender eval-recommender eval-recommender-ablation serve-recommender bootstrap-embedding benchmark-recommender build-retriever fit-retriever-fusion eval-retriever-only outcome-attribution drift-monitor retrain-controller experiment-analysis live-e2e-validate
+.PHONY: lint test validate-data generate-mock baseline datamart feature-snapshot fabric-hourly fabric-daily comment-snapshot comment-priors comment-hourly comment-daily eval-fabric-rollout eval-comment-rollout train-recommender eval-recommender eval-recommender-ablation serve-recommender refresh-serving-bundle bootstrap-embedding benchmark-recommender build-retriever fit-retriever-fusion eval-retriever-only eval outcome-attribution drift-monitor retrain-controller experiment-analysis live-e2e-validate
 
 # Lint only tests for Sprint 1 (repo has known scaffold lint debt elsewhere).
 lint:
@@ -8,14 +8,14 @@ lint:
 test:
 	PYTHONPATH=. python3 -m pytest -q tests
 
+generate-mock:
+	PYTHONPATH=. python3 -m src.data.mock_generator --count 50 --seed 42
+
 validate-data:
 	PYTHONPATH=. python3 scripts/validate_data.py data/mock/tiktok_posts_mock.jsonl
 
 baseline:
 	PYTHONPATH=. python3 scripts/run_baseline.py data/mock/tiktok_posts_mock.jsonl
-
-query:
-	PYTHONPATH=. python3 scripts/query_index.py --query "example creator economy" --topk 3
 
 datamart:
 	PYTHONPATH=. python3 scripts/build_training_datamart.py data/mock/tiktok_posts_mock.jsonl --output-json data/mock/training_datamart.json
@@ -57,7 +57,10 @@ eval-recommender-ablation:
 	PYTHONPATH=. python3 scripts/eval_recommender.py artifacts/recommender/latest --show-ablation
 
 serve-recommender:
-	PYTHONPATH=. python3 scripts/serve_recommender.py --host 127.0.0.1 --port 8081 --bundle-dir artifacts/recommender/latest
+	PYTHONPATH=. python3 scripts/serve_recommender.py --host 127.0.0.1 --port 8081 --bundle-dir artifacts/recommender_real/latest
+
+refresh-serving-bundle:
+	PYTHONPATH=. python3 scripts/refresh_serving_bundle.py --db-url $$DATABASE_URL
 
 bootstrap-embedding:
 	PYTHONPATH=. python3 scripts/bootstrap_embedding_model.py --model-name sentence-transformers/all-MiniLM-L6-v2
@@ -73,6 +76,11 @@ fit-retriever-fusion:
 
 eval-retriever-only:
 	PYTHONPATH=. python3 scripts/eval_retriever.py data/mock/training_datamart.json --retriever-dir artifacts/retriever/latest
+
+eval:
+	@echo "Usage: make eval MODE=recommender|retriever|benchmark ARGS='...'"
+	@echo "Example: make eval MODE=recommender ARGS='artifacts/recommender/latest --show-manifest'"
+	PYTHONPATH=. python3 scripts/run_eval.py --mode $(MODE) $(ARGS)
 
 outcome-attribution:
 	PYTHONPATH=. python3 scripts/run_outcome_attribution.py --output-json artifacts/control_plane/outcome_attribution_report.json

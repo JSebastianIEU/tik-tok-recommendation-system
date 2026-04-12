@@ -29,6 +29,7 @@ interface UseUploadWorkflowResult {
   reportResult: ReportOutput | null;
   uploadSession: number;
   isBusy: boolean;
+  isAnalyzing: boolean;
   loadingLabel: string;
   processingSteps: ProcessingStep[];
   processingStatus: ProcessingStatus;
@@ -81,19 +82,45 @@ function wait(ms: number): Promise<void> {
   });
 }
 
-function buildSignalHints(formValues: UploadFormValues): SignalHintsPayload {
+function buildSignalHints(
+  formValues: UploadFormValues,
+  analysisResult?: VideoAnalysisResult | null
+): SignalHintsPayload {
+  if (analysisResult?.signal_hints) {
+    return {
+      ...analysisResult.signal_hints,
+      transcript_text: analysisResult.transcript || formValues.description,
+      video_caption: analysisResult.video_caption || "",
+      ocr_text: analysisResult.ocr_text || ""
+    };
+  }
   return {
-    transcript_text: formValues.description,
-    ocr_text: "",
-    estimated_scene_cuts: undefined,
-    fps: undefined,
-    visual_motion_score: undefined,
-    speech_seconds: undefined,
-    music_seconds: undefined,
-    tempo_bpm: undefined,
-    audio_energy: undefined,
-    loudness_lufs: undefined
+    transcript_text: formValues.description.trim() || undefined
   };
+}
+
+function mergeSignalHints(
+  ...sources: Array<SignalHintsPayload | undefined>
+): SignalHintsPayload | undefined {
+  const merged: SignalHintsPayload = {};
+
+  for (const source of sources) {
+    if (!source) {
+      continue;
+    }
+    for (const [key, value] of Object.entries(source)) {
+      if (value === undefined || value === null) {
+        continue;
+      }
+      if (typeof value === "string" && !value.trim()) {
+        continue;
+      }
+      const typedKey = key as keyof SignalHintsPayload;
+      merged[typedKey] = value;
+    }
+  }
+
+  return Object.keys(merged).length > 0 ? merged : undefined;
 }
 
 export function useUploadWorkflow(
@@ -112,6 +139,8 @@ export function useUploadWorkflow(
   );
   const [reportResult, setReportResult] = useState<ReportOutput | null>(null);
   const [uploadSession, setUploadSession] = useState<number>(0);
+  const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
+  const [preAnalysis, setPreAnalysis] = useState<VideoAnalysisResult | null>(null);
 
   const processingFlow = useProcessingFlow({ steps: PROCESSING_STEPS });
 
@@ -200,15 +229,79 @@ export function useUploadWorkflow(
 
   const onFileSelected = (file: File | null): void => {
     setSelectedFile(file);
+    setPreAnalysis(null);
+    setIsAnalyzing(false);
 
-    if (file) {
-      setError(null);
-      setAnalysisResult(null);
-      setReportResult(null);
-      if (processingFlow.status !== "processing") {
-        setPhase("idle");
-      }
+    if (!file) {
+      return;
     }
+
+    setError(null);
+    setAnalysisResult(null);
+    setReportResult(null);
+    if (processingFlow.status !== "processing") {
+      setPhase("idle");
+    }
+
+    if (!file.type.startsWith("video/")) {
+      return;
+    }
+
+    // Fire background video analysis immediately on file select
+    setIsAnalyzing(true);
+    const capturedFile = file;
+
+    analysisService
+      .analyzeVideo({
+        file: capturedFile,
+        mentions: [],
+        hashtags: [],
+        description: "",
+        objective: "engagement",
+        content_type: "showcase",
+        primary_cta: "none",
+        locale: formValues.locale
+      })
+      .then((result) => {
+        // Only apply if this file is still the selected one
+        setSelectedFile((current) => {
+          if (current !== capturedFile) {
+            return current;
+          }
+
+          setPreAnalysis(result);
+          setIsAnalyzing(false);
+
+          // Pre-fill description from VLM caption or transcript
+          const suggestedDescription =
+            result.video_caption || result.transcript || "";
+          if (suggestedDescription) {
+            setFormValues((prev) => ({
+              ...prev,
+              description: prev.description || suggestedDescription
+            }));
+          }
+
+          // Pre-fill hashtags from keywords
+          const suggestedHashtags = result.keyTopics
+            .map((kw) => kw.replace(/\s+/g, "").toLowerCase())
+            .filter((tag) => tag.length > 1)
+            .slice(0, 5);
+          if (suggestedHashtags.length > 0) {
+            setFormValues((prev) => ({
+              ...prev,
+              hashtags:
+                prev.hashtags.length === 0 ? suggestedHashtags : prev.hashtags
+            }));
+          }
+
+          return current;
+        });
+      })
+      .catch((err) => {
+        console.warn("Background video analysis failed:", err);
+        setIsAnalyzing(false);
+      });
   };
 
   const retryProcessing = (): void => {
@@ -243,8 +336,10 @@ export function useUploadWorkflow(
     processingFlow.startProcessing({
       task: async (): Promise<UploadTaskResult> => {
         const taskStartedAt = Date.now();
+        const requestSignalHints = buildSignalHints(formValues);
 
-        const analysis = await analysisService.analyzeVideo({
+        // Reuse pre-analysis from file-select if available; otherwise analyze now
+        const analysis = preAnalysis ?? await analysisService.analyzeVideo({
           file: selectedFile,
           mentions: formValues.mentions,
           hashtags: formValues.hashtags,
@@ -254,8 +349,16 @@ export function useUploadWorkflow(
           content_type: formValues.content_type,
           primary_cta: formValues.primary_cta,
           locale: formValues.locale,
-          signal_hints: buildSignalHints(formValues)
+          signal_hints: requestSignalHints
         });
+        const mergedSignalHints = mergeSignalHints(
+          analysis.signal_hints,
+          requestSignalHints
+        );
+        const reportSignalHints = mergeSignalHints(
+          mergedSignalHints,
+          buildSignalHints(formValues, analysis)
+        );
 
         const elapsedMs = Date.now() - taskStartedAt;
         const remainingBeforeReportStep = Math.max(
@@ -268,7 +371,7 @@ export function useUploadWorkflow(
         }
 
         const report = await generateReport({
-          seed_video_id: "s001",
+          asset_id: analysis.asset_id,
           mentions: formValues.mentions,
           hashtags: formValues.hashtags,
           description: formValues.description,
@@ -277,7 +380,7 @@ export function useUploadWorkflow(
           content_type: formValues.content_type,
           primary_cta: formValues.primary_cta,
           locale: formValues.locale,
-          signal_hints: buildSignalHints(formValues)
+          signal_hints: reportSignalHints
         });
 
         return { analysis, report };
@@ -312,6 +415,7 @@ export function useUploadWorkflow(
     reportResult,
     uploadSession,
     isBusy,
+    isAnalyzing,
     loadingLabel,
     processingSteps: PROCESSING_STEPS,
     processingStatus: processingFlow.status,

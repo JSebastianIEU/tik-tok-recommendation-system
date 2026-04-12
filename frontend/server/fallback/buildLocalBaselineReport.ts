@@ -22,6 +22,7 @@ interface BuildLocalBaselineReportParams {
   candidateSignals?: CandidateSignalProfile;
   meta: ReportMeta;
   reasoning: ReportReasoning;
+  extractedKeywords?: string[];
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -89,9 +90,13 @@ function toComparableMetrics(record: DemoVideoRecord): ComparableItem["metrics"]
   };
 }
 
-function buildMatchedKeywords(record: DemoVideoRecord, queryTokens: string[]): string[] {
+function buildMatchedKeywords(
+  record: DemoVideoRecord,
+  queryTokens: string[],
+  keywords: readonly string[]
+): string[] {
   const candidateTokens = toTokens([record.caption, ...record.keywords, ...record.hashtags]);
-  const keywordTokens = toTokens(HARD_CODED_EXTRACTED_KEYWORDS);
+  const keywordTokens = toTokens([...keywords]);
   const matched = unique(
     candidateTokens.filter((token) => queryTokens.includes(token) || keywordTokens.includes(token))
   ).slice(0, 6);
@@ -107,7 +112,7 @@ function buildObservationLines(item: RecommenderItem | undefined): string[] {
   return [
     `Baseline rank score ${(item.score * 100).toFixed(1)}/100.`,
     reasons ? `Ranking reasons: ${reasons}.` : "Ranking reasons were not returned.",
-    `Semantic ${(Number(scoreParts.semantic_relevance ?? 0) * 100).toFixed(0)}/100, intent ${(Number(scoreParts.intent_alignment ?? 0) * 100).toFixed(0)}/100, usefulness ${(Number(scoreParts.reference_usefulness ?? 0) * 100).toFixed(0)}/100, confidence ${(Number(scoreParts.support_confidence ?? 0) * 100).toFixed(0)}/100.`
+    `Semantic ${(Number(scoreParts.semantic_relevance ?? 0) * 100).toFixed(0)}/100, intent ${(Number(scoreParts.intent_alignment ?? 0) * 100).toFixed(0)}/100, performance ${(Number(scoreParts.performance_quality ?? 0) * 100).toFixed(0)}/100, usefulness ${(Number(scoreParts.reference_usefulness ?? 0) * 100).toFixed(0)}/100, confidence ${(Number(scoreParts.support_confidence ?? 0) * 100).toFixed(0)}/100.`
   ];
 }
 
@@ -125,7 +130,8 @@ function estimateUploadedVideoStats(
   description: string,
   hashtags: string[],
   mentions: string[],
-  candidateSignals?: CandidateSignalProfile
+  candidateSignals: CandidateSignalProfile | undefined,
+  keywordCount: number
 ): {
   retention: number;
   hook: number;
@@ -137,7 +143,7 @@ function estimateUploadedVideoStats(
   ctaClarity: number;
 } {
   const descWords = description.split(/\s+/).filter(Boolean).length;
-  const keywordBoost = HARD_CODED_EXTRACTED_KEYWORDS.length;
+  const keywordBoost = keywordCount;
   const pacingBoost = candidateSignals ? candidateSignals.structure.pacing_score * 10 : 0;
   const clarityBoost = candidateSignals ? candidateSignals.transcript_ocr.clarity_score * 8 : 0;
   const hookBoost = candidateSignals
@@ -377,7 +383,11 @@ export function buildLocalBaselineReport(
     meta,
     reasoning
   } = params;
-  const queryTokens = toTokens([description, ...mentions, ...hashtags, ...HARD_CODED_EXTRACTED_KEYWORDS]);
+  const effectiveKeywords: readonly string[] =
+    params.extractedKeywords && params.extractedKeywords.length > 0
+      ? params.extractedKeywords
+      : HARD_CODED_EXTRACTED_KEYWORDS;
+  const queryTokens = toTokens([description, ...mentions, ...hashtags, ...effectiveKeywords]);
   const itemByCandidateId = new Map(recommenderItems.map((item) => [item.candidate_id, item]));
   const selectedCandidates = candidates.slice(0, 8);
   const comparables = selectedCandidates.map((record, index) => ({
@@ -394,7 +404,7 @@ export function buildLocalBaselineReport(
       Number(itemByCandidateId.get(record.video_id)?.score_components?.support_confidence ?? 0.5)
     ),
     metrics: toComparableMetrics(record),
-    matched_keywords: buildMatchedKeywords(record, queryTokens),
+    matched_keywords: buildMatchedKeywords(record, queryTokens, effectiveKeywords),
     observations: buildObservationLines(itemByCandidateId.get(record.video_id)),
     why_this_was_chosen:
       (itemByCandidateId.get(record.video_id)?.ranking_reasons ?? []).length > 0
@@ -404,6 +414,7 @@ export function buildLocalBaselineReport(
     score_components: {
       semantic_relevance: Number(itemByCandidateId.get(record.video_id)?.score_components?.semantic_relevance ?? 0),
       intent_alignment: Number(itemByCandidateId.get(record.video_id)?.score_components?.intent_alignment ?? 0),
+      performance_quality: Number(itemByCandidateId.get(record.video_id)?.score_components?.performance_quality ?? 0),
       reference_usefulness: Number(itemByCandidateId.get(record.video_id)?.score_components?.reference_usefulness ?? 0),
       support_confidence: Number(itemByCandidateId.get(record.video_id)?.score_components?.support_confidence ?? 0)
     },
@@ -412,7 +423,9 @@ export function buildLocalBaselineReport(
       .map(([branch]) => branch)
   }));
 
-  const yourEstimate = estimateUploadedVideoStats(description, hashtags, mentions, candidateSignals);
+  const yourEstimate = estimateUploadedVideoStats(
+    description, hashtags, mentions, candidateSignals, effectiveKeywords.length
+  );
 
   return {
     meta,
@@ -438,7 +451,7 @@ export function buildLocalBaselineReport(
           value: `P${yourEstimate.competitivenessPercentile}`
         }
       ],
-      extracted_keywords: [...HARD_CODED_EXTRACTED_KEYWORDS],
+      extracted_keywords: [...effectiveKeywords],
       meaning_points: [
         "The report is grounded in the Python recommender and deterministic reasoning layer.",
         "Top comparables are selected by semantic relevance, intent alignment, reference usefulness, and support confidence.",

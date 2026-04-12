@@ -27,24 +27,50 @@ def support_confidence_score(level: str, score: float) -> float:
     return round_score(clamp((tier_floor * 0.55) + (score * 0.45), 0.0, 1.0), 6)
 
 
+FRESHNESS_HALF_LIFE_DAYS = 18.0
+
+
 def freshness_score(posted_at: Optional[datetime], reference_date: datetime) -> float:
     if posted_at is None:
         return 0.55
     age_days = max(0.0, (reference_date - posted_at).total_seconds() / 86400.0)
-    return round_score(clamp(math.exp((-math.log(2.0) * age_days) / 60.0), 0.0, 1.0), 6)
+    return round_score(clamp(math.exp((-math.log(2.0) * age_days) / FRESHNESS_HALF_LIFE_DAYS), 0.0, 1.0), 6)
+
+
+def performance_quality_score(candidate: Dict[str, Any]) -> float:
+    """Score based on demonstrated engagement metrics (views, engagement rate).
+
+    Uses log-scaled views (saturating around 10M) and engagement rate to
+    prefer comparables that actually performed well on the platform.
+    """
+    metrics = candidate.get("engagement_metrics") or {}
+    views = as_float(metrics.get("views"), 0.0)
+    engagement_rate = as_float(metrics.get("engagement_rate"), 0.0)
+    view_signal = math.log1p(views) / math.log1p(10_000_000) if views > 0 else 0.0
+    er_signal = min(engagement_rate / 0.10, 1.0)
+    return round_score(clamp(view_signal * 0.55 + er_signal * 0.45, 0.0, 1.0), 6)
 
 
 def reference_usefulness(candidate: Dict[str, Any], reference_date: datetime) -> float:
     comment_trace = candidate["comment_trace"]
-    performance_quality = sanitize_probability(candidate["support_score"], 0.0)
+    metadata_quality = sanitize_probability(candidate["support_score"], 0.0)
     freshness = freshness_score(candidate.get("posted_at"), reference_date)
     comment_richness = sanitize_probability(comment_trace.get("value_prop_coverage"), 0.0)
     share_signal = sanitize_probability(comment_trace.get("on_topic_ratio"), 0.0)
+    fabric = candidate.get("fabric_signals") or {}
+    content_quality = clamp(
+        (as_float(fabric.get("clarity_score"), 0.5) * 0.5)
+        + (as_float(fabric.get("pacing_score"), 0.5) * 0.3)
+        + (min(as_float(fabric.get("cta_keyword_count"), 0), 3) / 3.0 * 0.2),
+        0.0,
+        1.0,
+    )
     return round_score(
         clamp(
-            (performance_quality * 0.40)
+            (metadata_quality * 0.25)
             + (freshness * 0.20)
-            + (comment_richness * 0.20)
+            + (content_quality * 0.20)
+            + (comment_richness * 0.15)
             + (share_signal * 0.10)
             + (candidate["support_score"] * 0.10),
             0.0,
@@ -105,6 +131,7 @@ def score_components_for_candidate(
     return {
         "semantic_relevance": semantic_relevance,
         "intent_alignment": intent_alignment,
+        "performance_quality": performance_quality_score(candidate),
         "reference_usefulness": reference_usefulness(candidate, reference_date),
         "support_confidence": support_confidence_score(
             candidate["support_level"], candidate["support_score"]
@@ -146,10 +173,7 @@ def rank_shortlist(
         )
         raw_score = round_score(
             clamp(
-                (components["semantic_relevance"] * ranking_weights["semantic_relevance"])
-                + (components["intent_alignment"] * ranking_weights["intent_alignment"])
-                + (components["reference_usefulness"] * ranking_weights["reference_usefulness"])
-                + (components["support_confidence"] * ranking_weights["support_confidence"]),
+                sum(components[k] * ranking_weights.get(k, 0.0) for k in components),
                 0.0,
                 1.0,
             ),
