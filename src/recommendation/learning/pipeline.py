@@ -567,23 +567,53 @@ def _learn_objective_blend_weights(
         return retriever.branch_weights(objective)
 
     step_values = [0.0, 0.25, 0.5, 0.75, 1.0]
+    # Detect which branches are active (non-zero weight or have real data)
+    current_weights = retriever.branch_weights(objective)
+    active_branches = [
+        b for b in ["lexical", "dense_text", "multimodal", "graph_dense", "trajectory_dense"]
+        if current_weights.get(b, 0.0) > 0
+    ]
+    # If only 0-1 active branches, fall back to at least the 3 core branches
+    if len(active_branches) < 2:
+        active_branches = ["lexical", "dense_text", "multimodal"]
+    inactive_branches = [
+        b for b in ["lexical", "dense_text", "multimodal", "graph_dense", "trajectory_dense"]
+        if b not in active_branches
+    ]
+
     candidates: List[Dict[str, float]] = []
-    for lexical in step_values:
-        for dense in step_values:
-            for multimodal in step_values:
-                for trajectory_dense in step_values:
-                    graph_dense = 1.0 - lexical - dense - multimodal - trajectory_dense
-                    if graph_dense < 0:
-                        continue
-                    candidates.append(
-                        {
-                            "lexical": lexical,
-                            "dense_text": dense,
-                            "multimodal": multimodal,
-                            "graph_dense": graph_dense,
-                            "trajectory_dense": trajectory_dense,
-                        }
-                    )
+    if len(active_branches) == 2:
+        for v in step_values:
+            candidates.append({active_branches[0]: v, active_branches[1]: 1.0 - v})
+    elif len(active_branches) == 3:
+        for a in step_values:
+            for b in step_values:
+                c = 1.0 - a - b
+                if c < -1e-9:
+                    continue
+                c = max(0.0, c)
+                candidates.append({active_branches[0]: a, active_branches[1]: b, active_branches[2]: c})
+    else:
+        for lexical in step_values:
+            for dense in step_values:
+                for multimodal in step_values:
+                    for trajectory_dense in step_values:
+                        graph_dense = 1.0 - lexical - dense - multimodal - trajectory_dense
+                        if graph_dense < 0:
+                            continue
+                        candidates.append(
+                            {
+                                "lexical": lexical,
+                                "dense_text": dense,
+                                "multimodal": multimodal,
+                                "graph_dense": graph_dense,
+                                "trajectory_dense": trajectory_dense,
+                            }
+                        )
+    # Zero out inactive branches
+    for cand in candidates:
+        for branch in inactive_branches:
+            cand[branch] = 0.0
     if not candidates:
         return retriever.branch_weights(objective)
 

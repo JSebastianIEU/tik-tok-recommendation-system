@@ -36,7 +36,8 @@ export class ApiChatService implements IChatService {
         },
         body: JSON.stringify({
           report: request.report,
-          question: request.question
+          question: request.question,
+          videoAnalysis: request.videoAnalysis ?? null
         })
       });
     } catch {

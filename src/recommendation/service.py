@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 try:
-    from fastapi import FastAPI, HTTPException
+    from fastapi import FastAPI, File, HTTPException, UploadFile
 except Exception as exc:  # pragma: no cover - optional dependency
     raise RuntimeError(
         "FastAPI is required for recommender service. Install fastapi and uvicorn."
@@ -425,3 +425,126 @@ def suggest_hashtags(request: HashtagSuggestRequest) -> Dict[str, Any]:
     result["latency_ms"] = round(elapsed_ms, 2)
     result["corpus_size"] = len(_hashtag_recommender.corpus_captions)
     return result
+
+
+# ---------------------------------------------------------------------------
+# Video analysis endpoint
+# ---------------------------------------------------------------------------
+
+_video_analyzer = None
+
+
+@app.post("/v1/video/analyze")
+async def video_analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
+    global _video_analyzer
+    if _video_analyzer is None:
+        from .video.analyzer import VideoAnalyzer
+        _video_analyzer = VideoAnalyzer()
+
+    import tempfile
+    suffix = Path(file.filename).suffix if file.filename else ".mp4"
+    tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+    try:
+        content = await file.read()
+        tmp.write(content)
+        tmp.close()
+        result = _video_analyzer.analyze(tmp.name)
+        return result.model_dump(mode="python")
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "video_analysis_failed", "reason": str(error)},
+        ) from error
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# RAG retrieval endpoint for agentic chatbot
+# ---------------------------------------------------------------------------
+
+
+class ChatRAGRequest(BaseModel):
+    question: str
+    top_k: int = Field(default=5, ge=1, le=50)
+    objective: str = "engagement"
+
+
+@app.post("/v1/chat/rag")
+def chat_rag(request: ChatRAGRequest) -> Dict[str, Any]:
+    """Retrieve relevant videos from the corpus for RAG-grounded chat."""
+    global _runtime
+    if _runtime is None:
+        try:
+            _runtime = _build_runtime()
+        except Exception as error:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": "recommender_unavailable",
+                    "reason": str(error),
+                },
+            ) from error
+
+    started = time.perf_counter()
+    query_row: Dict[str, Any] = {
+        "text": request.question,
+        "caption": request.question,
+        "hashtags": [],
+        "keywords": [],
+        "topic_key": "",
+        "search_query": request.question,
+        "as_of_time": datetime.utcnow(),
+    }
+
+    try:
+        results, meta = _runtime.retriever.retrieve(
+            query_row=query_row,
+            top_k=request.top_k,
+            objective=request.objective,
+            return_metadata=True,
+        )
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "retrieval_failed", "reason": str(error)},
+        ) from error
+
+    # Extract video metadata for grounding context
+    retrieved_videos = []
+    for item in results:
+        candidate_id = item.get("candidate_id", "")
+        row_id = item.get("candidate_row_id", "")
+        row_meta = _runtime.retriever.row_metadata.get(row_id, {})
+        retrieved_videos.append({
+            "video_id": candidate_id,
+            "caption": row_meta.get("caption", ""),
+            "hashtags": list(row_meta.get("hashtags") or []),
+            "keywords": list(row_meta.get("keywords") or []),
+            "author_id": row_meta.get("author_id", ""),
+            "content_type": row_meta.get("content_type", ""),
+            "language": row_meta.get("language"),
+            "fused_score": round(float(item.get("fused_score", 0)), 4),
+            "branch_scores": {
+                k: round(float(v), 4)
+                for k, v in (item.get("retrieval_branch_scores") or {}).items()
+                if isinstance(v, (int, float))
+            },
+        })
+
+    elapsed_ms = (time.perf_counter() - started) * 1000.0
+    return {
+        "retrieved_videos": retrieved_videos,
+        "retrieval_meta": {
+            "objective": request.objective,
+            "top_k": request.top_k,
+            "branches_used": {
+                k: v for k, v in (meta.get("branch_coverage") or {}).items()
+            },
+            "total_indexed": meta.get("total_indexed", 0),
+        },
+        "latency_ms": round(elapsed_ms, 2),
+    }

@@ -30,6 +30,7 @@ import {
   RECOMMENDER_EXPERIMENT_TREATMENT_RATIO,
   RECOMMENDER_FEEDBACK_DB_URL,
   RECOMMENDER_FEEDBACK_ENABLED,
+  RECOMMENDER_BASE_URL,
   RECOMMENDER_FALLBACK_BUNDLE_DIR,
   RECOMMENDER_FALLBACK_CACHE_TTL_MS,
   SERVER_PORT
@@ -90,6 +91,7 @@ import {
 interface ChatRequestBody {
   report?: unknown;
   question?: string;
+  videoAnalysis?: Record<string, unknown> | null;
 }
 
 const TIKTOK_OEMBED_URL = "https://www.tiktok.com/oembed?url=";
@@ -2791,6 +2793,152 @@ app.post("/report-feedback", async (request, response) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Agentic chatbot tools — RAG retrieval + hashtag suggestion
+// ---------------------------------------------------------------------------
+
+interface RAGVideo {
+  video_id: string;
+  caption: string;
+  hashtags: string[];
+  keywords: string[];
+  author_id: string;
+  content_type: string;
+  fused_score: number;
+}
+
+interface ToolResult {
+  source: string;
+  videos?: RAGVideo[];
+  hashtags?: string[];
+  error?: string;
+}
+
+function chatNeedsCorpusSearch(question: string): boolean {
+  const q = question.toLowerCase();
+  return (
+    q.includes("similar") || q.includes("like") || q.includes("compare") ||
+    q.includes("trend") || q.includes("competitor") || q.includes("example") ||
+    q.includes("what works") || q.includes("best performing") ||
+    q.includes("top video") || q.includes("recommend") || q.includes("find") ||
+    q.includes("show me") || q.includes("search") || q.includes("corpus")
+  );
+}
+
+function chatNeedsHashtags(question: string): boolean {
+  const q = question.toLowerCase();
+  return q.includes("hashtag") || q.includes("tag") || q.includes("#");
+}
+
+async function callRAGRetrieval(question: string): Promise<ToolResult> {
+  try {
+    const res = await fetch(`${RECOMMENDER_BASE_URL}/v1/chat/rag`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ question, top_k: 5, objective: "engagement" }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) return { source: "corpus_search", error: `HTTP ${res.status}` };
+    const data = await res.json() as { retrieved_videos: RAGVideo[] };
+    return { source: "corpus_search", videos: data.retrieved_videos ?? [] };
+  } catch (err) {
+    return { source: "corpus_search", error: String(err) };
+  }
+}
+
+async function callHashtagSuggest(question: string): Promise<ToolResult> {
+  try {
+    const res = await fetch(`${RECOMMENDER_BASE_URL}/v1/hashtags/suggest`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ caption: question, k: 10, top_n: 10 }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) return { source: "hashtags", error: `HTTP ${res.status}` };
+    const data = await res.json() as { hashtags: string[] };
+    return { source: "hashtags", hashtags: data.hashtags ?? [] };
+  } catch (err) {
+    return { source: "hashtags", error: String(err) };
+  }
+}
+
+interface TimelineFrame {
+  timestamp_sec: number;
+  relevance_score: number;
+  motion_score: number;
+  face_count: number;
+  is_scene_change: boolean;
+  ocr_text: string;
+}
+
+function buildAgenticPrompt(params: {
+  question: string;
+  report: ReportOutput | null;
+  videoAnalysis: Record<string, unknown> | null;
+  toolResults: ToolResult[];
+}): string {
+  const sections: string[] = [];
+
+  // Video analysis context (timeline-aware)
+  if (params.videoAnalysis) {
+    const va = params.videoAnalysis;
+    const dur = va.duration_seconds ?? "unknown";
+    const faces = va.face_count ?? 0;
+    const scenes = va.scene_cuts ?? 0;
+    const transcript = va.transcript || "none";
+    const caption = va.video_caption || "none";
+
+    sections.push(
+      `## Your Video Analysis\nDuration: ${dur}s | Faces detected: ${faces} | Scene cuts: ${scenes}\nTranscript: ${transcript}\nVLM Caption: ${caption}`
+    );
+
+    const timeline = va.timeline as TimelineFrame[] | undefined;
+    if (timeline && timeline.length > 0) {
+      const lines = timeline.map((f) => {
+        let line = `[${Number(f.timestamp_sec).toFixed(1)}s] relevance=${Math.round(f.relevance_score * 100)}% motion=${Math.round(f.motion_score * 100)}% faces=${f.face_count}`;
+        if (f.is_scene_change) line += " SCENE_CHANGE";
+        if (f.ocr_text) line += ` text="${f.ocr_text}"`;
+        return line;
+      });
+      sections.push(`## Frame-by-Frame Timeline\n${lines.join("\n")}`);
+    }
+  }
+
+  // Report context
+  if (params.report) {
+    const r = params.report;
+    const topComps = r.comparables
+      .slice(0, 5)
+      .map((c) => `"${c.caption}" [${c.hashtags.slice(0, 5).join(", ")}]`)
+      .join("\n  ");
+    const recs = r.recommendations.items.map((i) => `- ${i.title}: ${i.detail}`).join("\n");
+    sections.push(
+      `## Recommendation Report\n${r.executive_summary.summary_text}\n\nTop comparables:\n  ${topComps}\n\nRecommendations:\n${recs}`
+    );
+  }
+
+  // Tool results
+  for (const tool of params.toolResults) {
+    if (tool.source === "corpus_search" && tool.videos && tool.videos.length > 0) {
+      const videoLines = tool.videos.map(
+        (v) => `- "${v.caption}" [hashtags: ${v.hashtags.join(", ")}] score=${v.fused_score} type=${v.content_type}`
+      );
+      sections.push(`## Similar Videos Retrieved from Corpus (${tool.videos.length} results)\n${videoLines.join("\n")}`);
+    }
+    if (tool.source === "hashtags" && tool.hashtags && tool.hashtags.length > 0) {
+      sections.push(`## AI-Suggested Hashtags\n${tool.hashtags.join(", ")}`);
+    }
+  }
+
+  sections.push(`## User Question\n${params.question}`);
+
+  return sections.join("\n\n");
+}
+
+// ---------------------------------------------------------------------------
+// /chat — agentic chatbot with RAG + timeline awareness + tool use
+// ---------------------------------------------------------------------------
+
 app.post("/chat", async (request, response) => {
   try {
     const body = request.body as ChatRequestBody;
@@ -2801,24 +2949,70 @@ app.post("/chat", async (request, response) => {
       return;
     }
 
-    if (!validateReportOutput(body.report)) {
-      response.status(400).json({ error: "The provided report payload is invalid." });
-      return;
+    const report: ReportOutput | null = validateReportOutput(body.report)
+      ? (body.report as ReportOutput)
+      : null;
+
+    const videoAnalysis = body.videoAnalysis ?? null;
+
+    // --- Tool calls based on intent ---
+    const toolPromises: Promise<ToolResult>[] = [];
+    if (chatNeedsCorpusSearch(question)) {
+      toolPromises.push(callRAGRetrieval(question));
+    }
+    if (chatNeedsHashtags(question)) {
+      toolPromises.push(callHashtagSuggest(question));
     }
 
+    const toolResults = await Promise.allSettled(toolPromises);
+    const resolvedTools: ToolResult[] = toolResults
+      .filter((r): r is PromiseFulfilledResult<ToolResult> => r.status === "fulfilled")
+      .map((r) => r.value);
+
+    // --- Fallback if no LLM ---
     if (!DEEPSEEK_ENABLED) {
-      response.setHeader("x-chat-source", "baseline-local-no-key");
+      // Enhanced local fallback that includes tool results
+      let fallbackAnswer: string;
+      if (report) {
+        fallbackAnswer = buildLocalChatAnswer(report, question);
+      } else {
+        fallbackAnswer = "Upload a video and generate a report to start chatting.";
+      }
+
+      const hashtagTool = resolvedTools.find((t) => t.source === "hashtags");
+      if (hashtagTool?.hashtags && hashtagTool.hashtags.length > 0) {
+        fallbackAnswer += `\n\nSuggested hashtags: ${hashtagTool.hashtags.join(", ")}`;
+      }
+
+      const ragTool = resolvedTools.find((t) => t.source === "corpus_search");
+      if (ragTool?.videos && ragTool.videos.length > 0) {
+        const topCaptions = ragTool.videos.slice(0, 3).map((v) => `"${v.caption}"`).join(", ");
+        fallbackAnswer += `\n\nSimilar videos in corpus: ${topCaptions}`;
+      }
+
+      response.setHeader("x-chat-source", "baseline-local-with-tools");
       response.json({
-        answer: removeEmoji(buildLocalChatAnswer(body.report, question))
+        answer: removeEmoji(fallbackAnswer),
+        sources: resolvedTools.map((t) => t.source),
       });
       return;
     }
 
-    const client = ensureDeepSeekClient();
-    const chatPrompt = buildChatPrompt({
-      report: body.report,
-      question
+    // --- Build agentic prompt ---
+    const agenticPrompt = buildAgenticPrompt({
+      question,
+      report,
+      videoAnalysis,
+      toolResults: resolvedTools,
     });
+
+    const sourcesUsed: string[] = [];
+    if (videoAnalysis) sourcesUsed.push("video_analysis");
+    if ((videoAnalysis as Record<string, unknown> | null)?.timeline) sourcesUsed.push("timeline");
+    if (report) sourcesUsed.push("report");
+    sourcesUsed.push(...resolvedTools.map((t) => t.source));
+
+    const client = ensureDeepSeekClient();
 
     try {
       const completion = await client.chat.completions.create({
@@ -2828,11 +3022,16 @@ app.post("/chat", async (request, response) => {
           {
             role: "system",
             content:
-              "You are a strategic content assistant. Reply in English plain text with concrete recommendations, no emojis, and no generic filler."
+              "You are a TikTok video content strategist with access to frame-by-frame video analysis, " +
+              "a recommendation report with comparable videos, and a searchable corpus of 13,000+ TikTok videos. " +
+              "Reference specific timestamps, metrics, and video data when answering. " +
+              "Be concrete and actionable. No emojis. No generic filler. " +
+              "When discussing the user's video, cite timeline data (timestamps, relevance scores, scene changes). " +
+              "When suggesting content strategy, reference comparable videos and their engagement patterns."
           },
           {
             role: "user",
-            content: chatPrompt
+            content: agenticPrompt
           }
         ]
       });
@@ -2840,19 +3039,58 @@ app.post("/chat", async (request, response) => {
       const rawContent = extractTextContent(completion.choices[0]?.message?.content ?? "");
       const answer = removeEmoji(rawContent || "I do not have an answer right now.");
 
-      response.setHeader("x-chat-source", "deepseek");
-      response.json({ answer });
+      response.setHeader("x-chat-source", "deepseek-agentic");
+      response.json({ answer, sources: sourcesUsed });
     } catch (providerError) {
       console.error(providerError);
+      const fallback = report
+        ? buildLocalChatAnswer(report, question)
+        : "The AI assistant is currently unavailable. Please try again.";
       response.setHeader("x-chat-source", "baseline-local-provider-error");
       response.json({
-        answer: removeEmoji(buildLocalChatAnswer(body.report, question))
+        answer: removeEmoji(fallback),
+        sources: resolvedTools.map((t) => t.source),
       });
     }
   } catch (error) {
     console.error(error);
     response.status(500).json({
       error: "The chat request could not be completed."
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Video analysis proxy – forwards multipart upload to Python service
+// ---------------------------------------------------------------------------
+app.post("/video/analyze", express.raw({ type: "multipart/form-data", limit: "100mb" }), async (request, response) => {
+  try {
+    const pythonUrl = `${RECOMMENDER_BASE_URL}/v1/video/analyze`;
+    const contentType = request.headers["content-type"] ?? "application/octet-stream";
+
+    const upstream = await fetch(pythonUrl, {
+      method: "POST",
+      headers: { "content-type": contentType },
+      body: request.body as Buffer
+    });
+
+    if (!upstream.ok) {
+      const text = await upstream.text();
+      response.status(upstream.status).json({
+        error: "video_analysis_upstream_error",
+        status: upstream.status,
+        detail: text
+      });
+      return;
+    }
+
+    const payload = await upstream.json();
+    response.json(payload);
+  } catch (error) {
+    console.error("Video analysis proxy error:", error);
+    response.status(502).json({
+      error: "video_analysis_proxy_failed",
+      reason: error instanceof Error ? error.message : String(error)
     });
   }
 });

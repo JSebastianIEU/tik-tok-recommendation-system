@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
 import { sendReportFeedback } from "../../../services/api/reportFeedbackApi";
 import type { IChatService } from "../../../services/contracts/IChatService";
-import type { ChatMessage } from "../../../services/contracts/models";
+import type { ChatMessage, VideoAnalysisResult } from "../../../services/contracts/models";
 import type { ReportOutput } from "../../report/types";
 
 interface UseChatPanelParams {
   chatService: IChatService;
   report: ReportOutput | null;
+  videoAnalysis?: VideoAnalysisResult | null;
   resetKey: number;
 }
 
@@ -25,7 +26,7 @@ function createClientMessageId(prefix: string): string {
 }
 
 export function useChatPanel(params: UseChatPanelParams): UseChatPanelResult {
-  const { chatService, report, resetKey } = params;
+  const { chatService, report, videoAnalysis, resetKey } = params;
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isThinking, setIsThinking] = useState<boolean>(false);
@@ -95,7 +96,8 @@ export function useChatPanel(params: UseChatPanelParams): UseChatPanelResult {
       const assistantReply = await chatService.sendMessage({
         question: trimmed,
         report,
-        history
+        history,
+        videoAnalysis: videoAnalysis ?? null,
       });
 
       setMessages((previous) => [...previous, assistantReply]);
