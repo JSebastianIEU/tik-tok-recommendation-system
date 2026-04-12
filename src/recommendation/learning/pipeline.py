@@ -618,22 +618,38 @@ def _learn_objective_blend_weights(
 
     step_values = _blend_weight_grid_step_values(blend_grid_levels)
     candidates: List[Dict[str, float]] = []
-    for lexical in step_values:
-        for dense in step_values:
-            for multimodal in step_values:
-                for trajectory_dense in step_values:
-                    graph_dense = 1.0 - lexical - dense - multimodal - trajectory_dense
-                    if graph_dense < 0:
-                        continue
-                    candidates.append(
-                        {
-                            "lexical": lexical,
-                            "dense_text": dense,
-                            "multimodal": multimodal,
-                            "graph_dense": graph_dense,
-                            "trajectory_dense": trajectory_dense,
-                        }
-                    )
+    if len(active_branches) == 2:
+        for v in step_values:
+            candidates.append({active_branches[0]: v, active_branches[1]: 1.0 - v})
+    elif len(active_branches) == 3:
+        for a in step_values:
+            for b in step_values:
+                c = 1.0 - a - b
+                if c < -1e-9:
+                    continue
+                c = max(0.0, c)
+                candidates.append({active_branches[0]: a, active_branches[1]: b, active_branches[2]: c})
+    else:
+        for lexical in step_values:
+            for dense in step_values:
+                for multimodal in step_values:
+                    for trajectory_dense in step_values:
+                        graph_dense = 1.0 - lexical - dense - multimodal - trajectory_dense
+                        if graph_dense < 0:
+                            continue
+                        candidates.append(
+                            {
+                                "lexical": lexical,
+                                "dense_text": dense,
+                                "multimodal": multimodal,
+                                "graph_dense": graph_dense,
+                                "trajectory_dense": trajectory_dense,
+                            }
+                        )
+    # Zero out inactive branches
+    for cand in candidates:
+        for branch in inactive_branches:
+            cand[branch] = 0.0
     if not candidates:
         return retriever.branch_weights(objective)
 

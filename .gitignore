@@ -226,3 +226,4 @@ artifacts/
 *.pkl
 data/real/
 frontend/.env.local
+.vite/

@@ -1382,8 +1382,8 @@ def build_training_data_mart(
                 "split": "test",
                 "raw_targets": {
                     "reach": math.log1p(reach_delta),
-                    "engagement": engagement_rate,
-                    "conversion": shares_per_1k,
+                    "engagement": math.log1p(engagement_rate),
+                    "conversion": math.log1p(shares_per_1k),
                     "log_views": math.log1p(future_views),
                 },
                 "labels_base": {
@@ -1776,12 +1776,19 @@ def build_training_data_mart(
 
     pair_drop_stats: Dict[str, int] = {}
     if cfg.include_pair_rows:
-        pair_rows, pair_drop_stats = _build_pair_rows(
-            rows,
-            objective=cfg.pair_objective,
-            target_source=cfg.pair_target_source,
-            max_candidates=cfg.pair_candidates_per_query,
-        )
+        pair_rows = []
+        for _pair_obj in sorted(VALID_PAIR_OBJECTIVES):
+            _obj_pairs, _obj_drops = _build_pair_rows(
+                rows,
+                objective=_pair_obj,
+                target_source=cfg.pair_target_source,
+                max_candidates=cfg.pair_candidates_per_query,
+            )
+            pair_rows.extend(_obj_pairs)
+            for _k, _v in _obj_drops.items():
+                pair_drop_stats[f"{_pair_obj}_{_k}"] = (
+                    pair_drop_stats.get(f"{_pair_obj}_{_k}", 0) + _v
+                )
     else:
         pair_rows = []
 

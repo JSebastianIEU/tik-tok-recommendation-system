@@ -470,13 +470,22 @@ def _node2vec_like_embeddings(
         matrix = _normalize_rows(eye[:, :dim])
         return {node_ids[idx]: matrix[idx].tolist() for idx in range(len(node_ids))}
 
-    matrix = np.zeros((len(node_ids), len(node_ids)), dtype=np.float32)
-    for (center_id, context_id), value in co_counts.items():
-        matrix[center_id, context_id] += float(value)
-    matrix = matrix + matrix.T
-    matrix = matrix / np.maximum(np.sum(matrix, axis=1, keepdims=True), 1.0)
+    from scipy import sparse as sp
 
-    dim = min(config.embedding_dim, max(2, len(node_ids) - 1))
+    n = len(node_ids)
+    rows_idx, cols_idx, vals = [], [], []
+    for (center_id, context_id), value in co_counts.items():
+        rows_idx.append(center_id)
+        cols_idx.append(context_id)
+        vals.append(float(value))
+    matrix = sp.csr_matrix(
+        (vals, (rows_idx, cols_idx)), shape=(n, n), dtype=np.float32
+    )
+    matrix = matrix + matrix.T
+    row_sums = np.maximum(matrix.sum(axis=1).A1, 1.0)
+    matrix = sp.diags(1.0 / row_sums) @ matrix
+
+    dim = min(config.embedding_dim, max(2, n - 1))
     svd = TruncatedSVD(n_components=dim, random_state=config.seed)
     reduced = svd.fit_transform(matrix).astype(np.float32)
     reduced = _normalize_rows(reduced)

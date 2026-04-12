@@ -1,5 +1,6 @@
 ﻿import { useState } from "react";
 import type { IChatService } from "../../../services/contracts/IChatService";
+import type { VideoAnalysisResult } from "../../../services/contracts/models";
 import type { ReportOutput } from "../../report/types";
 import { useChatPanel } from "../hooks/useChatPanel";
 import { ChatComposer } from "./ChatComposer";
@@ -7,6 +8,7 @@ import { ChatMessageList } from "./ChatMessageList";
 
 interface FloatingChatWidgetProps {
   report: ReportOutput | null;
+  videoAnalysis?: VideoAnalysisResult | null;
   chatService: IChatService;
   resetKey: number;
 }
@@ -31,12 +33,13 @@ function CloseIcon(): JSX.Element {
 }
 
 export function FloatingChatWidget(props: FloatingChatWidgetProps): JSX.Element | null {
-  const { report, chatService, resetKey } = props;
+  const { report, videoAnalysis, chatService, resetKey } = props;
   const [isOpen, setIsOpen] = useState<boolean>(false);
 
   const { messages, isThinking, error, sendMessage } = useChatPanel({
     chatService,
     report,
+    videoAnalysis,
     resetKey
   });
 

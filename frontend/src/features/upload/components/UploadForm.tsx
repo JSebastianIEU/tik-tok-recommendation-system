@@ -11,6 +11,7 @@ import { TagInputOverlay, type TagEditorMode } from "./TagInputOverlay";
 interface UploadFormProps {
   values: UploadFormValues;
   disabled: boolean;
+  isAnalyzing?: boolean;
   error: string | null;
   onDescriptionChange: (value: string) => void;
   onMentionsChange: (values: string[]) => void;
@@ -28,6 +29,7 @@ interface TagFieldProps {
   symbol: "@" | "#";
   items: string[];
   disabled: boolean;
+  placeholder?: string;
   onOpen: (initialValue?: string) => void;
   onRemove: (index: number) => void;
 }
@@ -37,7 +39,7 @@ function normalizeForCompare(value: string): string {
 }
 
 function TagField(props: TagFieldProps): JSX.Element {
-  const { label, symbol, items, disabled, onOpen, onRemove } = props;
+  const { label, symbol, items, disabled, placeholder, onOpen, onRemove } = props;
   const [inlineDraft, setInlineDraft] = useState<string>("");
 
   const openFromTypedText = (typedValue: string): void => {
@@ -137,7 +139,7 @@ function TagField(props: TagFieldProps): JSX.Element {
             onChange={(event) => setInlineDraft(event.target.value)}
             onKeyDown={handleInlineKeyDown}
             onPaste={handlePaste}
-            placeholder={items.length === 0 ? "no items" : "add item"}
+            placeholder={placeholder ?? (items.length === 0 ? "no items" : "add item")}
             aria-label={`Type ${label}`}
           />
         </div>
@@ -150,6 +152,7 @@ export function UploadForm(props: UploadFormProps): JSX.Element {
   const {
     values,
     disabled,
+    isAnalyzing = false,
     error,
     onDescriptionChange,
     onMentionsChange,
@@ -227,6 +230,7 @@ export function UploadForm(props: UploadFormProps): JSX.Element {
           symbol="#"
           items={values.hashtags}
           disabled={disabled}
+          placeholder={isAnalyzing && values.hashtags.length === 0 ? "Suggesting hashtags..." : undefined}
           onOpen={(initialValue) => openEditor("hashtags", initialValue)}
           onRemove={(index) =>
             onHashtagsChange(values.hashtags.filter((_, itemIndex) => itemIndex !== index))
@@ -242,6 +246,7 @@ export function UploadForm(props: UploadFormProps): JSX.Element {
             className="glass-textarea"
             value={values.description}
             disabled={disabled}
+            placeholder={isAnalyzing ? "Analyzing video for suggestions..." : "Describe your video content"}
             onChange={(event) => onDescriptionChange(event.target.value)}
           />
         </div>

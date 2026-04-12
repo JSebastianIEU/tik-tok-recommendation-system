@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import logging
 import math
 import pickle
 from dataclasses import dataclass
@@ -31,6 +32,8 @@ try:
 except Exception:  # pragma: no cover - optional dependency
     SentenceTransformer = None
 
+
+logger = logging.getLogger(__name__)
 
 RUNTIME_OBJECTIVES = ("reach", "engagement", "conversion")
 CREATOR_RETRIEVAL_VERSION = "creator_retrieval.v1"
@@ -583,10 +586,11 @@ class HybridRetriever:
 
         dense_backend = "tfidf-char"
         dense_payload: Dict[str, Any]
+        _sbert_encoder = None  # stored for reuse in multimodal branch
         if SentenceTransformer is not None:
             try:
-                encoder = SentenceTransformer(cfg.dense_model_name)
-                embeddings = encoder.encode(
+                _sbert_encoder = SentenceTransformer(cfg.dense_model_name)
+                embeddings = _sbert_encoder.encode(
                     row_texts,
                     convert_to_numpy=True,
                     normalize_embeddings=True,
@@ -600,7 +604,15 @@ class HybridRetriever:
                     "model_name": cfg.dense_model_name,
                     "embeddings": embeddings,
                 }
-            except Exception:  # pragma: no cover - depends on local model availability
+                logger.info(
+                    "SentenceTransformer loaded (%s), dense embeddings shape=%s",
+                    cfg.dense_model_name, embeddings.shape,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "SentenceTransformer failed (%s), falling back to char-TF-IDF: %s",
+                    cfg.dense_model_name, exc,
+                )
                 dense_vectorizer = TfidfVectorizer(
                     analyzer="char_wb",
                     ngram_range=(3, 5),
@@ -609,6 +621,7 @@ class HybridRetriever:
                 dense_matrix = dense_vectorizer.fit_transform(row_lexical_texts)
                 dense_payload = {"vectorizer": dense_vectorizer, "matrix": dense_matrix}
         else:
+            logger.warning("sentence-transformers not installed, using char-TF-IDF for dense branch")
             dense_vectorizer = TfidfVectorizer(
                 analyzer="char_wb",
                 ngram_range=(3, 5),
@@ -617,24 +630,48 @@ class HybridRetriever:
             dense_matrix = dense_vectorizer.fit_transform(row_lexical_texts)
             dense_payload = {"vectorizer": dense_vectorizer, "matrix": dense_matrix}
 
-        default_vectors: List[Sequence[float]] = []
-        vector_dim = 0
+        # --- Multimodal branch ---
+        # When SBERT is available and no precomputed vectors, use caption-only
+        # embeddings (different signal from dense_text which uses full row text).
         mm_map = multimodal_vectors or {}
-        for row, row_id in zip(ordered_rows, row_ids):
-            raw = mm_map.get(row_id)
-            if raw is None:
-                raw = mm_map.get(str(row.get("video_id") or ""))
-            values = list(raw) if raw is not None else _row_multimodal_fallback(row)
-            vector_dim = max(vector_dim, len(values))
-            default_vectors.append(values)
-        vector_dim = max(4, vector_dim)
-        multimodal_matrix = _l2_normalize_rows(_ensure_2d(default_vectors, vector_dim))
-        multimodal_backend = "fabric-precomputed-faiss" if faiss is not None else "fabric-precomputed"
-        multimodal_payload = {
-            "embeddings": multimodal_matrix,
-            "dimension": vector_dim,
-            "source": "feature_snapshot" if multimodal_vectors else "row_fallback",
-        }
+        if not mm_map and _sbert_encoder is not None:
+            caption_texts = [str(row.get("caption") or "") for row in ordered_rows]
+            mm_embeddings = _sbert_encoder.encode(
+                caption_texts,
+                convert_to_numpy=True,
+                normalize_embeddings=True,
+            ).astype(np.float32)
+            multimodal_matrix = mm_embeddings
+            multimodal_backend = (
+                "sbert-caption-faiss" if faiss is not None else "sbert-caption"
+            )
+            multimodal_payload: Dict[str, Any] = {
+                "embeddings": multimodal_matrix,
+                "dimension": mm_embeddings.shape[1],
+                "source": "sbert_caption_auto",
+            }
+            logger.info(
+                "Multimodal branch: SBERT caption embeddings, shape=%s",
+                mm_embeddings.shape,
+            )
+        else:
+            default_vectors: List[Sequence[float]] = []
+            vector_dim = 0
+            for row, row_id in zip(ordered_rows, row_ids):
+                raw = mm_map.get(row_id)
+                if raw is None:
+                    raw = mm_map.get(str(row.get("video_id") or ""))
+                values = list(raw) if raw is not None else _row_multimodal_fallback(row)
+                vector_dim = max(vector_dim, len(values))
+                default_vectors.append(values)
+            vector_dim = max(4, vector_dim)
+            multimodal_matrix = _l2_normalize_rows(_ensure_2d(default_vectors, vector_dim))
+            multimodal_backend = "fabric-precomputed-faiss" if faiss is not None else "fabric-precomputed"
+            multimodal_payload = {
+                "embeddings": multimodal_matrix,
+                "dimension": vector_dim,
+                "source": "feature_snapshot" if multimodal_vectors else "row_fallback",
+            }
 
         graph_vectors_map = graph_vectors or {}
         graph_rows: List[Sequence[float]] = []
