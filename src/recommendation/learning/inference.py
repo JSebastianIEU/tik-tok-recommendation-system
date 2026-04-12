@@ -1818,9 +1818,9 @@ class RecommenderRuntime:
             "user_adaptation_metadata": user_adaptation_metadata,
             "policy_version": BASELINE_POLICY_VERSION,
             "policy_metadata": {
-                "strict_language": strict_language,
-                "strict_locale": strict_locale,
-                "max_items_per_author": max_items_per_author,
+                "strict_language": bool(policy_meta.get("strict_language", False)),
+                "strict_locale": bool(policy_meta.get("strict_locale", False)),
+                "max_items_per_author": _as_int(policy_meta.get("max_items_per_author"), 2),
                 "dropped_by_rule": dropped_by_rule,
             },
             "routing_decision": routing_decision,
