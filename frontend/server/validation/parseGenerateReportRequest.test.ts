@@ -90,6 +90,23 @@ test("parseGenerateReportRequest applies defaults when optional fields are missi
   assert.equal(result.value.primary_cta, undefined);
 });
 
+test("parseGenerateReportRequest defaults seed_video_id from asset_id when upload assets are used", () => {
+  const result = parseGenerateReportRequest({
+    asset_id: "upl_123",
+    description: "Uploaded draft",
+    mentions: [],
+    hashtags: []
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) {
+    return;
+  }
+
+  assert.equal(result.value.asset_id, "upl_123");
+  assert.equal(result.value.seed_video_id, "upl_123");
+});
+
 test("parseGenerateReportRequest accepts structured audience objects", () => {
   const result = parseGenerateReportRequest({
     description: "Draft",

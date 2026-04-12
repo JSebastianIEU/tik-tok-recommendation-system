@@ -18,10 +18,14 @@ function wait(ms: number): Promise<void> {
 
 function cloneAnalysisResult(result: VideoAnalysisResult): VideoAnalysisResult {
   return {
+    asset_id: result.asset_id,
+    analysis_provider: result.analysis_provider,
     summary: result.summary,
     keyTopics: [...result.keyTopics],
     suggestedEdits: [...result.suggestedEdits],
-    metrics: { ...result.metrics }
+    metrics: { ...result.metrics },
+    signal_hints: result.signal_hints ? { ...result.signal_hints } : undefined,
+    asset: result.asset ? { ...result.asset } : undefined
   };
 }
 

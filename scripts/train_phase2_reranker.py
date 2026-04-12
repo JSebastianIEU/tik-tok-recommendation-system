@@ -1,10 +1,21 @@
 #!/usr/bin/env python3
-"""Train feedback-driven Phase 2 learned reranker artifacts on top of a baseline bundle."""
+"""Train Phase 2 learned reranker artifacts on top of a Phase 1 bundle.
+
+Default production recipe (recommended):
+  1) **Bootstrap** pairwise rows from the training datamart (weak supervision from metrics; cold-start).
+  2) **Augment** with **implicit feedback** from Postgres (rec_request_events, rec_served_outputs,
+     rec_ui_feedback_events) when ``--db-url`` is set — saves, relevance taps, etc.
+  3) **Optional** labeling-session JSON files for extra explicit pairs.
+
+Rows are concatenated in that order (bootstrap → feedback → labeling). All sources are optional
+except at least one must yield supervision (see CLI validation).
+"""
 
 from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import shutil
 import sys
@@ -36,6 +47,10 @@ from src.recommendation.learning.learned_reranker import (
     rows_to_json_ready,
     summarize_pairwise_rows,
 )
+
+logger = logging.getLogger(__name__)
+
+PHASE2_ROW_ORDER = ("bootstrap", "feedback", "labeling")
 
 
 def _resolve_bundle_dir(bundle_ref: Path) -> Path:
@@ -216,18 +231,26 @@ def train_phase2_reranker(
     feedback_requests: List[Dict[str, Any]] = []
     feedback_served_outputs: List[Dict[str, Any]] = []
     feedback_events: List[Dict[str, Any]] = []
+    feedback_db_error: Optional[str] = None
     if str(db_url).strip():
-        with get_connection(db_url) as conn:
-            feedback_requests = _fetch_requests(
-                conn,
-                objectives=objectives,
-                limit_requests=limit_requests,
-                include_synthetic=include_synthetic,
-                include_injected_failures=include_injected_failures,
+        try:
+            with get_connection(db_url) as conn:
+                feedback_requests = _fetch_requests(
+                    conn,
+                    objectives=objectives,
+                    limit_requests=limit_requests,
+                    include_synthetic=include_synthetic,
+                    include_injected_failures=include_injected_failures,
+                )
+                request_ids = [str(row["request_id"]) for row in feedback_requests]
+                feedback_served_outputs = _fetch_served_outputs(conn, request_ids)
+                feedback_events = _fetch_feedback_events(conn, request_ids)
+        except Exception as exc:
+            feedback_db_error = str(exc)
+            logger.warning(
+                "Phase 2: could not load implicit feedback from DB (%s). Continuing with bootstrap/labeling only.",
+                feedback_db_error,
             )
-            request_ids = [str(row["request_id"]) for row in feedback_requests]
-            feedback_served_outputs = _fetch_served_outputs(conn, request_ids)
-            feedback_events = _fetch_feedback_events(conn, request_ids)
 
     feedback_support_summary = summarize_feedback_training_support(
         requests=feedback_requests,
@@ -260,7 +283,8 @@ def train_phase2_reranker(
             include_neutral_pairs=bootstrap_include_neutral_pairs,
         )
 
-    pairwise_rows = feedback_pairwise_rows + labeling_pairwise_rows + bootstrap_pairwise_rows
+    # Bootstrap first (dense cold-start signal), then implicit DB feedback, then optional labeling JSON.
+    pairwise_rows = bootstrap_pairwise_rows + feedback_pairwise_rows + labeling_pairwise_rows
     rows_by_objective = group_rows_by_objective(pairwise_rows)
 
     diagnostics_dir = output_bundle_dir / "diagnostics"
@@ -278,9 +302,9 @@ def train_phase2_reranker(
         objective_rows = rows_by_objective.get(objective, [])
         objective_summary = summarize_pairwise_rows(objective_rows)
         training_source_mix = {
+            "bootstrap_pair_count": int(bootstrap_by_objective.get(objective, 0)),
             "feedback_pair_count": int(feedback_by_objective.get(objective, 0)),
             "labeling_pair_count": int(labeling_by_objective.get(objective, 0)),
-            "bootstrap_pair_count": int(bootstrap_by_objective.get(objective, 0)),
         }
         objective_report: Dict[str, Any] = {
             "objective": objective,
@@ -324,6 +348,14 @@ def train_phase2_reranker(
         "ranker_id": LEARNED_RERANKER_ID,
         "label_policy_version": LEARNED_RERANKER_LABEL_POLICY_VERSION,
         "base_bundle_dir": str(base_bundle_dir),
+        "training_composition_policy": {
+            "row_concat_order": list(PHASE2_ROW_ORDER),
+            "description": (
+                "Pairwise training rows are built as: datamart bootstrap pairs, then implicit "
+                "UI feedback pairs from Postgres (if available), then optional labeling-session JSON."
+            ),
+        },
+        "feedback_db_error": feedback_db_error,
         "feedback_pairwise_summary": feedback_summary,
         "feedback_training_support": feedback_support_summary,
         "labeling_pairwise_summary": labeling_summary,
@@ -344,6 +376,7 @@ def train_phase2_reranker(
         "base_bundle_dir": str(base_bundle_dir),
         "trained_objectives": trained_objectives,
         "objective_reports": objective_reports,
+        "feedback_db_error": feedback_db_error,
         "feedback_pairwise_summary": feedback_summary,
         "feedback_training_support": feedback_support_summary,
         "labeling_pairwise_summary": labeling_summary,
@@ -415,7 +448,10 @@ def parse_args() -> argparse.Namespace:
         "--bootstrap-datamart-json",
         type=Path,
         default=None,
-        help="Optional datamart JSON to use as bootstrap pairwise supervision when explicit feedback is sparse.",
+        help=(
+            "Training datamart JSON for bootstrap pairwise supervision (primary volume; weak labels). "
+            "Combined with --db-url feedback and optional --labeling-session-json."
+        ),
     )
     parser.add_argument(
         "--bootstrap-target-source",

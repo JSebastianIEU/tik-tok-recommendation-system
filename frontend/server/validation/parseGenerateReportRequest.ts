@@ -11,6 +11,7 @@ import {
 } from "../contracts/query";
 
 export interface ParsedGenerateReportRequest {
+  asset_id?: string;
   seed_video_id: string;
   mentions: string[];
   hashtags: string[];
@@ -98,6 +99,10 @@ function parseSignalHints(value: unknown): CandidateSignalHints | null {
     return null;
   }
   const output: CandidateSignalHints = {};
+  const mutableOutput = output as Record<
+    keyof CandidateSignalHints,
+    CandidateSignalHints[keyof CandidateSignalHints] | undefined
+  >;
   for (const key of Object.keys(value)) {
     if (!(key in SIGNAL_HINT_SPECS)) {
       continue;
@@ -119,7 +124,7 @@ function parseSignalHints(value: unknown): CandidateSignalHints | null {
       if (spec.max !== undefined && raw > spec.max) {
         return null;
       }
-      output[typedKey] = raw;
+      mutableOutput[typedKey] = raw;
       continue;
     }
     if (typeof raw !== "string") {
@@ -129,7 +134,7 @@ function parseSignalHints(value: unknown): CandidateSignalHints | null {
     if (spec.maxLength !== undefined && normalized.length > spec.maxLength) {
       return null;
     }
-    output[typedKey] = normalized;
+    mutableOutput[typedKey] = normalized;
   }
   return output;
 }
@@ -216,10 +221,15 @@ export function parseGenerateReportRequest(body: unknown): ParseResult {
       ? body.language.trim().toLowerCase().slice(0, 8)
       : undefined;
 
+  const assetId =
+    typeof body.asset_id === "string" && body.asset_id.trim()
+      ? body.asset_id.trim().slice(0, 120)
+      : undefined;
+
   const seedVideoId =
     typeof body.seed_video_id === "string" && body.seed_video_id.trim()
       ? body.seed_video_id.trim().slice(0, 120)
-      : "s001";
+      : assetId ?? "s001";
 
   const signalHints = parseSignalHints(body.signal_hints);
   if (signalHints === null) {
@@ -229,6 +239,7 @@ export function parseGenerateReportRequest(body: unknown): ParseResult {
   return {
     ok: true,
     value: {
+      asset_id: assetId,
       seed_video_id: seedVideoId,
       mentions,
       hashtags,

@@ -6,7 +6,8 @@ import { buildApiUrl, MOCK_ONLY_MODE } from "./runtimeConfig";
 const REPORT_API_URL = buildApiUrl("/generate-report");
 
 export interface GenerateReportPayload {
-  seed_video_id: string;
+  asset_id?: string;
+  seed_video_id?: string;
   mentions: string[];
   hashtags: string[];
   description: string;
@@ -24,7 +25,7 @@ interface GenerateReportResponse {
 
 function fallbackToMock(payload: GenerateReportPayload): ReportOutput {
   return generateMockReport({
-    seedVideoId: payload.seed_video_id,
+    seedVideoId: payload.asset_id ?? payload.seed_video_id ?? "uploaded-asset",
     mentions: payload.mentions,
     hashtags: payload.hashtags,
     description: payload.description

@@ -1,5 +1,8 @@
 ## TikTok Scraper
 
+> Dependency note: the scraper has its own Python environment and requirements files.
+> Use `scraper/requirements.txt` for the scraper stack instead of the repo-root recommender requirements.
+
 This scraper supports both:
 
 - JSON-only collection (local files)

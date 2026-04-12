@@ -75,9 +75,6 @@
 | .github/workflows/ci.yml | 3 |
 | tests/test_validation.py | 2 |
 | tests/test_smoke.py | 2 |
-| src/retrieval/search.py | 2 |
-| src/retrieval/index.py | 2 |
-| src/retrieval/README.md | 2 |
 | src/research/sota_notes.md | 2 |
 | src/research/experiments.md | 2 |
 | src/research/README.md | 2 |
@@ -103,7 +100,7 @@
   - Modo estatico/mock-only disponible (fallback automatico).
 - **Pipeline (`src/`, `scripts/`)**
   - Validacion de datos mock implementada.
-  - Retrieval baseline TF-IDF implementado (`index.py`, `search.py`).
+  - *(Posterior al corte del informe)* el scaffold TF-IDF bajo `src/retrieval/` fue retirado; el retriever de produccion vive en `src/recommendation/learning/`.
   - Baseline analytics implementado (`baseline_stats.py`) con reporte Markdown.
 - **Webscraper**
   - **No implementado en este repo** al corte.
@@ -163,7 +160,6 @@
 - `src/baseline/README.md`
 - `src/baseline/report.md`
 - `src/data/README.md`
-- `src/retrieval/README.md`
 - `src/research/README.md`
 - `src/research/experiments.md`
 - `src/research/sota_notes.md`

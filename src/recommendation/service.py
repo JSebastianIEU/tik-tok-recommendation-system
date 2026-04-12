@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
-import os
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, Field
+
+from src.common.config import settings
 
 try:
     from fastapi import FastAPI, HTTPException
@@ -16,6 +17,7 @@ except Exception as exc:  # pragma: no cover - optional dependency
         "FastAPI is required for recommender service. Install fastapi and uvicorn."
     ) from exc
 
+from .corpus import CorpusResolver, CorpusScopeSpec
 from .learning.inference import (
     ArtifactCompatibilityError,
     RecommenderRuntime,
@@ -56,6 +58,16 @@ class RecommendationQueryInput(BaseModel):
     locale: Optional[str] = None
     content_type: Optional[str] = None
     as_of_time: Optional[datetime] = None
+    signal_hints: Dict[str, Any] = Field(default_factory=dict)
+
+
+class CorpusScope(BaseModel):
+    topic_key: Optional[str] = None
+    language: Optional[str] = None
+    locale: Optional[str] = None
+    content_type: Optional[str] = None
+    max_candidates: int = Field(default=500, ge=1, le=2000)
+    exclude_video_ids: List[str] = Field(default_factory=list)
 
 
 class RecommendationRequest(BaseModel):
@@ -63,6 +75,7 @@ class RecommendationRequest(BaseModel):
     as_of_time: datetime
     query: RecommendationQueryInput
     candidates: List[RecommendationCandidateInput] = Field(default_factory=list)
+    corpus_scope: Optional[CorpusScope] = None
     user_context: Dict[str, Any] = Field(default_factory=dict)
     language: Optional[str] = None
     locale: Optional[str] = None
@@ -94,10 +107,7 @@ class FabricExtractRequest(BaseModel):
 
 
 def _bundle_dir() -> Path:
-    configured = os.getenv("RECOMMENDER_BUNDLE_DIR", "").strip()
-    if configured:
-        return Path(configured)
-    return Path("artifacts/recommender/latest")
+    return Path(settings.recommender_bundle_dir)
 
 
 def _build_runtime() -> RecommenderRuntime:
@@ -111,7 +121,7 @@ def _build_runtime() -> RecommenderRuntime:
 
 
 def _load_fabric() -> FeatureFabric:
-    calibration_path = os.getenv("FABRIC_CALIBRATION_PATH", "").strip()
+    calibration_path = settings.fabric_calibration_path
     if not calibration_path:
         return FeatureFabric()
     path = Path(calibration_path)
@@ -126,7 +136,9 @@ def _load_fabric() -> FeatureFabric:
 
 app = FastAPI(title="Recommendation Service", version="v1")
 _runtime: Optional[RecommenderRuntime] = None
+_runtime_marker: Optional[Tuple[str, int]] = None
 _fabric = _load_fabric()
+_corpus_resolver = CorpusResolver()
 _metrics: Dict[str, Any] = {
     "recommendations_requests_total": 0,
     "recommendations_latency_ms": [],
@@ -161,69 +173,103 @@ def _latency_summary(values: List[float]) -> Dict[str, float]:
     }
 
 
+def _bundle_marker() -> Tuple[str, int]:
+    bundle_dir = _bundle_dir()
+    try:
+        resolved = str(bundle_dir.resolve())
+    except Exception:
+        resolved = str(bundle_dir)
+    manifest_path = bundle_dir / "manifest.json"
+    try:
+        manifest_mtime_ns = int(manifest_path.stat().st_mtime_ns)
+    except OSError:
+        manifest_mtime_ns = -1
+    return resolved, manifest_mtime_ns
+
+
+def _ensure_runtime(force_reload: bool = False) -> RecommenderRuntime:
+    global _runtime, _runtime_marker
+    marker = _bundle_marker()
+    if force_reload or _runtime is None or _runtime_marker != marker:
+        try:
+            runtime = _build_runtime()
+        except Exception:
+            _runtime = None
+            _runtime_marker = None
+            raise
+        _runtime = runtime
+        _runtime_marker = marker
+    return _runtime
+
+
 @app.get("/v1/health")
 def health() -> Dict[str, Any]:
-    global _runtime
-    if _runtime is None:
-        try:
-            _runtime = _build_runtime()
-        except Exception as error:
-            return {
-                "ok": False,
-                "status": "degraded",
-                "reason": str(error),
-            }
+    try:
+        runtime = _ensure_runtime()
+    except Exception as error:
+        return {
+            "ok": False,
+            "status": "degraded",
+            "reason": str(error),
+        }
     return {
         "ok": True,
         "status": "ready",
-        "bundle_dir": str(_runtime.bundle_dir),
+        "bundle_dir": str(runtime.bundle_dir),
     }
 
 
 @app.get("/v1/compatibility")
 def compatibility() -> Dict[str, Any]:
-    global _runtime
-    if _runtime is None:
-        try:
-            _runtime = _build_runtime()
-        except Exception as error:
-            raise HTTPException(
-                status_code=503,
-                detail={
-                    "error": "recommender_unavailable",
-                    "fallback_mode": True,
-                    "reason": str(error),
-                },
-            ) from error
-    return _runtime.compatibility_payload()
+    try:
+        runtime = _ensure_runtime()
+    except Exception as error:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "recommender_unavailable",
+                "fallback_mode": True,
+                "reason": str(error),
+            },
+        ) from error
+    return runtime.compatibility_payload()
 
 
 @app.post("/v1/recommendations")
 def recommendations(request: RecommendationRequest) -> Dict[str, Any]:
-    global _runtime
-    if _runtime is None:
-        try:
-            _runtime = _build_runtime()
-        except Exception as error:
-            raise HTTPException(
-                status_code=503,
-                detail={
-                    "error": "recommender_unavailable",
-                    "fallback_mode": True,
-                    "reason": str(error),
-                },
-            ) from error
+    try:
+        runtime = _ensure_runtime()
+    except Exception as error:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "recommender_unavailable",
+                "fallback_mode": True,
+                "reason": str(error),
+            },
+        ) from error
 
     try:
         _metrics["recommendations_requests_total"] = int(
             _metrics.get("recommendations_requests_total", 0)
         ) + 1
         started = time.perf_counter()
-        payload = _runtime.recommend(
+        resolved_candidates = [item.model_dump(mode="python") for item in request.candidates]
+        if not resolved_candidates and request.corpus_scope is not None:
+            scope = CorpusScopeSpec(
+                topic_key=request.corpus_scope.topic_key,
+                language=request.corpus_scope.language,
+                locale=request.corpus_scope.locale,
+                content_type=request.corpus_scope.content_type,
+                max_candidates=request.corpus_scope.max_candidates,
+                exclude_video_ids=request.corpus_scope.exclude_video_ids,
+            )
+            resolved_candidates = _corpus_resolver.resolve_candidates(scope)
+        payload = runtime.recommend(
             objective=request.objective,
             as_of_time=request.as_of_time,
             query=request.query.model_dump(mode="python"),
-            candidates=[item.model_dump(mode="python") for item in request.candidates],
+            candidates=resolved_candidates,
             user_context=request.user_context,
             top_k=request.top_k,
             retrieve_k=request.retrieve_k,
@@ -380,10 +426,7 @@ class HashtagSuggestRequest(BaseModel):
 
 
 def _hashtag_recommender_dir() -> Path:
-    configured = os.getenv("HASHTAG_RECOMMENDER_DIR", "").strip()
-    if configured:
-        return Path(configured)
-    return Path("artifacts/hashtag_recommender")
+    return Path(settings.hashtag_recommender_dir)
 
 
 _hashtag_recommender = None

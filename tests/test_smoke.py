@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from src.common.validation import load_jsonl
-from src.retrieval.index import RetrievalIndex
+from src.recommendation.learning.objectives import map_objective
 
 
 def test_repo_skeleton_integrity():
@@ -15,11 +15,10 @@ def test_repo_skeleton_integrity():
 
 
 def test_imports_and_basic_instantiation():
-    """
-    Smoke test: verify core modules import and basic objects can be created.
-    """
-    index = RetrievalIndex()
-    assert index is not None
+    """Smoke test: core recommender modules import and behave as expected."""
+    requested, effective = map_objective("community")
+    assert requested == "community"
+    assert effective == "engagement"
 
 
 def test_mock_data_has_50_records():

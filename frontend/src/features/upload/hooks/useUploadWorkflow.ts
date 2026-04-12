@@ -83,17 +83,32 @@ function wait(ms: number): Promise<void> {
 
 function buildSignalHints(formValues: UploadFormValues): SignalHintsPayload {
   return {
-    transcript_text: formValues.description,
-    ocr_text: "",
-    estimated_scene_cuts: undefined,
-    fps: undefined,
-    visual_motion_score: undefined,
-    speech_seconds: undefined,
-    music_seconds: undefined,
-    tempo_bpm: undefined,
-    audio_energy: undefined,
-    loudness_lufs: undefined
+    transcript_text: formValues.description.trim() || undefined
   };
+}
+
+function mergeSignalHints(
+  ...sources: Array<SignalHintsPayload | undefined>
+): SignalHintsPayload | undefined {
+  const merged: SignalHintsPayload = {};
+
+  for (const source of sources) {
+    if (!source) {
+      continue;
+    }
+    for (const [key, value] of Object.entries(source)) {
+      if (value === undefined || value === null) {
+        continue;
+      }
+      if (typeof value === "string" && !value.trim()) {
+        continue;
+      }
+      const typedKey = key as keyof SignalHintsPayload;
+      merged[typedKey] = value;
+    }
+  }
+
+  return Object.keys(merged).length > 0 ? merged : undefined;
 }
 
 export function useUploadWorkflow(
@@ -243,6 +258,7 @@ export function useUploadWorkflow(
     processingFlow.startProcessing({
       task: async (): Promise<UploadTaskResult> => {
         const taskStartedAt = Date.now();
+        const requestSignalHints = buildSignalHints(formValues);
 
         const analysis = await analysisService.analyzeVideo({
           file: selectedFile,
@@ -254,8 +270,12 @@ export function useUploadWorkflow(
           content_type: formValues.content_type,
           primary_cta: formValues.primary_cta,
           locale: formValues.locale,
-          signal_hints: buildSignalHints(formValues)
+          signal_hints: requestSignalHints
         });
+        const mergedSignalHints = mergeSignalHints(
+          analysis.signal_hints,
+          requestSignalHints
+        );
 
         const elapsedMs = Date.now() - taskStartedAt;
         const remainingBeforeReportStep = Math.max(
@@ -268,7 +288,7 @@ export function useUploadWorkflow(
         }
 
         const report = await generateReport({
-          seed_video_id: "s001",
+          asset_id: analysis.asset_id,
           mentions: formValues.mentions,
           hashtags: formValues.hashtags,
           description: formValues.description,
@@ -277,7 +297,7 @@ export function useUploadWorkflow(
           content_type: formValues.content_type,
           primary_cta: formValues.primary_cta,
           locale: formValues.locale,
-          signal_hints: buildSignalHints(formValues)
+          signal_hints: mergedSignalHints
         });
 
         return { analysis, report };

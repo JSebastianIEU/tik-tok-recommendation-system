@@ -32,12 +32,14 @@ import {
   RECOMMENDER_FEEDBACK_ENABLED,
   RECOMMENDER_FALLBACK_BUNDLE_DIR,
   RECOMMENDER_FALLBACK_CACHE_TTL_MS,
-  SERVER_PORT
+  SERVER_PORT,
+  UPLOADED_ASSET_DIR,
+  UPLOAD_MAX_BYTES
 } from "./config";
 import { getSeedVideo } from "../src/services/data/selectDemoSlices";
 import type { DemoVideoRecord } from "../src/services/data/types";
 import type { ReportOutput } from "../src/features/report/types";
-import { loadDatasetFromFile } from "./dataset/loadDatasetFromFile";
+import { loadCandidateCorpus, type CandidateCorpus } from "./corpus/loadCandidateCorpus";
 import { buildLocalBaselineReport } from "./fallback/buildLocalBaselineReport";
 import { buildLocalChatAnswer } from "./fallback/buildLocalChatAnswer";
 import {
@@ -59,8 +61,12 @@ import {
   requestFabricSignals,
   requestCompatibility,
   requestRecommendations,
+  requestHashtagSuggestions,
+  type CorpusScopePayload,
   type FabricExtractResponsePayload,
+  type HashtagSuggestion,
   type RecommenderCandidatePayload,
+  type RecommenderQueryPayload,
   type RecommenderRequestPayload,
   type RecommenderResult
 } from "./recommender/client";
@@ -77,11 +83,13 @@ import {
 import { classifyRecommenderFailure } from "./recommender/fallbackReason";
 import { buildRoutingEnvelope, type RoutingRequestInput } from "./recommender/routing";
 import {
-  FeedbackEventStore,
-  buildRequestHash,
-  type CandidateEventRecord,
-  type ServedOutputRecord
-} from "./feedback/store";
+  ingestUploadedVideo,
+  mergeCandidateSignalHints,
+  readUploadedAssetRecord,
+  type UploadedAssetRecord
+} from "./uploads/assetStore";
+import { createUploadAnalysisProvider } from "./uploads/providerFactory";
+import { FeedbackGateway } from "./feedback/gateway";
 import {
   LabelingSessionStore,
   type LabelingReviewLabel
@@ -104,6 +112,7 @@ const deepSeekClient = DEEPSEEK_ENABLED
       baseURL: DEEPSEEK_BASE_URL
     })
   : null;
+const uploadAnalysisProvider = createUploadAnalysisProvider();
 
 app.use(
   cors({
@@ -116,6 +125,46 @@ app.use(
   })
 );
 app.use(express.json({ limit: "1mb" }));
+
+app.post(
+  "/upload-video",
+  express.raw({
+    type: "application/octet-stream",
+    limit: UPLOAD_MAX_BYTES
+  }),
+  async (request, response) => {
+    try {
+      if (!Buffer.isBuffer(request.body) || request.body.byteLength === 0) {
+        response.status(400).json({ error: "Upload body must contain video bytes." });
+        return;
+      }
+
+      const fileName = request.header("x-file-name")?.trim() || "upload.mp4";
+      const mimeType =
+        request.header("x-file-type")?.trim() ||
+        request.header("content-type")?.trim() ||
+        "application/octet-stream";
+
+      if (!mimeType.toLowerCase().startsWith("video/")) {
+        response.status(400).json({ error: "Uploaded file must declare a video mime type." });
+        return;
+      }
+
+      const analysis = await ingestUploadedVideo({
+        fileBuffer: request.body,
+        fileName,
+        mimeType,
+        uploadsDir: UPLOADED_ASSET_DIR,
+        analysisProvider: uploadAnalysisProvider
+      });
+
+      response.status(201).json(analysis);
+    } catch (error) {
+      console.error("Upload analysis failed:", error);
+      response.status(500).json({ error: "Failed to analyze uploaded video." });
+    }
+  }
+);
 
 const recommenderBreakers = new RecommenderCircuitBreakers({
   minRequests: RECOMMENDER_BREAKER_MIN_REQUESTS,
@@ -130,7 +179,7 @@ const fallbackBundleStore = new FallbackBundleStore(
   RECOMMENDER_FALLBACK_BUNDLE_DIR,
   RECOMMENDER_FALLBACK_CACHE_TTL_MS
 );
-const feedbackStore = new FeedbackEventStore({
+const feedbackGateway = new FeedbackGateway({
   enabled: RECOMMENDER_FEEDBACK_ENABLED,
   dbUrl: RECOMMENDER_FEEDBACK_DB_URL
 });
@@ -282,6 +331,58 @@ function getCombinedCandidates(
   return dedupeByVideoId(filtered);
 }
 
+function resolveSeedRecord(
+  corpus: CandidateCorpus,
+  seedVideoId: string
+): DemoVideoRecord | undefined {
+  const normalizedSeedVideoId = seedVideoId.trim();
+  if (normalizedSeedVideoId) {
+    return corpus.byVideoId.get(normalizedSeedVideoId);
+  }
+  if (corpus.provider === "demo") {
+    return getSeedVideo(corpus.records) ?? undefined;
+  }
+  return undefined;
+}
+
+function selectCandidatesForReport(params: {
+  corpus: CandidateCorpus;
+  candidates: DemoVideoRecord[];
+  recommenderResult: RecommenderResult;
+  limit?: number;
+}): DemoVideoRecord[] {
+  const limit = Math.max(1, params.limit ?? 24);
+  const selected: DemoVideoRecord[] = [];
+  const seen = new Set<string>();
+
+  if (params.recommenderResult.ok) {
+    for (const item of params.recommenderResult.payload.items) {
+      const candidate = params.corpus.byVideoId.get(item.candidate_id);
+      if (!candidate || seen.has(candidate.video_id)) {
+        continue;
+      }
+      selected.push(candidate);
+      seen.add(candidate.video_id);
+      if (selected.length >= limit) {
+        return selected;
+      }
+    }
+  }
+
+  for (const candidate of params.candidates) {
+    if (seen.has(candidate.video_id)) {
+      continue;
+    }
+    selected.push(candidate);
+    seen.add(candidate.video_id);
+    if (selected.length >= limit) {
+      break;
+    }
+  }
+
+  return selected;
+}
+
 function mapObjectiveForRecommender(value: string | undefined): string {
   const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
   if (!normalized) {
@@ -318,6 +419,7 @@ function resolveTrafficMeta(
 }
 
 function buildExperimentUnitKey(params: {
+  assetId?: string;
   seedVideoId?: string;
   description: string;
   hashtags: string[];
@@ -326,6 +428,10 @@ function buildExperimentUnitKey(params: {
   locale?: string;
   contentType?: string;
 }): string {
+  const assetId = (params.assetId || "").trim();
+  if (assetId) {
+    return `asset_id::${assetId.toLowerCase()}`;
+  }
   const seed = (params.seedVideoId || "").trim();
   if (seed) {
     return `seed_video_id::${seed.toLowerCase()}`;
@@ -343,157 +449,117 @@ function buildExperimentUnitKey(params: {
   );
 }
 
-function toCandidateEventsFromResponse(params: {
-  requestId: string;
-  payload: Record<string, unknown>;
-}): CandidateEventRecord[] {
-  const out: CandidateEventRecord[] = [];
-  const debug = params.payload.debug as Record<string, unknown> | undefined;
-  const retrieved = Array.isArray(debug?.retrieved_universe)
-    ? (debug?.retrieved_universe as Array<Record<string, unknown>>)
-    : [];
-  for (const item of retrieved) {
-    const candidateId = String(item.candidate_id || "").trim();
-    if (!candidateId) {
-      continue;
-    }
-    out.push({
-      requestId: params.requestId,
-      candidateId,
-      stage: "retrieved_universe",
-      retrievedRank:
-        typeof item.retrieved_rank === "number" ? Math.round(item.retrieved_rank) : null,
-      finalRank: null,
-      selected: false,
-      retrievalBranchScores:
-        (item.retrieval_branch_scores as Record<string, number> | undefined) || {},
-      similarity: (item.similarity as Record<string, number> | undefined) || {},
-      scoreRaw: null,
-      scoreCalibrated: null,
-      policyAdjustedScore: null,
-      policyTrace: null,
-      calibrationTrace: null,
-      explainabilityAvailable: false
-    });
+function normalizeAudienceForQuery(
+  value: unknown
+): string | Record<string, unknown> | undefined {
+  if (typeof value === "string") {
+    const normalized = value.trim();
+    return normalized || undefined;
   }
-
-  const rankingUniverse = Array.isArray(debug?.ranking_universe)
-    ? (debug?.ranking_universe as Array<Record<string, unknown>>)
-    : [];
-  for (const item of rankingUniverse) {
-    const candidateId = String(item.candidate_id || "").trim();
-    if (!candidateId) {
-      continue;
-    }
-    const policyTrace =
-      (item.policy_trace as Record<string, unknown> | undefined) || {};
-    const portfolioTrace =
-      (item.portfolio_trace as Record<string, unknown> | undefined) || null;
-    out.push({
-      requestId: params.requestId,
-      candidateId,
-      stage: "ranked_universe",
-      retrievedRank:
-        typeof item.retrieved_rank === "number" ? Math.round(item.retrieved_rank) : null,
-      finalRank: typeof item.final_rank === "number" ? Math.round(item.final_rank) : null,
-      selected: Boolean(item.selected),
-      retrievalBranchScores:
-        (item.retrieval_branch_scores as Record<string, number> | undefined) || {},
-      similarity: (item.similarity as Record<string, number> | undefined) || {},
-      scoreRaw: typeof item.score_raw === "number" ? item.score_raw : null,
-      scoreCalibrated: typeof item.score_calibrated === "number" ? item.score_calibrated : null,
-      policyAdjustedScore:
-        typeof item.policy_adjusted_score === "number" ? item.policy_adjusted_score : null,
-      policyTrace:
-        portfolioTrace && Object.keys(portfolioTrace).length > 0
-          ? { ...policyTrace, portfolio_trace: portfolioTrace }
-          : policyTrace,
-      calibrationTrace: (item.calibration_trace as Record<string, unknown> | undefined) || null,
-      explainabilityAvailable: Boolean(item.explainability_available)
-    });
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
   }
-  return out;
+  return undefined;
 }
 
-function toServedOutputEvents(params: {
-  requestId: string;
-  payload: Record<string, unknown>;
-}): ServedOutputRecord[] {
-  const items = Array.isArray(params.payload.items)
-    ? (params.payload.items as Array<Record<string, unknown>>)
-    : [];
-  const out: ServedOutputRecord[] = [];
-  for (const item of items) {
-    const candidateId = String(item.candidate_id || "").trim();
-    const rank = Number(item.rank);
-    const score = Number(item.score);
-    if (!candidateId || !Number.isFinite(rank) || !Number.isFinite(score)) {
-      continue;
-    }
-    out.push({
-      requestId: params.requestId,
-      candidateId,
-      rank: Math.round(rank),
-      score,
-      metadata: {
-        served_rank: Math.round(rank),
-        visible_position: Math.round(rank),
-        was_exposed: true,
-        author_id:
-          typeof item.author_id === "string" && item.author_id.trim()
-            ? item.author_id.trim()
-            : null,
-        topic_key:
-          typeof item.topic_key === "string" && item.topic_key.trim()
-            ? item.topic_key.trim()
-            : null,
-        content_type:
-          typeof item.content_type === "string" && item.content_type.trim()
-            ? item.content_type.trim()
-            : null,
-        language:
-          typeof item.language === "string" && item.language.trim()
-            ? item.language.trim()
-            : null,
-        locale:
-          typeof item.locale === "string" && item.locale.trim()
-            ? item.locale.trim()
-            : null,
-        hashtags: Array.isArray(item.hashtags) ? item.hashtags : [],
-        keywords: Array.isArray(item.keywords) ? item.keywords : [],
-        retrieval_branch_scores:
-          (item.retrieval_branch_scores as Record<string, unknown> | undefined) || {},
-        similarity: (item.similarity as Record<string, unknown> | undefined) || {},
-        selected_ranker_id: item.selected_ranker_id,
-        confidence: item.confidence,
-        user_affinity_score: item.user_affinity_score,
-        creator_retrieval_score: item.creator_retrieval_score,
-        user_affinity_trace:
-          (item.user_affinity_trace as Record<string, unknown> | undefined) || {},
-        creator_retrieval_trace:
-          (item.creator_retrieval_trace as Record<string, unknown> | undefined) || {},
-        portfolio_trace: (item.portfolio_trace as Record<string, unknown> | undefined) || {},
-        portfolio_mode:
-          typeof params.payload.portfolio_mode === "boolean"
-            ? params.payload.portfolio_mode
-            : false,
-        portfolio_metadata:
-          (params.payload.portfolio_metadata as Record<string, unknown> | undefined) || {},
-        retrieval_personalization_metadata:
-          (params.payload.retrieval_personalization_metadata as
-            | Record<string, unknown>
-            | undefined) || {},
-        objective_model: (item.trace as Record<string, unknown> | undefined)?.objective_model ?? null,
-        score_components:
-          (item.score_components as Record<string, unknown> | undefined) || {},
-        support_level: item.support_level ?? null,
-        support_score: item.support_score ?? null,
-        ranking_reasons: Array.isArray(item.ranking_reasons) ? item.ranking_reasons : []
-      }
-    });
-  }
-  return out;
+function buildRecommenderQueryPayload(params: {
+  queryId?: string;
+  description: string;
+  hashtags: string[];
+  mentions: string[];
+  creatorId?: string;
+  audience?: unknown;
+  primaryCta?: string;
+  language?: string;
+  locale?: string;
+  contentType?: string;
+  asOfTimeIso: string;
+  signalHints?: Record<string, unknown>;
+  additionalTextFragments?: string[];
+  topicKey?: string;
+}): RecommenderQueryPayload {
+  const signalHints = params.signalHints;
+  const transcriptText =
+    typeof signalHints?.transcript_text === "string" ? signalHints.transcript_text.trim() : "";
+  const ocrText =
+    typeof signalHints?.ocr_text === "string" ? signalHints.ocr_text.trim() : "";
+  const text = [
+    params.description,
+    ...params.hashtags,
+    ...params.mentions,
+    transcriptText,
+    ocrText,
+    ...(params.additionalTextFragments ?? [])
+  ]
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .join(" ")
+    .trim();
+
+  return {
+    ...(params.queryId ? { query_id: params.queryId } : {}),
+    description: params.description,
+    hashtags: params.hashtags,
+    mentions: params.mentions,
+    ...(text ? { text } : {}),
+    topic_key:
+      params.topicKey?.trim() ||
+      params.hashtags[0]?.replace(/^#/, "") ||
+      params.contentType?.trim().toLowerCase() ||
+      "general",
+    author_id: params.creatorId,
+    audience: normalizeAudienceForQuery(params.audience),
+    primary_cta: params.primaryCta,
+    language: params.language,
+    locale: params.locale,
+    content_type: params.contentType,
+    as_of_time: params.asOfTimeIso,
+    ...(signalHints ? { signal_hints: signalHints } : {})
+  };
 }
+
+function buildUploadedAssetQueryPayload(params: {
+  assetRecord: UploadedAssetRecord;
+  description: string;
+  hashtags: string[];
+  mentions: string[];
+  audience?: unknown;
+  primaryCta?: string;
+  language?: string;
+  locale?: string;
+  contentType?: string;
+  asOfTimeIso: string;
+  signalHints?: Record<string, unknown>;
+}): RecommenderQueryPayload {
+  const asset = params.assetRecord.asset;
+  const additionalTextFragments = [
+    asset.orientation !== "unknown" ? `${asset.orientation} video` : "",
+    asset.has_audio ? "audio track present" : "silent video",
+    typeof asset.duration_seconds === "number"
+      ? `${Math.round(asset.duration_seconds)} second clip`
+      : ""
+  ].filter(Boolean);
+
+  return buildRecommenderQueryPayload({
+    queryId: params.assetRecord.asset_id,
+    description: params.description,
+    hashtags: params.hashtags,
+    mentions: params.mentions,
+    audience: params.audience,
+    primaryCta: params.primaryCta,
+    language: params.language,
+    locale: params.locale,
+    contentType: params.contentType,
+    asOfTimeIso: params.asOfTimeIso,
+    signalHints: params.signalHints,
+    additionalTextFragments,
+    topicKey:
+      params.hashtags[0]?.replace(/^#/, "") ||
+      params.contentType?.trim().toLowerCase() ||
+      "uploaded_asset"
+  });
+}
+
 
 async function buildFallbackItemsFromBundle(params: {
   objective: string | undefined;
@@ -799,26 +865,6 @@ function buildRecommenderCandidates(
   });
 }
 
-function applyRecommenderOrder(
-  candidates: DemoVideoRecord[],
-  recommenderResult: RecommenderResult
-): DemoVideoRecord[] {
-  if (!recommenderResult.ok || recommenderResult.payload.items.length === 0) {
-    return candidates;
-  }
-  const rankById = new Map(
-    recommenderResult.payload.items.map((item, index) => [item.candidate_id, index + 1])
-  );
-  return [...candidates].sort((a, b) => {
-    const rankA = rankById.get(a.video_id) ?? Number.MAX_SAFE_INTEGER;
-    const rankB = rankById.get(b.video_id) ?? Number.MAX_SAFE_INTEGER;
-    if (rankA === rankB) {
-      return b.metrics.views - a.metrics.views;
-    }
-    return rankA - rankB;
-  });
-}
-
 function summarizeCommentTrace(recommenderResult: RecommenderResult): string | undefined {
   if (!recommenderResult.ok) {
     return undefined;
@@ -985,36 +1031,40 @@ function buildExplainabilitySection(
   };
 }
 
-function normalizeTagValues(values: string[]): string[] {
-  return values
-    .map((value) => value.trim().replace(/^#/, ""))
-    .filter(Boolean)
-    .map((value) => `#${value}`);
-}
+const STOP_WORDS = new Set([
+  "a", "an", "the", "and", "or", "but", "is", "are", "was", "were", "be",
+  "been", "being", "have", "has", "had", "do", "does", "did", "will", "would",
+  "shall", "should", "may", "might", "must", "can", "could", "to", "of", "in",
+  "for", "on", "with", "at", "by", "from", "as", "into", "through", "during",
+  "before", "after", "about", "between", "under", "above", "up", "down", "out",
+  "off", "over", "then", "than", "so", "no", "not", "only", "very", "just",
+  "also", "it", "its", "i", "me", "my", "we", "our", "you", "your", "he",
+  "she", "they", "them", "this", "that", "these", "those", "am", "if", "how",
+  "what", "when", "where", "who", "which", "all", "each", "every", "both",
+  "few", "more", "most", "other", "some", "such", "too", "here", "there",
+]);
 
-function buildUploadedSeedRecord(
-  sourceSeed: DemoVideoRecord,
-  description: string,
-  hashtags: string[]
-): DemoVideoRecord {
-  const normalizedHashtags = normalizeTagValues(hashtags);
-  const fallbackCaption = sourceSeed.caption.trim();
-  const nextCaption = description.trim() || fallbackCaption;
+function deriveExtractedKeywords(hashtags: string[], description: string): string[] {
+  const fromHashtags = hashtags
+    .map((tag) => tag.replace(/^#/, "").trim().toLowerCase())
+    .filter((tag) => tag.length >= 2);
 
-  return {
-    ...sourceSeed,
-    caption: nextCaption,
-    hashtags: normalizedHashtags.length > 0 ? normalizedHashtags : sourceSeed.hashtags.slice(0, 4),
-    keywords: [...HARD_CODED_EXTRACTED_KEYWORDS],
-    comments: [],
-    video_url: "",
-    metrics: {
-      views: 0,
-      likes: 0,
-      comments_count: 0,
-      shares: 0
+  const fromDescription = description
+    .toLowerCase()
+    .replace(/[^\w\s]/g, " ")
+    .split(/\s+/)
+    .filter((word) => word.length >= 3 && !STOP_WORDS.has(word));
+
+  const seen = new Set<string>();
+  const merged: string[] = [];
+  for (const kw of [...fromHashtags, ...fromDescription]) {
+    if (!seen.has(kw)) {
+      seen.add(kw);
+      merged.push(kw);
     }
-  };
+    if (merged.length >= 8) break;
+  }
+  return merged;
 }
 
 async function normalizeAndEnrichReport(
@@ -1025,11 +1075,15 @@ async function normalizeAndEnrichReport(
     note?: string;
     commentSummary?: string;
   },
-  explainabilitySection?: ReportOutput["explainability"]
+  explainabilitySection?: ReportOutput["explainability"],
+  extractedKeywords?: string[]
 ): Promise<ReportOutput> {
+  const keywords = extractedKeywords && extractedKeywords.length > 0
+    ? extractedKeywords
+    : [...HARD_CODED_EXTRACTED_KEYWORDS];
   const normalized = normalizeReportOutput(report, {
     candidatesK: candidates.length,
-    extractedKeywords: [...HARD_CODED_EXTRACTED_KEYWORDS],
+    extractedKeywords: keywords,
     modelLabel: DEEPSEEK_MODEL
   });
 
@@ -1103,32 +1157,6 @@ function extractCreatorId(record: DemoVideoRecord | undefined): string | undefin
     return rawAuthor.trim().replace(/^@/, "").toLowerCase();
   }
   return undefined;
-}
-
-async function buildCreatorUserContext(params: {
-  creatorId?: string;
-  objective?: string;
-}): Promise<Record<string, unknown> | undefined> {
-  const creatorId =
-    typeof params.creatorId === "string" && params.creatorId.trim()
-      ? params.creatorId.trim().toLowerCase()
-      : "";
-  if (!creatorId || !feedbackStore.isReady()) {
-    return undefined;
-  }
-  try {
-    return (
-      (await feedbackStore.loadCreatorPreferenceProfile({
-        creatorId,
-        objectiveEffective: mapObjectiveForRecommender(params.objective),
-        historyDays: 180,
-        maxFeedbackRows: 750
-      })) as Record<string, unknown> | null
-    ) ?? undefined;
-  } catch (error) {
-    console.error("creator_preference_profile_failed", error);
-    return undefined;
-  }
 }
 
 async function refreshCompatibility(
@@ -1230,7 +1258,12 @@ async function fetchRecommenderResult(params: {
   hashtags: string[];
   mentions: string[];
   candidates: DemoVideoRecord[];
+  supplyCandidatesToPython?: boolean;
+  corpusScope?: CorpusScopePayload;
   asOfTimeIso: string;
+  query?: RecommenderQueryPayload;
+  audience?: unknown;
+  primaryCta?: string;
   language?: string;
   locale?: string;
   contentType?: string;
@@ -1371,26 +1404,24 @@ async function fetchRecommenderResult(params: {
   const payload: RecommenderRequestPayload = {
     objective: requestedObjective,
     as_of_time: params.asOfTimeIso,
-    query: {
-      description: params.description,
-      hashtags: params.hashtags,
-      mentions: params.mentions,
-      text: [params.description, ...params.hashtags, ...params.mentions].join(" ").trim(),
-      topic_key: params.hashtags[0]?.replace(/^#/, "") || "general",
-      author_id: params.creatorId,
-      audience: params.audience,
-      primary_cta: params.primaryCta,
-      language: params.language,
-      locale: params.locale,
-      content_type: params.contentType,
-      as_of_time: params.asOfTimeIso
-    },
-    candidates: buildRecommenderCandidates(params.candidates, params.asOfTimeIso),
+    query:
+      params.query ??
+      buildRecommenderQueryPayload({
+        description: params.description,
+        hashtags: params.hashtags,
+        mentions: params.mentions,
+        creatorId: params.creatorId,
+        audience: params.audience,
+        primaryCta: params.primaryCta,
+        language: params.language,
+        locale: params.locale,
+        contentType: params.contentType,
+        asOfTimeIso: params.asOfTimeIso
+      }),
     user_context: params.userContext,
     language: params.language,
     locale: params.locale,
     content_type: params.contentType,
-    candidate_ids: params.candidateIds,
     policy_overrides: params.policyOverrides,
     portfolio: params.portfolio,
     graph_controls: params.graphControls,
@@ -1401,6 +1432,16 @@ async function fetchRecommenderResult(params: {
     retrieve_k: Math.max(1, params.retrieveK ?? 200),
     debug: true
   };
+  if (params.supplyCandidatesToPython === true) {
+    payload.candidates = buildRecommenderCandidates(params.candidates, params.asOfTimeIso);
+  } else if (params.corpusScope) {
+    payload.corpus_scope = params.corpusScope;
+  } else {
+    payload.candidates = buildRecommenderCandidates(params.candidates, params.asOfTimeIso);
+  }
+  if (params.candidateIds && params.candidateIds.length > 0) {
+    payload.candidate_ids = params.candidateIds;
+  }
   const requestTimeoutMs =
     budgets.network + budgets.retrieval + budgets.ranking + budgets.explainability + budgets.buffer;
   const result = await requestRecommendations(payload, { timeoutMs: requestTimeoutMs });
@@ -1858,10 +1899,49 @@ app.post("/recommendations", async (request, response) => {
     const requestReceivedAt = new Date().toISOString();
     const traceId = requestId;
     const trafficMeta = resolveTrafficMeta(body.traffic);
+    const assetRecord = body.asset_id
+      ? await readUploadedAssetRecord(UPLOADED_ASSET_DIR, body.asset_id)
+      : null;
+    if (body.asset_id && !assetRecord) {
+      response.status(404).json({ error: "Uploaded asset was not found." });
+      return;
+    }
+    const mergedSignalHints = mergeCandidateSignalHints(
+      assetRecord?.signal_hints,
+      body.signal_hints
+    );
+    const isUploadedQuery = Boolean(body.asset_id && assetRecord);
+    const uploadedAssetRecord = isUploadedQuery
+      ? (assetRecord as UploadedAssetRecord)
+      : undefined;
+    const effectiveReferenceId = body.asset_id ?? body.seed_video_id;
+    const queryPayload = isUploadedQuery
+      ? buildUploadedAssetQueryPayload({
+          assetRecord: uploadedAssetRecord,
+          description: body.description,
+          hashtags: body.hashtags,
+          mentions: body.mentions,
+          audience: body.audience,
+          primaryCta: body.primary_cta,
+          language:
+            body.language ??
+            (typeof body.locale === "string"
+              ? body.locale.split("-")[0]?.toLowerCase()
+              : undefined),
+          locale: body.locale,
+          contentType: body.content_type,
+          asOfTimeIso: body.as_of_time,
+          signalHints:
+            mergedSignalHints && typeof mergedSignalHints === "object"
+              ? (mergedSignalHints as Record<string, unknown>)
+              : undefined
+        })
+      : undefined;
     const experimentAssignment = buildExperimentAssignment({
       objectiveRequested: body.objective,
       assignmentUnit: buildExperimentUnitKey({
-        seedVideoId: body.seed_video_id,
+        assetId: body.asset_id,
+        seedVideoId: isUploadedQuery ? undefined : body.seed_video_id,
         description: body.description,
         hashtags: body.hashtags,
         mentions: body.mentions,
@@ -1889,38 +1969,68 @@ app.post("/recommendations", async (request, response) => {
       }
     });
     const resolvedSignals = await resolveCandidateSignals({
-      videoId: body.seed_video_id || "uploaded-seed",
+      videoId: effectiveReferenceId || "uploaded-seed",
       asOfTime: body.as_of_time,
       description: body.description,
       hashtags: body.hashtags,
       keywords: body.hashtags,
       contentType: body.content_type,
       signalHints:
-        body.signal_hints && typeof body.signal_hints === "object"
-          ? (body.signal_hints as Record<string, unknown>)
+        mergedSignalHints && typeof mergedSignalHints === "object"
+          ? (mergedSignalHints as Record<string, unknown>)
           : undefined
     });
     const candidateSignals = resolvedSignals.signals;
     response.setHeader("x-signal-source", resolvedSignals.source);
+    if (body.asset_id) {
+      response.setHeader("x-upload-asset-id", body.asset_id);
+    }
 
-    const dataset = await loadDatasetFromFile();
-    if (dataset.length === 0) {
-      response.status(400).json({ error: "Local dataset is empty or invalid." });
+    const corpus = await loadCandidateCorpus();
+    if (corpus.records.length === 0) {
+      response.status(400).json({ error: "Candidate corpus is empty or invalid." });
       return;
     }
-    const seedVideoId = body.seed_video_id;
-    const seedRecord =
-      dataset.find((record) => record.video_id === seedVideoId) ?? getSeedVideo(dataset);
+    response.setHeader("x-corpus-provider", corpus.provider);
+    const seedVideoId = isUploadedQuery ? "" : body.seed_video_id;
+    const seedRecord = isUploadedQuery
+      ? undefined
+      : resolveSeedRecord(corpus, seedVideoId);
+    if (!isUploadedQuery && !seedRecord) {
+      response.status(404).json({ error: "Seed video was not found in the candidate corpus." });
+      return;
+    }
     const creatorId = extractCreatorId(seedRecord);
-    const userContext = await buildCreatorUserContext({
-      creatorId,
-      objective: body.objective
-    });
-    const candidates = getCombinedCandidates(dataset, seedVideoId);
+    const userContext = isUploadedQuery
+      ? undefined
+      : await feedbackGateway.getCreatorContext({
+          creatorId,
+          objective: body.objective,
+          mapObjective: mapObjectiveForRecommender
+        });
+    const candidates = getCombinedCandidates(corpus.records, seedVideoId);
     if (candidates.length === 0) {
       response.status(400).json({ error: "No comparable candidates were found." });
       return;
     }
+
+    const effectiveLanguage =
+      body.language ??
+      (typeof body.locale === "string" ? body.locale.split("-")[0]?.toLowerCase() : undefined);
+    const usePythonCorpus = corpus.retrievalMode === "python_bundle";
+    const corpusScope: CorpusScopePayload | undefined = usePythonCorpus
+      ? {
+          language: effectiveLanguage,
+          locale: body.locale,
+          content_type: body.content_type,
+          topic_key:
+            body.hashtags[0]?.replace(/^#/, "") ||
+            body.content_type ||
+            undefined,
+          max_candidates: Math.max(1, body.retrieve_k ?? 200),
+          exclude_video_ids: isUploadedQuery ? [] : seedVideoId ? [seedVideoId] : []
+        }
+      : undefined;
 
     const recommenderAttempt = await fetchRecommenderResult({
       requestId,
@@ -1929,16 +2039,21 @@ app.post("/recommendations", async (request, response) => {
       hashtags: body.hashtags,
       mentions: body.mentions,
       candidates,
+      supplyCandidatesToPython: corpus.retrievalMode === "supplied_candidates",
+      corpusScope,
       asOfTimeIso: body.as_of_time,
-      language:
-        body.language ??
-        (typeof body.locale === "string" ? body.locale.split("-")[0]?.toLowerCase() : undefined),
+      query: queryPayload,
+      audience: body.audience,
+      primaryCta: body.primary_cta,
+      language: effectiveLanguage,
       locale: body.locale,
       contentType: body.content_type,
       candidateIds:
         body.candidate_ids.length > 0
           ? body.candidate_ids
-          : candidates.map((candidate) => candidate.video_id),
+          : corpus.retrievalMode === "supplied_candidates"
+            ? candidates.map((candidate) => candidate.video_id)
+            : undefined,
       policyOverrides: body.policy_overrides,
       portfolio: body.portfolio,
       graphControls: body.graph_controls,
@@ -1986,79 +2101,18 @@ app.post("/recommendations", async (request, response) => {
       if (!body.debug && "debug" in merged) {
         delete merged.debug;
       }
-      try {
-        await feedbackStore.writeRecommendationTrace({
-          request: {
-            requestId,
-            endpoint: "/recommendations",
-            receivedAt: requestReceivedAt,
-            servedAt: new Date().toISOString(),
-            objectiveRequested: mapObjectiveForRecommender(body.objective),
-            objectiveEffective:
-              String((merged.objective_effective as string) || "engagement"),
-            experimentId: experimentAssignment.experiment_id,
-            variant: experimentAssignment.variant,
-            assignmentUnitHash: experimentAssignment.unit_hash,
-            requestHash: buildRequestHash({
-              objectiveRequested: mapObjectiveForRecommender(body.objective),
-              objectiveEffective: String((merged.objective_effective as string) || "engagement"),
-              requestId,
-              assignmentUnitHash: experimentAssignment.unit_hash
-            }),
-            routingDecision:
-              (merged.routing_decision as Record<string, unknown> | undefined) || {},
-            compatibilityStatus:
-              (merged.compatibility_status as Record<string, unknown> | undefined) || {},
-            fallbackMode: Boolean(merged.fallback_mode),
-            fallbackReason:
-              typeof merged.fallback_reason === "string" ? merged.fallback_reason : null,
-            circuitState: (merged.circuit_state as Record<string, unknown> | undefined) || {},
-            latencyBreakdownMs:
-              (merged.latency_breakdown_ms as Record<string, number> | undefined) || {},
-            policyVersion:
-              typeof merged.policy_version === "string" ? merged.policy_version : undefined,
-            calibrationVersion:
-              typeof merged.calibration_version === "string"
-                ? merged.calibration_version
-                : undefined,
-            policyMetadata:
-              (merged.policy_metadata as Record<string, unknown> | undefined) || {},
-            requestContext: {
-              creator_id: creatorId ?? null,
-              seed_video_id: seedVideoId || null,
-              endpoint_mode: "recommendations"
-            },
-            trafficClass: trafficMeta.trafficClass,
-            isSynthetic: trafficMeta.isSynthetic,
-            injectedFailure: trafficMeta.injectedFailure,
-            bundleFingerprint:
-              (merged.compatibility_status as Record<string, unknown> | undefined)?.fingerprints &&
-              typeof (merged.compatibility_status as Record<string, unknown>).fingerprints ===
-                "object"
-                ? ((merged.compatibility_status as Record<string, unknown>)
-                    .fingerprints as Record<string, unknown>)
-                : {}
-          },
-          assignment: {
-            experimentId: experimentAssignment.experiment_id,
-            objectiveEffective:
-              String((merged.objective_effective as string) || "engagement"),
-            unitHash: experimentAssignment.unit_hash,
-            variant: experimentAssignment.variant,
-            requestId
-          },
-          candidates: toCandidateEventsFromResponse({
-            requestId,
-            payload: payloadForLogging
-          }),
-          served: toServedOutputEvents({
-            requestId,
-            payload: payloadForLogging
-          })
-        });
-      } catch (feedbackError) {
-        console.error("feedback_store_write_failed", feedbackError);
-      }
+      feedbackGateway.traceRecommendation({
+        requestId,
+        endpoint: "/recommendations",
+        requestReceivedAt,
+        objectiveRequested: mapObjectiveForRecommender(body.objective),
+        objectiveEffective: String((payloadForLogging.objective_effective as string) || "engagement"),
+        experimentAssignment,
+        creatorId,
+        seedVideoId,
+        trafficMeta,
+        payload: payloadForLogging
+      });
       response.json(merged);
       return;
     }
@@ -2103,65 +2157,18 @@ app.post("/recommendations", async (request, response) => {
         items: bundleFallback.items
       };
       response.status(200).json(bundlePayload);
-      try {
-        await feedbackStore.writeRecommendationTrace({
-          request: {
-            requestId,
-            endpoint: "/recommendations",
-            receivedAt: requestReceivedAt,
-            servedAt: new Date().toISOString(),
-            objectiveRequested: mapObjectiveForRecommender(body.objective),
-            objectiveEffective:
-              String(bundlePayload.objective_effective || "engagement"),
-            experimentId: experimentAssignment.experiment_id,
-            variant: experimentAssignment.variant,
-            assignmentUnitHash: experimentAssignment.unit_hash,
-            requestHash: buildRequestHash({
-              objectiveRequested: mapObjectiveForRecommender(body.objective),
-              objectiveEffective: String(bundlePayload.objective_effective || "engagement"),
-              requestId,
-              assignmentUnitHash: experimentAssignment.unit_hash
-            }),
-            routingDecision: bundlePayload.routing_decision || {},
-            compatibilityStatus: bundlePayload.compatibility_status || {},
-            fallbackMode: true,
-            fallbackReason:
-              typeof bundlePayload.fallback_reason === "string"
-                ? bundlePayload.fallback_reason
-                : null,
-            circuitState: bundlePayload.circuit_state || {},
-            latencyBreakdownMs:
-              (bundlePayload.latency_breakdown_ms as Record<string, number> | undefined) || {},
-            policyVersion: undefined,
-            calibrationVersion: undefined,
-            policyMetadata:
-              (bundlePayload.policy_metadata as Record<string, unknown> | undefined) || {},
-            requestContext: {
-              creator_id: creatorId ?? null,
-              seed_video_id: seedVideoId || null,
-              endpoint_mode: "recommendations"
-            },
-            trafficClass: trafficMeta.trafficClass,
-            isSynthetic: trafficMeta.isSynthetic,
-            injectedFailure: trafficMeta.injectedFailure,
-            bundleFingerprint: {}
-          },
-          assignment: {
-            experimentId: experimentAssignment.experiment_id,
-            objectiveEffective: String(bundlePayload.objective_effective || "engagement"),
-            unitHash: experimentAssignment.unit_hash,
-            variant: experimentAssignment.variant,
-            requestId
-          },
-          candidates: [],
-          served: toServedOutputEvents({
-            requestId,
-            payload: bundlePayload as Record<string, unknown>
-          })
-        });
-      } catch (feedbackError) {
-        console.error("feedback_store_write_failed", feedbackError);
-      }
+      feedbackGateway.traceRecommendation({
+        requestId,
+        endpoint: "/recommendations",
+        requestReceivedAt,
+        objectiveRequested: mapObjectiveForRecommender(body.objective),
+        objectiveEffective: String(bundlePayload.objective_effective || "engagement"),
+        experimentAssignment,
+        creatorId,
+        seedVideoId,
+        trafficMeta,
+        payload: bundlePayload as Record<string, unknown>
+      });
       return;
     }
 
@@ -2193,7 +2200,7 @@ app.get("/recommender-gateway-metrics", (_request, response) => {
     fallback_by_reason: gatewayMetrics.fallbackByReason,
     compatibility_mismatch_count: gatewayMetrics.compatibilityMismatchCount,
     fallback_bundle_hit_count: gatewayMetrics.fallbackBundleHitCount,
-    feedback_store: feedbackStore.status()
+    feedback_store: feedbackGateway.status()
   });
 });
 
@@ -2301,20 +2308,61 @@ app.post("/generate-report", async (request, response) => {
       return;
     }
     const body = parsedRequest.value;
+    const assetRecord = body.asset_id
+      ? await readUploadedAssetRecord(UPLOADED_ASSET_DIR, body.asset_id)
+      : null;
+    if (body.asset_id && !assetRecord) {
+      response.status(404).json({ error: "Uploaded asset was not found." });
+      return;
+    }
+    const mergedSignalHints = mergeCandidateSignalHints(
+      assetRecord?.signal_hints,
+      body.signal_hints
+    );
+    const isUploadedQuery = Boolean(body.asset_id && assetRecord);
+    const uploadedAssetRecord = isUploadedQuery
+      ? (assetRecord as UploadedAssetRecord)
+      : undefined;
+    const effectiveReferenceId = body.asset_id ?? body.seed_video_id;
+    const queryPayload = isUploadedQuery
+      ? buildUploadedAssetQueryPayload({
+          assetRecord: uploadedAssetRecord,
+          description: body.description,
+          hashtags: body.hashtags,
+          mentions: body.mentions,
+          audience: body.audience,
+          primaryCta: body.primary_cta,
+          language:
+            body.language ??
+            (typeof body.locale === "string"
+              ? body.locale.split("-")[0]?.toLowerCase()
+              : undefined),
+          locale: body.locale,
+          contentType: body.content_type,
+          asOfTimeIso: new Date().toISOString(),
+          signalHints:
+            mergedSignalHints && typeof mergedSignalHints === "object"
+              ? (mergedSignalHints as Record<string, unknown>)
+              : undefined
+        })
+      : undefined;
     const resolvedSignals = await resolveCandidateSignals({
-      videoId: body.seed_video_id || "uploaded-seed",
+      videoId: effectiveReferenceId || "uploaded-seed",
       asOfTime: new Date().toISOString(),
       description: body.description,
       hashtags: body.hashtags,
       keywords: body.hashtags,
       contentType: body.content_type,
       signalHints:
-        body.signal_hints && typeof body.signal_hints === "object"
-          ? (body.signal_hints as Record<string, unknown>)
+        mergedSignalHints && typeof mergedSignalHints === "object"
+          ? (mergedSignalHints as Record<string, unknown>)
           : undefined
     });
     const candidateSignals = resolvedSignals.signals;
     response.setHeader("x-signal-source", resolvedSignals.source);
+    if (body.asset_id) {
+      response.setHeader("x-upload-asset-id", body.asset_id);
+    }
     const description = body.description.trim();
     const mentions = body.mentions.map((mention) =>
       mention.trim().startsWith("@") ? mention.trim() : `@${mention.trim()}`
@@ -2322,27 +2370,32 @@ app.post("/generate-report", async (request, response) => {
     const hashtags = body.hashtags.map((tag) =>
       tag.trim().startsWith("#") ? tag.trim() : `#${tag.trim()}`
     );
-    const seedVideoId = body.seed_video_id;
+    const seedVideoId = isUploadedQuery ? "" : body.seed_video_id;
 
-    const dataset = await loadDatasetFromFile();
-    if (dataset.length === 0) {
-      response.status(400).json({ error: "Local dataset is empty or invalid." });
+    const corpus = await loadCandidateCorpus();
+    if (corpus.records.length === 0) {
+      response.status(400).json({ error: "Candidate corpus is empty or invalid." });
       return;
     }
+    response.setHeader("x-corpus-provider", corpus.provider);
 
-    const seed = dataset.find((record) => record.video_id === seedVideoId) ?? getSeedVideo(dataset);
-    if (!seed) {
-      response.status(404).json({ error: "Seed video was not found in local dataset." });
+    const seed = isUploadedQuery
+      ? undefined
+      : resolveSeedRecord(corpus, seedVideoId);
+    if (!isUploadedQuery && !seed) {
+      response.status(404).json({ error: "Seed video was not found in the candidate corpus." });
       return;
     }
     const creatorId = extractCreatorId(seed);
-    const userContext = await buildCreatorUserContext({
-      creatorId,
-      objective: body.objective
-    });
+    const userContext = isUploadedQuery
+      ? undefined
+      : await feedbackGateway.getCreatorContext({
+          creatorId,
+          objective: body.objective,
+          mapObjective: mapObjectiveForRecommender
+        });
 
-    const uploadedSeed = buildUploadedSeedRecord(seed, description, hashtags);
-    const candidates = getCombinedCandidates(dataset, seedVideoId);
+    const candidates = getCombinedCandidates(corpus.records, seedVideoId);
     if (candidates.length === 0) {
       response.status(400).json({ error: "No comparable candidates were found." });
       return;
@@ -2351,7 +2404,8 @@ app.post("/generate-report", async (request, response) => {
     const reportExperimentAssignment = buildExperimentAssignment({
       objectiveRequested: body.objective,
       assignmentUnit: buildExperimentUnitKey({
-        seedVideoId: body.seed_video_id,
+        assetId: body.asset_id,
+        seedVideoId: isUploadedQuery ? undefined : body.seed_video_id,
         description,
         hashtags,
         mentions,
@@ -2378,6 +2432,24 @@ app.post("/generate-report", async (request, response) => {
       }
     });
 
+    const reportEffectiveLanguage =
+      body.language ??
+      (typeof body.locale === "string" ? body.locale.split("-")[0]?.toLowerCase() : undefined);
+    const reportUsePythonCorpus = corpus.retrievalMode === "python_bundle";
+    const reportCorpusScope: CorpusScopePayload | undefined = reportUsePythonCorpus
+      ? {
+          language: reportEffectiveLanguage,
+          locale: body.locale,
+          content_type: body.content_type,
+          topic_key:
+            hashtags[0]?.replace(/^#/, "") ||
+            body.content_type ||
+            undefined,
+          max_candidates: 200,
+          exclude_video_ids: seedVideoId ? [seedVideoId] : []
+        }
+      : undefined;
+
     const recommenderAttempt = await fetchRecommenderResult({
       requestId: reportRequestId,
       objective: body.objective,
@@ -2385,13 +2457,19 @@ app.post("/generate-report", async (request, response) => {
       hashtags,
       mentions,
       candidates,
+      supplyCandidatesToPython: corpus.retrievalMode === "supplied_candidates",
+      corpusScope: reportCorpusScope,
       asOfTimeIso: new Date().toISOString(),
-      language:
-        body.language ??
-        (typeof body.locale === "string" ? body.locale.split("-")[0]?.toLowerCase() : undefined),
+      query: queryPayload,
+      audience: body.audience,
+      primaryCta: body.primary_cta,
+      language: reportEffectiveLanguage,
       locale: body.locale,
       contentType: body.content_type,
-      candidateIds: candidates.map((candidate) => candidate.video_id),
+      candidateIds:
+        corpus.retrievalMode === "supplied_candidates"
+          ? candidates.map((candidate) => candidate.video_id)
+          : undefined,
       explainability: {
         enabled: true,
         top_features: 5,
@@ -2454,7 +2532,12 @@ app.post("/generate-report", async (request, response) => {
     }
     const commentTraceSummary = summarizeCommentTrace(recommenderResult);
     const explainabilitySection = buildExplainabilitySection(recommenderResult);
-    const rankedCandidates = applyRecommenderOrder(candidates, recommenderResult);
+    const rankedCandidates = selectCandidatesForReport({
+      corpus,
+      candidates,
+      recommenderResult,
+      limit: 24
+    });
     response.setHeader("x-recommender-source", recommenderSource);
     const recommenderFallbackNote = recommenderResult.ok
       ? undefined
@@ -2505,6 +2588,26 @@ app.post("/generate-report", async (request, response) => {
       recommenderPayload
     });
 
+    const extractedKeywords = deriveExtractedKeywords(hashtags, description);
+
+    let suggestedHashtags: HashtagSuggestion[] = [];
+    try {
+      const captionForHashtags = [description, ...hashtags.map(h => `#${h}`)].join(" ").trim();
+      if (captionForHashtags) {
+        const hashtagResult = await requestHashtagSuggestions({
+          caption: captionForHashtags,
+          top_n: 10,
+          exclude_tags: hashtags.map(h => h.startsWith("#") ? h : `#${h}`),
+          include_neighbours: false
+        });
+        if (hashtagResult.ok) {
+          suggestedHashtags = hashtagResult.payload.suggestions;
+        }
+      }
+    } catch {
+      /* hashtag suggestions are best-effort */
+    }
+
     const deterministicReport = buildLocalBaselineReport({
       candidates: rankedCandidates,
       mentions,
@@ -2515,118 +2618,25 @@ app.post("/generate-report", async (request, response) => {
       recommenderItems: recommenderPayload.items ?? [],
       candidateSignals,
       meta: reasoningArtifacts.meta,
-      reasoning: reasoningArtifacts.reasoning
+      reasoning: reasoningArtifacts.reasoning,
+      extractedKeywords
     });
 
     const persistedPayloadForLogging = mergeGatewayMeta(
       recommenderPayload as Record<string, unknown>,
       recommenderAttempt.gatewayMeta
     );
-    const persistReportTrace = async (): Promise<void> => {
-      try {
-        await feedbackStore.writeRecommendationTrace({
-          request: {
-            requestId:
-              (typeof persistedPayloadForLogging.request_id === "string" &&
-                persistedPayloadForLogging.request_id) ||
-              reportRequestId,
-            endpoint: "/generate-report",
-            receivedAt: requestReceivedAt,
-            servedAt: new Date().toISOString(),
-            objectiveRequested: mapObjectiveForRecommender(body.objective),
-            objectiveEffective:
-              String((persistedPayloadForLogging.objective_effective as string) || "engagement"),
-            experimentId: reportExperimentAssignment.experiment_id,
-            variant: reportExperimentAssignment.variant,
-            assignmentUnitHash: reportExperimentAssignment.unit_hash,
-            requestHash: buildRequestHash({
-              objectiveRequested: mapObjectiveForRecommender(body.objective),
-              objectiveEffective:
-                String((persistedPayloadForLogging.objective_effective as string) || "engagement"),
-              requestId:
-                (typeof persistedPayloadForLogging.request_id === "string" &&
-                  persistedPayloadForLogging.request_id) ||
-                reportRequestId,
-              assignmentUnitHash: reportExperimentAssignment.unit_hash
-            }),
-            routingDecision:
-              (persistedPayloadForLogging.routing_decision as Record<string, unknown> | undefined) ||
-              {},
-            compatibilityStatus:
-              (persistedPayloadForLogging.compatibility_status as
-                | Record<string, unknown>
-                | undefined) || {},
-            fallbackMode: Boolean(persistedPayloadForLogging.fallback_mode),
-            fallbackReason:
-              typeof persistedPayloadForLogging.fallback_reason === "string"
-                ? persistedPayloadForLogging.fallback_reason
-                : null,
-            circuitState:
-              (persistedPayloadForLogging.circuit_state as Record<string, unknown> | undefined) ||
-              {},
-            latencyBreakdownMs:
-              (persistedPayloadForLogging.latency_breakdown_ms as
-                | Record<string, number>
-                | undefined) || {},
-            policyVersion:
-              typeof persistedPayloadForLogging.policy_version === "string"
-                ? persistedPayloadForLogging.policy_version
-                : undefined,
-            calibrationVersion:
-              typeof persistedPayloadForLogging.calibration_version === "string"
-                ? persistedPayloadForLogging.calibration_version
-                : undefined,
-            policyMetadata:
-              (persistedPayloadForLogging.policy_metadata as Record<string, unknown> | undefined) ||
-              {},
-            requestContext: {
-              creator_id: creatorId ?? null,
-              seed_video_id: body.seed_video_id || null,
-              endpoint_mode: "generate_report"
-            },
-            trafficClass: "production",
-            isSynthetic: false,
-            injectedFailure: false,
-            bundleFingerprint:
-              (persistedPayloadForLogging.compatibility_status as
-                | Record<string, unknown>
-                | undefined)?.fingerprints &&
-              typeof (persistedPayloadForLogging.compatibility_status as Record<string, unknown>)
-                .fingerprints === "object"
-                ? ((persistedPayloadForLogging.compatibility_status as Record<string, unknown>)
-                    .fingerprints as Record<string, unknown>)
-                : {}
-          },
-          assignment: {
-            experimentId: reportExperimentAssignment.experiment_id,
-            objectiveEffective:
-              String((persistedPayloadForLogging.objective_effective as string) || "engagement"),
-            unitHash: reportExperimentAssignment.unit_hash,
-            variant: reportExperimentAssignment.variant,
-            requestId:
-              (typeof persistedPayloadForLogging.request_id === "string" &&
-                persistedPayloadForLogging.request_id) ||
-              reportRequestId
-          },
-          candidates: toCandidateEventsFromResponse({
-            requestId:
-              (typeof persistedPayloadForLogging.request_id === "string" &&
-                persistedPayloadForLogging.request_id) ||
-              reportRequestId,
-            payload: persistedPayloadForLogging
-          }),
-          served: toServedOutputEvents({
-            requestId:
-              (typeof persistedPayloadForLogging.request_id === "string" &&
-                persistedPayloadForLogging.request_id) ||
-              reportRequestId,
-            payload: persistedPayloadForLogging
-          })
-        });
-      } catch (feedbackError) {
-        console.error("feedback_store_report_trace_failed", feedbackError);
-      }
-    };
+    feedbackGateway.traceReport({
+      requestId: reportRequestId,
+      requestReceivedAt,
+      objectiveRequested: mapObjectiveForRecommender(body.objective),
+      objectiveEffective:
+        String((persistedPayloadForLogging.objective_effective as string) || "engagement"),
+      experimentAssignment: reportExperimentAssignment,
+      creatorId,
+      seedVideoId: body.seed_video_id,
+      payload: persistedPayloadForLogging
+    });
 
     const reportPrompt = buildReportPrompt({
       report: deterministicReport
@@ -2642,11 +2652,13 @@ app.post("/generate-report", async (request, response) => {
           note: recommenderFallbackNote,
           commentSummary: commentTraceSummary
         },
-        explainabilitySection
+        explainabilitySection,
+        extractedKeywords
       );
-      await persistReportTrace();
+
       response.json({
-        report
+        report,
+        suggested_hashtags: suggestedHashtags
       });
       return;
     }
@@ -2681,11 +2693,13 @@ app.post("/generate-report", async (request, response) => {
             note: recommenderFallbackNote,
             commentSummary: commentTraceSummary
           },
-          explainabilitySection
+          explainabilitySection,
+          extractedKeywords
         );
-        await persistReportTrace();
+  
         response.json({
-          report
+          report,
+          suggested_hashtags: suggestedHashtags
         });
         return;
       }
@@ -2703,10 +2717,12 @@ app.post("/generate-report", async (request, response) => {
             note: recommenderFallbackNote,
             commentSummary: commentTraceSummary
           },
-          explainabilitySection
+          explainabilitySection,
+          extractedKeywords
         );
         response.json({
-          report
+          report,
+          suggested_hashtags: suggestedHashtags
         });
         return;
       }
@@ -2723,11 +2739,13 @@ app.post("/generate-report", async (request, response) => {
           note: recommenderFallbackNote,
           commentSummary: commentTraceSummary
         },
-        explainabilitySection
+        explainabilitySection,
+        extractedKeywords
       );
-      await persistReportTrace();
+
       response.json({
-        report
+        report,
+        suggested_hashtags: suggestedHashtags
       });
     } catch (providerError) {
       console.error(providerError);
@@ -2740,11 +2758,13 @@ app.post("/generate-report", async (request, response) => {
           note: recommenderFallbackNote,
           commentSummary: commentTraceSummary
         },
-        explainabilitySection
+        explainabilitySection,
+        extractedKeywords
       );
-      await persistReportTrace();
+
       response.json({
-        report
+        report,
+        suggested_hashtags: suggestedHashtags
       });
     }
   } catch (error) {
@@ -2762,33 +2782,22 @@ app.post("/report-feedback", async (request, response) => {
     return;
   }
 
-  try {
-    await feedbackStore.writeUiFeedbackEvent({
-      requestId: parsed.value.request_id,
-      eventName: parsed.value.event_name,
-      entityType: parsed.value.entity_type,
-      entityId: parsed.value.entity_id ?? null,
-      section: parsed.value.section,
-      rank: parsed.value.rank ?? null,
-      objectiveEffective: parsed.value.objective_effective,
-      experimentId: parsed.value.experiment_id ?? null,
-      variant: parsed.value.variant ?? null,
-      signalStrength: parsed.value.signal_strength,
-      labelDirection: parsed.value.label_direction,
-      metadata: parsed.value.metadata,
-      createdAt: new Date().toISOString()
-    });
-
-    response.status(202).json({
-      ok: true,
-      ready: feedbackStore.isReady()
-    });
-  } catch (error) {
-    console.error("feedback_store_ui_write_failed", error);
-    response.status(500).json({
-      error: "Feedback could not be recorded right now."
-    });
-  }
+  const result = await feedbackGateway.recordUiFeedback({
+    requestId: parsed.value.request_id,
+    eventName: parsed.value.event_name,
+    entityType: parsed.value.entity_type,
+    entityId: parsed.value.entity_id ?? null,
+    section: parsed.value.section,
+    rank: parsed.value.rank ?? null,
+    objectiveEffective: parsed.value.objective_effective,
+    experimentId: parsed.value.experiment_id ?? null,
+    variant: parsed.value.variant ?? null,
+    signalStrength: parsed.value.signal_strength,
+    labelDirection: parsed.value.label_direction,
+    metadata: parsed.value.metadata,
+    createdAt: new Date().toISOString()
+  });
+  response.status(202).json(result);
 });
 
 app.post("/chat", async (request, response) => {
@@ -2870,7 +2879,7 @@ if (RECOMMENDER_ENABLED) {
     }
   }, Math.max(5000, RECOMMENDER_COMPAT_CHECK_INTERVAL_MS));
 }
-void feedbackStore.init();
+void feedbackGateway.init();
 
 app.listen(SERVER_PORT, () => {
   console.log(`Local API running on http://localhost:${SERVER_PORT}`);
@@ -2878,6 +2887,6 @@ app.listen(SERVER_PORT, () => {
     `DeepSeek enabled: ${DEEPSEEK_ENABLED ? "yes" : "no"} | model: ${DEEPSEEK_MODEL}`
   );
   console.log(`Recommender enabled: ${RECOMMENDER_ENABLED ? "yes" : "no"}`);
-  const feedbackStatus = feedbackStore.status();
+  const feedbackStatus = feedbackGateway.status();
   console.log(`Feedback store ready: ${feedbackStatus.ready ? "yes" : "no"}`);
 });

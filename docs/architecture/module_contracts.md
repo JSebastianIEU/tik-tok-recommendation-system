@@ -1,5 +1,8 @@
 # Module Contracts and Interface Specifications
 
+> Status note: this document reflects an older scaffold-era module map and is no longer the best top-level guide to the repository.
+> For the current recommendation-platform overview, start with [docs/architecture/recommender_overview.md](/Users/ayoisthegoat/Desktop/Education/Chatbots/Tik-Tok/Tik-Tok-Recommendation-System/docs/architecture/recommender_overview.md).
+
 ## Overview
 
 This document defines the input/output contracts and interface specifications for each module in the TikTok Recommendation System. These contracts ensure consistent communication between modules and enable independent development and testing.
@@ -111,137 +114,11 @@ This document defines the input/output contracts and interface specifications fo
 
 ---
 
-## 2. Retrieval Module
+## 2. Retrieval (historical note and current implementation)
 
-**Location:** `src/retrieval/`  
-**Owner:** ML Engineering Team  
-**Purpose:** Index building and similarity search
+**Historical:** Sprint 1 included a TF-IDF-only retrieval scaffold under `src/retrieval/` (`index.py`, `search.py`) plus CLI scripts `scripts/build_index.py` and `scripts/query_index.py` that wrote `data/mock/retrieval_index.pkl`. That duplicate path was **removed** so contributors do not confuse it with the production recommender.
 
-### 2.1 Index Contract (`index.py`)
-
-#### Class: `RetrievalIndex`
-
-**Method: `build(posts: List[TikTokPost]) -> None`**
-
-**Input:**
-- `posts`: List of validated TikTokPost objects
-
-**Output:**
-- None (mutates internal state)
-
-**Side Effects:**
-- Builds TF-IDF vectorizer from combined text fields
-- Creates sparse matrix representation
-- Stores posts internally
-
-**Text Combination Strategy:**
-```python
-combined_text = caption + " " + " ".join(hashtags) + " " + " ".join(keywords) + " " + search_query
-```
-
----
-
-**Method: `save(path: Path) -> None`**
-
-**Input:**
-- `path`: Output path for serialized index
-
-**Output:**
-- None (writes to disk)
-
-**Format:**
-- Pickle file containing:
-  - `posts`: List[Dict] (serialized TikTokPost objects)
-  - `vectorizer`: TfidfVectorizer instance
-  - `matrix`: scipy sparse matrix
-
----
-
-**Method: `load(path: Path) -> RetrievalIndex`** (classmethod)
-
-**Input:**
-- `path`: Path to serialized index file
-
-**Output:**
-- `RetrievalIndex` instance with loaded state
-
-**Exceptions:**
-- `FileNotFoundError` if path doesn't exist
-- `ValueError` if file is corrupted
-
----
-
-**Method: `get_posts() -> List[TikTokPost]`**
-
-**Output:**
-- List of all indexed posts
-
----
-
-**Method: `get_vectorizer() -> Optional[TfidfVectorizer]`**
-
-**Output:**
-- Fitted vectorizer or None if not built
-
----
-
-**Method: `get_matrix() -> Optional[csr_matrix]`**
-
-**Output:**
-- Sparse TF-IDF matrix or None if not built
-
----
-
-### 2.2 Search Contract (`search.py`)
-
-#### Function: `search(index: RetrievalIndex, query: str, topk: int = 10) -> List[Dict[str, Any]]`
-
-**Input:**
-- `index`: Pre-built RetrievalIndex instance
-- `query`: Search query string
-- `topk`: Number of results to return (default: 10)
-
-**Output:**
-- List of result dictionaries, sorted by relevance (descending)
-
-**Result Format:**
-```python
-[
-    {
-        "video_id": str,
-        "video_url": str,                # Serialized URL
-        "score": float,                  # Cosine similarity [0, 1]
-        "caption": str,
-        "hashtags": List[str]
-    },
-    ...
-]
-```
-
-**Behavior:**
-- Returns empty list if index is not built
-- Returns at most `topk` results
-- Scores are cosine similarities (higher = more relevant)
-
----
-
-#### Function: `filtered_search(index: RetrievalIndex, query: str, topk: int = 10, language: str = None, min_likes: int = None) -> List[Dict[str, Any]]`
-
-**Input:**
-- `index`: Pre-built RetrievalIndex
-- `query`: Search query string
-- `topk`: Number of results (default: 10)
-- `language`: Optional language filter (ISO code)
-- `min_likes`: Optional minimum likes threshold
-
-**Output:**
-- List of filtered result dictionaries (same format as `search()`)
-
-**Filtering Logic:**
-1. Over-fetch results (topk * 2)
-2. Apply language filter (if specified)
-3. Apply likes filter (if specified)
-4. Return first topk results after filtering
+**Current:** Retrieval for training and serving lives in `src/recommendation/learning/retriever.py` (`HybridRetriever` and related fusion logic). Artifacts are produced by `scripts/train_recommender.py` and optionally `scripts/build_retriever_index.py`, and evaluated with `scripts/eval_retriever.py`. See [docs/architecture/recommender_overview.md](recommender_overview.md) for the end-to-end platform map.
 
 ---
 
@@ -351,77 +228,25 @@ All records valid. / {m} records failed validation.
 
 ---
 
-### 4.2 build_index.py
+### 4.2 build_retriever_index.py (retriever-only artifacts)
 
-**CLI Signature:**
+**CLI Signature (typical):**
 ```bash
-python scripts/build_index.py
+python scripts/build_retriever_index.py <datamart_json> --output-dir artifacts/retriever/latest
 ```
 
-**Expected Paths:**
-- Input: `data/mock/tiktok_posts_mock.jsonl`
-- Output: `data/mock/retrieval_index.pkl`
-
-**Output (stdout):**
-```
-Loading posts from {path}...
-Loaded {n} posts
-Building TF-IDF index...
-Built index with {n} posts and {m} features
-Saving index to {path}...
-✓ Index built successfully!
-```
-
-**Exit Codes:**
-- `0`: Success
-- `1`: Error (file not found, validation error, etc.)
+**Purpose:** Build retriever branch artifacts from a training datamart (see current script `--help` for full flags).
 
 ---
 
-### 4.3 query_index.py
+### 4.3 eval_retriever.py
 
-**CLI Signature:**
+**CLI Signature (typical):**
 ```bash
-python scripts/query_index.py <query_text> [--topk N] [--json]
+python scripts/eval_retriever.py <datamart_json> --retriever-dir artifacts/retriever/latest
 ```
 
-**Arguments:**
-- `query_text`: Space-separated query terms (positional, multi-word)
-- `--topk`: Number of results (default: 10)
-- `--json`: Output as JSON instead of formatted text
-
-**Input:**
-- Pre-built index at `data/mock/retrieval_index.pkl`
-
-**Output (stdout - text mode):**
-```
-Loading index from {path}...
-Query: '{query}'
-Top {k} results:
-
-1. {video_id} (score: {score:.4f})
-   Caption: {caption}
-   Hashtags: {hashtags}
-   URL: {url}
-...
-```
-
-**Output (stdout - JSON mode):**
-```json
-[
-    {
-        "video_id": "v001",
-        "video_url": "https://...",
-        "score": 0.8501,
-        "caption": "...",
-        "hashtags": ["#tag1", "#tag2"]
-    }
-]
-```
-
-**Exit Codes:**
-- `0`: Success
-- `1`: Index not found or query error
+**Purpose:** Offline Recall@K-style evaluation of the hybrid retriever; see script `--help` for objectives and pair-source options.
 
 ---
 
@@ -459,21 +284,29 @@ Wrote baseline report to {path}
 │  (schemas.py)   │
 └────────┬────────┘
          │
-         ├──────────────┬──────────────┬─────────────┐
-         │              │              │             │
-         ▼              ▼              ▼             ▼
-┌────────────┐  ┌──────────────┐  ┌─────────┐  ┌──────────┐
-│ Validation │  │  Retrieval   │  │Baseline │  │ Scripts  │
-│   Layer    │  │    Module    │  │Analytics│  │  (CLIs)  │
-└────────────┘  └──────────────┘  └─────────┘  └──────────┘
+         ├──────────────┬──────────────┐
+         │              │              │
+         ▼              ▼              ▼
+┌────────────┐  ┌─────────────┐  ┌──────────┐
+│ Validation │  │  Baseline   │  │ Scripts  │
+│   Layer    │  │  Analytics  │  │  (CLIs)  │
+└────────────┘  └─────────────┘  └──────────┘
+         │                              │
+         └──────────────┬───────────────┘
+                        ▼
+              ┌─────────────────────┐
+              │ src/recommendation/ │
+              │ (contracts,         │
+              │  datamart,          │
+              │  learning/retriever)│
+              └─────────────────────┘
 ```
 
 **Import Rules:**
-- All modules depend on `src/common/schemas.py`
-- Retrieval module uses schemas for type hints
-- Baseline analytics reads TikTokPost objects
-- Scripts orchestrate all modules
-- No circular dependencies allowed
+- Mock-path modules depend on `src/common/schemas.py`
+- Baseline analytics reads TikTokPost-shaped dicts from JSONL
+- Production retrieval and ranking live under `src/recommendation/`, not under `src/common/`
+- Scripts orchestrate pipelines; avoid circular imports
 
 ---
 
@@ -481,19 +314,7 @@ Wrote baseline report to {path}
 
 ### Planned Additions
 
-**6.1 BM25 Retrieval**
-- New class: `BM25Index` in `src/retrieval/bm25.py`
-- Same interface as `RetrievalIndex`
-- Parameters: `k1=1.5`, `b=0.75`
-
-**6.2 Semantic Search (SBERT)**
-- New class: `SemanticIndex` in `src/retrieval/semantic.py`
-- Input: model_name (e.g., "all-MiniLM-L6-v2")
-- Output: Dense vectors instead of sparse TF-IDF
-
-**6.3 Hybrid Retrieval**
-- Function: `hybrid_search(bm25_index, semantic_index, query, alpha=0.5)`
-- Combines lexical + semantic signals
+**6.1–6.3 Retrieval extensions** — Implemented in the production stack (`src/recommendation/learning/retriever.py`): lexical BM25 branch, dense text, multimodal/graph/trajectory branches, and fusion. Further work belongs there or in training scripts, not in a separate `src/retrieval/` package.
 
 **6.4 Evaluation Metrics**
 - Module: `src/evaluation/metrics.py`

@@ -10,6 +10,17 @@ export const DEEPSEEK_BASE_URL =
   process.env.DEEPSEEK_BASE_URL ?? "https://api.deepseek.com";
 export const DEEPSEEK_ENABLED =
   Boolean(DEEPSEEK_API_KEY.trim()) && DEEPSEEK_API_KEY.trim() !== "your_key_here";
+export const UPLOADED_ASSET_DIR =
+  process.env.UPLOADED_ASSET_DIR?.trim() || path.resolve(process.cwd(), "artifacts/uploaded_assets");
+export const UPLOAD_MAX_BYTES = Number(process.env.UPLOAD_MAX_BYTES ?? `${150 * 1024 * 1024}`);
+export const FFPROBE_BIN = process.env.FFPROBE_BIN?.trim() || "ffprobe";
+export const UPLOAD_ANALYZER_PROVIDER =
+  process.env.UPLOAD_ANALYZER_PROVIDER?.trim() || "baseline";
+export const RECOMMENDER_CORPUS_PROVIDER =
+  process.env.RECOMMENDER_CORPUS_PROVIDER?.trim() || "artifact_bundle";
+export const RECOMMENDER_CORPUS_BUNDLE_PATH =
+  process.env.RECOMMENDER_CORPUS_BUNDLE_PATH?.trim() ||
+  path.resolve(process.cwd(), "../artifacts/contracts/latest_supabase_bundle.json");
 
 export const RECOMMENDER_BASE_URL =
   process.env.RECOMMENDER_BASE_URL?.trim() || "http://127.0.0.1:8081";

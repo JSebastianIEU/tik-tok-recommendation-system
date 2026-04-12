@@ -124,6 +124,7 @@ function buildTopVsRestSignals(items: RecommenderItem[]): ReportReasoning["evide
   const features: Array<keyof NonNullable<RecommenderItem["score_components"]>> = [
     "semantic_relevance",
     "intent_alignment",
+    "performance_quality",
     "reference_usefulness",
     "support_confidence"
   ];
@@ -323,6 +324,11 @@ export function buildReportReasoning(context: ReportReasoningContext): {
         Math.max(1, items.length),
       4
     ),
+    performance_quality: round(
+      items.reduce((sum, item) => sum + Number(item.score_components?.performance_quality ?? 0), 0) /
+        Math.max(1, items.length),
+      4
+    ),
     reference_usefulness: round(
       items.reduce((sum, item) => sum + Number(item.score_components?.reference_usefulness ?? 0), 0) /
         Math.max(1, items.length),
@@ -391,6 +397,7 @@ export function buildReportReasoning(context: ReportReasoningContext): {
       score_components: {
         semantic_relevance: round(Number(item.score_components?.semantic_relevance ?? 0), 4),
         intent_alignment: round(Number(item.score_components?.intent_alignment ?? 0), 4),
+        performance_quality: round(Number(item.score_components?.performance_quality ?? 0), 4),
         reference_usefulness: round(Number(item.score_components?.reference_usefulness ?? 0), 4),
         support_confidence: round(Number(item.score_components?.support_confidence ?? 0), 4)
       },

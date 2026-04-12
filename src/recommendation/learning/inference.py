@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import math
-import os
 import re
 import time
 import uuid
@@ -10,6 +9,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+from src.common.config import settings
 
 from .artifacts import ArtifactRegistry
 from .baseline_common import (
@@ -54,6 +55,7 @@ from .learned_reranker import (
     LearnedPairwiseReranker,
 )
 from .objectives import map_objective
+from .policy import PolicyReranker, PolicyRerankerConfig
 from .query_contract import build_query_profile
 from .ranking_baseline import rank_shortlist
 from .retrieval_baseline import (
@@ -131,28 +133,32 @@ SUPPORT_FULL_THRESHOLD = 0.75
 SUPPORT_PARTIAL_THRESHOLD = 0.45
 
 DEFAULT_RANKING_WEIGHTS = {
-    "semantic_relevance": 0.40,
-    "intent_alignment": 0.30,
-    "reference_usefulness": 0.20,
+    "semantic_relevance": 0.30,
+    "intent_alignment": 0.25,
+    "performance_quality": 0.20,
+    "reference_usefulness": 0.15,
     "support_confidence": 0.10,
 }
 OBJECTIVE_RANKING_WEIGHTS = {
     "reach": {
-        "semantic_relevance": 0.42,
-        "intent_alignment": 0.26,
-        "reference_usefulness": 0.22,
+        "semantic_relevance": 0.28,
+        "intent_alignment": 0.22,
+        "performance_quality": 0.25,
+        "reference_usefulness": 0.15,
         "support_confidence": 0.10,
     },
     "engagement": {
-        "semantic_relevance": 0.38,
-        "intent_alignment": 0.32,
-        "reference_usefulness": 0.20,
+        "semantic_relevance": 0.28,
+        "intent_alignment": 0.25,
+        "performance_quality": 0.22,
+        "reference_usefulness": 0.15,
         "support_confidence": 0.10,
     },
     "conversion": {
-        "semantic_relevance": 0.34,
-        "intent_alignment": 0.36,
-        "reference_usefulness": 0.20,
+        "semantic_relevance": 0.26,
+        "intent_alignment": 0.30,
+        "performance_quality": 0.20,
+        "reference_usefulness": 0.14,
         "support_confidence": 0.10,
     },
 }
@@ -384,7 +390,7 @@ def _candidate_video_id(row_id: str) -> str:
 
 
 def _load_fabric_from_env() -> FeatureFabric:
-    calibration_path = os.getenv("FABRIC_CALIBRATION_PATH", "").strip()
+    calibration_path = settings.fabric_calibration_path
     if not calibration_path:
         return FeatureFabric()
     path = Path(calibration_path)
@@ -560,24 +566,45 @@ def _support_confidence_score(level: str, score: float) -> float:
     return _round(_clamp((tier_floor * 0.55) + (score * 0.45), 0.0, 1.0), 6)
 
 
+FRESHNESS_HALF_LIFE_DAYS = 18.0
+
+
 def _freshness_score(posted_at: Optional[datetime], reference_date: datetime) -> float:
     if posted_at is None:
         return 0.55
     age_days = max(0.0, (reference_date - posted_at).total_seconds() / 86400.0)
-    return _round(_clamp(math.exp((-math.log(2.0) * age_days) / 60.0), 0.0, 1.0), 6)
+    return _round(_clamp(math.exp((-math.log(2.0) * age_days) / FRESHNESS_HALF_LIFE_DAYS), 0.0, 1.0), 6)
+
+
+def _performance_quality_score(candidate: Dict[str, Any]) -> float:
+    metrics = candidate.get("engagement_metrics") or {}
+    views = _as_float(metrics.get("views"), 0.0)
+    engagement_rate = _as_float(metrics.get("engagement_rate"), 0.0)
+    view_signal = math.log1p(views) / math.log1p(10_000_000) if views > 0 else 0.0
+    er_signal = min(engagement_rate / 0.10, 1.0)
+    return _round(_clamp(view_signal * 0.55 + er_signal * 0.45, 0.0, 1.0), 6)
 
 
 def _reference_usefulness(candidate: Dict[str, Any], reference_date: datetime) -> float:
     comment_trace = candidate["comment_trace"]
-    performance_quality = _sanitize_probability(candidate["support_score"], 0.0)
+    metadata_quality = _sanitize_probability(candidate["support_score"], 0.0)
     freshness = _freshness_score(candidate.get("posted_at"), reference_date)
     comment_richness = _sanitize_probability(comment_trace.get("value_prop_coverage"), 0.0)
     share_signal = _sanitize_probability(comment_trace.get("on_topic_ratio"), 0.0)
+    fabric = candidate.get("fabric_signals") or {}
+    content_quality = _clamp(
+        (_as_float(fabric.get("clarity_score"), 0.5) * 0.5)
+        + (_as_float(fabric.get("pacing_score"), 0.5) * 0.3)
+        + (min(_as_float(fabric.get("cta_keyword_count"), 0), 3) / 3.0 * 0.2),
+        0.0,
+        1.0,
+    )
     return _round(
         _clamp(
-            (performance_quality * 0.40)
+            (metadata_quality * 0.25)
             + (freshness * 0.20)
-            + (comment_richness * 0.20)
+            + (content_quality * 0.20)
+            + (comment_richness * 0.15)
             + (share_signal * 0.10)
             + (candidate["support_score"] * 0.10),
             0.0,
@@ -638,6 +665,7 @@ def _score_components_for_candidate(
         ),
         6,
     )
+    performance_quality = _performance_quality_score(candidate)
     reference_usefulness = _reference_usefulness(candidate, reference_date)
     support_confidence = _support_confidence_score(
         candidate["support_level"], candidate["support_score"]
@@ -645,6 +673,7 @@ def _score_components_for_candidate(
     return {
         "semantic_relevance": semantic_relevance,
         "intent_alignment": intent_alignment,
+        "performance_quality": performance_quality,
         "reference_usefulness": reference_usefulness,
         "support_confidence": support_confidence,
     }
@@ -1289,7 +1318,7 @@ class RecommenderRuntime:
         as_of: datetime,
         query_profile: Dict[str, Any],
     ) -> Optional[Dict[str, Any]]:
-        return prepare_candidate(
+        candidate = prepare_candidate(
             payload=payload,
             as_of=as_of,
             query_profile=query_profile,
@@ -1298,6 +1327,25 @@ class RecommenderRuntime:
                 as_of=point_in_time,
             ),
         )
+        if candidate is not None:
+            try:
+                fabric_out = self.fabric.extract({
+                    "video_id": candidate["candidate_id"],
+                    "as_of_time": as_of.isoformat(),
+                    "caption": candidate.get("text", ""),
+                    "hashtags": candidate.get("hashtags", []),
+                    "keywords": candidate.get("keywords", []),
+                    "content_type": candidate.get("content_type"),
+                })
+                candidate["fabric_signals"] = {
+                    "clarity_score": fabric_out.text.clarity_score,
+                    "pacing_score": fabric_out.structure.pacing_score,
+                    "cta_keyword_count": fabric_out.text.cta_keyword_count,
+                    "hook_timing_seconds": fabric_out.structure.hook_timing_seconds,
+                }
+            except Exception:
+                candidate["fabric_signals"] = {}
+        return candidate
 
     def _apply_explainability(
         self,
@@ -1536,20 +1584,6 @@ class RecommenderRuntime:
         policy_payload = policy_overrides if isinstance(policy_overrides, dict) else {}
         manifest_policy = self.manifest.get("policy_reranker")
         manifest_policy = manifest_policy if isinstance(manifest_policy, dict) else {}
-        max_items_per_author = max(
-            1,
-            _as_int(
-                policy_payload.get("max_items_per_author"),
-                _as_int(manifest_policy.get("max_items_per_author"), 2),
-            ),
-        )
-        strict_language = bool(policy_payload.get("strict_language", False))
-        strict_locale = bool(policy_payload.get("strict_locale", False))
-        dropped_by_rule = {
-            "language_mismatch": 0,
-            "locale_mismatch": 0,
-            "author_cap": 0,
-        }
 
         portfolio_supported = bool(ranking_meta["portfolio_supported"])
         portfolio_requested = bool(ranking_meta["portfolio_requested"])
@@ -1558,23 +1592,29 @@ class RecommenderRuntime:
         risk_aversion = float(ranking_meta["risk_aversion"])
         ranking_weights = ranking_meta["weights"]
 
-        selected: List[Dict[str, Any]] = []
-        author_counts: Dict[str, int] = {}
+        policy_config = PolicyRerankerConfig.from_payload({
+            **manifest_policy,
+            **policy_payload,
+        })
+        policy_reranker = PolicyReranker(config=policy_config)
         for item in ranked:
-            if strict_language and query_profile["language"] and item["language"] and item["language"] != query_profile["language"]:
-                dropped_by_rule["language_mismatch"] += 1
-                continue
-            if strict_locale and query_profile["locale"] and item["locale"] and item["locale"] != query_profile["locale"]:
-                dropped_by_rule["locale_mismatch"] += 1
-                continue
-            author_count = author_counts.get(item["author_id"], 0)
-            if author_count >= max_items_per_author:
-                dropped_by_rule["author_cap"] += 1
-                continue
-            author_counts[item["author_id"]] = author_count + 1
-            selected.append(item)
-            if len(selected) >= max(1, int(top_k)):
-                break
+            item["_author_id"] = item.get("author_id", "unknown")
+            item["_topic_key"] = item.get("topic_key", "unknown")
+            item["_language"] = item.get("language")
+            item["_locale"] = item.get("locale")
+            item["_candidate_as_of_time"] = item.get("posted_at")
+        selected, policy_meta = policy_reranker.rerank(
+            ranked_items=ranked,
+            query_context={
+                "as_of_time": as_of,
+                "language": query_profile.get("language"),
+                "locale": query_profile.get("locale"),
+            },
+            top_k=top_k,
+            overrides=policy_payload,
+            portfolio=portfolio if portfolio_supported else None,
+        )
+        dropped_by_rule = policy_meta.get("dropped_by_rule", {})
 
         fallback_mode = False
         fallback_reason: Optional[str] = None

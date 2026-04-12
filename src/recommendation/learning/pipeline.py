@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import random
+import sys
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -41,6 +44,8 @@ from .trajectory import (
 )
 from ..fabric import FeatureFabric
 
+logger = logging.getLogger(__name__)
+
 VALID_PAIR_TARGET_SOURCES = {"scalar_v1", "trajectory_v2_composite"}
 RETRIEVAL_BRANCH_KEYS = (
     "lexical",
@@ -52,6 +57,7 @@ RETRIEVAL_BRANCH_KEYS = (
 BASELINE_RANKER_FEATURE_NAMES = [
     "semantic_relevance",
     "intent_alignment",
+    "performance_quality",
     "reference_usefulness",
     "support_confidence",
     "retrieval_fused",
@@ -108,6 +114,10 @@ class RecommenderTrainingConfig:
     trajectory_manifest_path: Optional[str] = None
     contract_version: str = "contract.v2"
     datamart_version: str = "datamart.v1"
+    # Retriever blend grid search (see _learn_objective_blend_weights). Defaults avoid
+    # O(grid_candidates × all_validation_queries) blow-ups on large datamarts.
+    blend_grid_levels: int = 3
+    blend_search_max_eval_queries: int = 128
 
     def __post_init__(self) -> None:
         if self.pair_target_source not in VALID_PAIR_TARGET_SOURCES:
@@ -127,6 +137,10 @@ class RecommenderTrainingConfig:
             raise ValueError(
                 "trajectory_encoder_mode must be one of: feature_only, sequence_encoder_shadow."
             )
+        if self.blend_grid_levels < 2 or self.blend_grid_levels > 11:
+            raise ValueError("blend_grid_levels must be between 2 and 11 (inclusive).")
+        if self.blend_search_max_eval_queries < 8:
+            raise ValueError("blend_search_max_eval_queries must be >= 8.")
 
 
 class HybridRetrieverTrainer:
@@ -547,6 +561,28 @@ def _evaluate_retriever_ablation_objective(
     }
 
 
+def _blend_weight_grid_step_values(grid_levels: int) -> List[float]:
+    """Inclusive 0..1 steps, e.g. grid_levels=5 -> [0, 0.25, 0.5, 0.75, 1.0]."""
+    if grid_levels < 2:
+        raise ValueError("grid_levels must be >= 2")
+    return [round(i / (grid_levels - 1), 6) for i in range(grid_levels)]
+
+
+def _queries_with_pairwise_relevance(
+    eval_queries: Sequence[Dict[str, Any]],
+    relevance_by_query: Dict[str, Dict[str, float]],
+) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for query in eval_queries:
+        query_id = str(query.get("row_id") or "")
+        if not query_id:
+            continue
+        rel = relevance_by_query.get(query_id, {})
+        if any(float(score) >= 2.0 for score in rel.values()):
+            out.append(query)
+    return out
+
+
 def _learn_objective_blend_weights(
     retriever: HybridRetriever,
     objective: str,
@@ -554,6 +590,10 @@ def _learn_objective_blend_weights(
     relevance_by_query: Dict[str, Dict[str, float]],
     retrieve_k: int,
     max_age_days: int,
+    *,
+    blend_grid_levels: int = 3,
+    blend_search_max_eval_queries: int = 128,
+    random_seed: int = 13,
 ) -> Dict[str, float]:
     pool_builder = TemporalCandidatePool(
         TemporalCandidatePoolConfig(
@@ -566,7 +606,17 @@ def _learn_objective_blend_weights(
     if not eval_queries:
         return retriever.branch_weights(objective)
 
-    step_values = [0.0, 0.25, 0.5, 0.75, 1.0]
+    labeled = _queries_with_pairwise_relevance(eval_queries, relevance_by_query)
+    if not labeled:
+        return retriever.branch_weights(objective)
+
+    obj_tag = sum(ord(c) for c in objective) % 10007
+    rng = random.Random(int(random_seed) + obj_tag)
+    eval_slice = labeled
+    if len(labeled) > blend_search_max_eval_queries:
+        eval_slice = rng.sample(labeled, blend_search_max_eval_queries)
+
+    step_values = _blend_weight_grid_step_values(blend_grid_levels)
     candidates: List[Dict[str, float]] = []
     for lexical in step_values:
         for dense in step_values:
@@ -587,11 +637,23 @@ def _learn_objective_blend_weights(
     if not candidates:
         return retriever.branch_weights(objective)
 
+    msg = (
+        f"[blend_search] objective={objective} grid_levels={blend_grid_levels} "
+        f"weight_candidates={len(candidates)} eval_queries={len(eval_slice)} "
+        f"(labeled_validation={len(labeled)}) retrieve_k={retrieve_k}"
+    )
+    logger.warning(msg)
+    print(msg, file=sys.stderr, flush=True)
+
     best = retriever.branch_weights(objective)
     best_score = -1.0
-    for weights in candidates:
+    for cand_idx, weights in enumerate(candidates):
+        if cand_idx % max(1, len(candidates) // 10) == 0 or cand_idx == len(candidates) - 1:
+            prog = f"[blend_search] objective={objective} weight_grid {cand_idx + 1}/{len(candidates)}"
+            logger.warning(prog)
+            print(prog, file=sys.stderr, flush=True)
         recalls: List[float] = []
-        for query in eval_queries:
+        for query in eval_slice:
             query_id = str(query.get("row_id"))
             rel = relevance_by_query.get(query_id, {})
             relevant_ids = {
@@ -619,6 +681,11 @@ def _learn_objective_blend_weights(
         if mean_score > best_score:
             best_score = mean_score
             best = weights
+    done = (
+        f"[blend_search] objective={objective} done best_mean_recall@100={best_score:.6f}"
+    )
+    logger.warning(done)
+    print(done, file=sys.stderr, flush=True)
     return best
 
 
@@ -950,6 +1017,11 @@ def train_recommender_from_datamart(
             ),
         },
     )
+    logger.info(
+        "Dense/multimodal/graph retriever bundle ready (%d candidates). "
+        "Next: optional diagnostics, then per-objective blend search (slow; may take many minutes).",
+        len(retriever.row_ids),
+    )
 
     # Negative-sampling diagnostics are retained as a utility trace even though
     # the old learned ranker family has been removed.
@@ -997,6 +1069,12 @@ def train_recommender_from_datamart(
             pair_rows=objective_pair_rows,
             objective=effective_objective,
         )
+        logger.info(
+            "Phase 1 objective %s: blend search starting (pair_rows=%d, labeled_queries=%d)",
+            effective_objective,
+            len(objective_pair_rows),
+            len(relevance_by_query),
+        )
         learned_weights = _learn_objective_blend_weights(
             retriever=retriever,
             objective=effective_objective,
@@ -1004,6 +1082,9 @@ def train_recommender_from_datamart(
             relevance_by_query=relevance_by_query,
             retrieve_k=cfg.retrieve_k,
             max_age_days=cfg.max_age_days,
+            blend_grid_levels=cfg.blend_grid_levels,
+            blend_search_max_eval_queries=cfg.blend_search_max_eval_queries,
+            random_seed=cfg.random_seed,
         )
         sparse_baseline_weights = _sparse_only_retrieval_weights()
         learned_validation_eval = _evaluate_retriever_objective(

@@ -8,10 +8,10 @@ React + Vite + TypeScript frontend with an optional local Node API for DeepSeek.
    ```bash
    npm install
    ```
-2. Configure local server credentials in `frontend/.env.local`:
+2. Create `frontend/.env.local` from `frontend/.env.example` and configure local server credentials:
    ```bash
    DEEPSEEK_API_KEY=your_key_here
-   DEEPSEEK_MODEL=deepseek-chat
+   DEEPSEEK_MODEL=deepseek-reasoner
    DEEPSEEK_BASE_URL=https://api.deepseek.com
    ```
 3. Start frontend + local API:
@@ -118,6 +118,8 @@ RECOMMENDER_BASE_URL=http://127.0.0.1:8081
 RECOMMENDER_TIMEOUT_MS=3500
 RECOMMENDER_RETRY_COUNT=1
 RECOMMENDER_COMPAT_CHECK_INTERVAL_MS=30000
+RECOMMENDER_CORPUS_PROVIDER=artifact_bundle
+RECOMMENDER_CORPUS_BUNDLE_PATH=../artifacts/contracts/latest_supabase_bundle.json
 RECOMMENDER_FALLBACK_BUNDLE_DIR=artifacts/recommender_fallback
 RECOMMENDER_FEEDBACK_ENABLED=true
 RECOMMENDER_FEEDBACK_DB_URL=postgresql://user:pass@localhost:5432/tiktok
@@ -164,8 +166,16 @@ If no backend API is deployed, frontend automatically falls back to mock report/
 - DeepSeek key is used only by local server code (`server/index.ts`).
 - Do not commit `frontend/.env.local`.
 
+## Setup Note
+
+- Frontend/npm dependencies live in `frontend/package.json`.
+- Python service dependencies live in the repo root requirements files.
+- See [docs/setup_workflows.md](/Users/ayoisthegoat/Desktop/Education/Chatbots/Tik-Tok/Tik-Tok-Recommendation-System/docs/setup_workflows.md) for the full cross-stack setup map.
+
 ## Current architecture
 
 - Frontend services call local API when available.
 - If API is unavailable (or static mode is enabled), frontend falls back to typed mock services and local dataset generation.
-- Dataset source: `src/data/demodata.jsonl`.
+- Default corpus source: `../artifacts/contracts/latest_supabase_bundle.json`.
+- Demo dataset source remains available for fallback/dev mode: `src/data/demodata.jsonl`.
+- The Node gateway hot-reloads the artifact-backed corpus when the bundle file changes, so a refreshed `latest_supabase_bundle.json` can be picked up without restarting the frontend server.

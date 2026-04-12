@@ -37,6 +37,7 @@ def test_health_degraded_when_bundle_missing(monkeypatch):
     client = testclient.TestClient(service.app)
     monkeypatch.setenv("RECOMMENDER_BUNDLE_DIR", "/tmp/non-existent-recommender-bundle")
     service._runtime = None
+    service._runtime_marker = None
     response = client.get("/v1/health")
     assert response.status_code == 200
     payload = response.json()
@@ -46,12 +47,18 @@ def test_health_degraded_when_bundle_missing(monkeypatch):
 
 def test_recommendations_endpoint_works_with_loaded_runtime(monkeypatch):
     client = testclient.TestClient(service.app)
+    monkeypatch.setattr(service, "_bundle_marker", lambda: ("cached", 1))
     runtime = _FakeRuntime()
     service._runtime = runtime
+    service._runtime_marker = ("cached", 1)
     payload = {
         "objective": "community",
         "as_of_time": "2026-03-22T00:00:00Z",
-        "query": {"text": "growth tutorial", "language": "en"},
+        "query": {
+            "text": "growth tutorial",
+            "language": "en",
+            "signal_hints": {"duration_seconds": 28, "visual_motion_score": 0.44},
+        },
         "candidates": [
             {"candidate_id": "c1", "text": "growth tips", "as_of_time": "2026-03-21T00:00:00Z", "language": "en"},
             {"candidate_id": "c2", "text": "cooking tips", "as_of_time": "2026-03-20T00:00:00Z", "language": "en"},
@@ -88,6 +95,10 @@ def test_recommendations_endpoint_works_with_loaded_runtime(monkeypatch):
     assert len(body["items"]) == 1
     assert runtime.last_kwargs is not None
     assert runtime.last_kwargs["candidate_ids"] == ["c1", "c2"]
+    assert runtime.last_kwargs["query"]["signal_hints"] == {
+        "duration_seconds": 28,
+        "visual_motion_score": 0.44,
+    }
     assert runtime.last_kwargs["policy_overrides"] == {"strict_language": True, "max_items_per_author": 1}
     assert runtime.last_kwargs["portfolio"] == {
         "enabled": True,
@@ -122,8 +133,9 @@ def test_fabric_extract_and_metrics_endpoints():
     assert metric_body["fabric_extract_requests_total"] >= 1
 
 
-def test_compatibility_endpoint_works_with_loaded_runtime():
+def test_compatibility_endpoint_works_with_loaded_runtime(monkeypatch):
     client = testclient.TestClient(service.app)
+    monkeypatch.setattr(service, "_bundle_marker", lambda: ("cached", 1))
     runtime = _FakeRuntime()
     runtime.bundle_dir = "artifacts/recommender/latest"
     runtime.compatibility_payload = lambda: {
@@ -133,6 +145,7 @@ def test_compatibility_endpoint_works_with_loaded_runtime():
         "mismatches": [],
     }
     service._runtime = runtime
+    service._runtime_marker = ("cached", 1)
     response = client.get("/v1/compatibility")
     assert response.status_code == 200
     body = response.json()
@@ -140,8 +153,9 @@ def test_compatibility_endpoint_works_with_loaded_runtime():
     assert body["bundle_id"] == "latest"
 
 
-def test_recommendations_endpoint_returns_409_for_incompatible_artifact():
+def test_recommendations_endpoint_returns_409_for_incompatible_artifact(monkeypatch):
     client = testclient.TestClient(service.app)
+    monkeypatch.setattr(service, "_bundle_marker", lambda: ("cached", 1))
 
     class _CompatibilityErrorRuntime:
         def recommend(self, **kwargs):
@@ -149,6 +163,7 @@ def test_recommendations_endpoint_returns_409_for_incompatible_artifact():
             raise ArtifactCompatibilityError("incompatible_artifact: feature_schema_hash mismatch")
 
     service._runtime = _CompatibilityErrorRuntime()
+    service._runtime_marker = ("cached", 1)
     payload = {
         "objective": "engagement",
         "as_of_time": "2026-03-22T00:00:00Z",
@@ -164,3 +179,30 @@ def test_recommendations_endpoint_returns_409_for_incompatible_artifact():
     assert response.status_code == 409
     detail = response.json()["detail"]
     assert detail["error"] == "incompatible_artifact"
+
+
+def test_ensure_runtime_reloads_when_bundle_marker_changes(monkeypatch):
+    built: list[_FakeRuntime] = []
+    markers = [("bundle-a", 1), ("bundle-a", 1), ("bundle-b", 2)]
+
+    def fake_marker():
+        return markers.pop(0)
+
+    def fake_build():
+        runtime = _FakeRuntime()
+        runtime.bundle_dir = f"bundle-{len(built) + 1}"
+        built.append(runtime)
+        return runtime
+
+    monkeypatch.setattr(service, "_bundle_marker", fake_marker)
+    monkeypatch.setattr(service, "_build_runtime", fake_build)
+    service._runtime = None
+    service._runtime_marker = None
+
+    first = service._ensure_runtime()
+    second = service._ensure_runtime()
+    third = service._ensure_runtime()
+
+    assert first is second
+    assert third is not second
+    assert len(built) == 2

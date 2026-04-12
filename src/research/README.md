@@ -1,7 +1,10 @@
 # Research Documentation
 
+> Status note: this directory captures earlier retrieval-focused experiments and notes (standalone scripts such as `run_experiment.py` on mock JSONL).
+> It is useful background context, but it is not the best guide to the current recommender runtime in `src/recommendation/` (production retrieval is `learning/retriever.py`, not the removed `src/retrieval/` scaffold).
+
 ## Purpose
-This directory contains research and experimental validation for retrieval methods used in the TikTok style recommendation system.
+This directory contains research and experimental validation for retrieval methods used in earlier stages of the TikTok-style recommendation system.
 
 ## Contents
 
@@ -27,7 +30,7 @@ Key findings:
 ### run_experiment.py
 Python script used to run the retrieval experiments. Can be re-run with updated data or queries.
 
-## Key Recommendation
+## Historical Recommendation
 
 **Use BM25 as the Sprint 2 baseline**
 
@@ -69,6 +72,8 @@ python src/research/run_experiment.py
 ```
 
 Output shows comparative results for BM25 vs TF-IDF on mock data.
+
+For the current production-oriented architecture, refer to `src/recommendation/README.md` and [docs/architecture/recommender_overview.md](/Users/ayoisthegoat/Desktop/Education/Chatbots/Tik-Tok/Tik-Tok-Recommendation-System/docs/architecture/recommender_overview.md).
 
 ## References
 

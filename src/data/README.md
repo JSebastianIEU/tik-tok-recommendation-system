@@ -1,6 +1,11 @@
 Data schema for mocked TikTok-like posts
 ======================================
 
+> Status note: this document describes the older mock JSONL schema used by the baseline scaffold modules in `src/common/`, `src/data/`, and `src/baseline/`.
+> It does not describe the full canonical recommender contract in `src/recommendation/contracts.py`.
+
+**Structured validation** lives in `src/common/schemas.py` (`TikTokPost`, etc.): hashtags are normalized to `#token` form, `video_meta.language` must match an ISO-like tag (e.g. `en`, `pt-br`), and each post exposes **`engagement_total`** and **`engagement_rate`** (computed fields) using the same formulas as `scripts/validate_data.py` and the baseline report (`compute_engagement_total` / `compute_engagement_rate`).
+
 
 Top-level fields (required)
 - `video_id`: string — unique id for the video (e.g. "v001").
@@ -62,7 +67,9 @@ Example record (compact):
   ]
 }
 
-# Data Module (Skeleton)
+# Data Module
 
-- `mock_generator.py`: TODO: generate additional synthetic TikTok-like records (no scraping).
-- Data sources are assumed to be provided externally; do not add scraping code here.
+- `mock_generator.py`: helper for synthetic/mock records used in local experimentation
+- data sources for this folder are mock/external inputs, not the main canonical recommender pipeline
+
+For the current canonical contract layer, use `src/recommendation/contracts.py`.

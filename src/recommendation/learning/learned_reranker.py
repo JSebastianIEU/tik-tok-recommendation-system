@@ -32,6 +32,7 @@ LEARNED_RERANKER_FEATURE_NAMES = [
     "baseline_score",
     "score_component_semantic_relevance",
     "score_component_intent_alignment",
+    "score_component_performance_quality",
     "score_component_reference_usefulness",
     "score_component_support_confidence",
     "retrieval_semantic",
@@ -54,6 +55,7 @@ LEARNED_RERANKER_FEATURE_NAMES = [
     "trajectory_regime_confidence",
     "has_reason_semantic",
     "has_reason_intent",
+    "has_reason_performance",
     "has_reason_reference",
     "has_reason_support",
     "has_reason_multi_branch",
@@ -95,6 +97,9 @@ def candidate_feature_payload_from_item(item: Dict[str, Any]) -> Dict[str, float
         ),
         "score_component_intent_alignment": sanitize_probability(
             score_components.get("intent_alignment"), 0.0
+        ),
+        "score_component_performance_quality": sanitize_probability(
+            score_components.get("performance_quality"), 0.0
         ),
         "score_component_reference_usefulness": sanitize_probability(
             score_components.get("reference_usefulness"), 0.0
@@ -149,6 +154,7 @@ def candidate_feature_payload_from_item(item: Dict[str, Any]) -> Dict[str, float
         ),
         "has_reason_semantic": _bool_flag("strong_semantic_relevance" in reasons),
         "has_reason_intent": _bool_flag("strong_intent_alignment" in reasons),
+        "has_reason_performance": _bool_flag("strong_performance_quality" in reasons),
         "has_reason_reference": _bool_flag("strong_reference_usefulness" in reasons),
         "has_reason_support": _bool_flag("strong_support_confidence" in reasons),
         "has_reason_multi_branch": _bool_flag("multi_branch_retrieval_match" in reasons),

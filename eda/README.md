@@ -24,6 +24,10 @@ This folder is a reproducible exploratory data analysis workspace layered on top
 - `src/`: contracts, loaders, quality, lineage, plotting/feature templates, notebook runner.
 - `pipeline.py`: orchestrates extraction, contracts, quality, lineage, and reports.
 
+### Mock JSONL at repo root (baseline / smoke tests)
+
+The small TikTok-shaped fixture under `data/mock/` (e.g. `tiktok_posts_mock.jsonl`) is **not** the EDA scraper contract. It is validated by **`src/common/schemas.TikTokPost`**: ISO-like `video_meta.language`, normalized `#hashtag` tokens, and shared **engagement** definitions (`engagement_total`, `engagement_rate`) used by `src/baseline/baseline_stats.py` and documented in the generated baseline report. Production training uses **`src/recommendation/contracts.py`** instead.
+
 ### Data Contracts (EDA Boundary)
 
 `eda/src/contracts.py` validates required columns per dataset:

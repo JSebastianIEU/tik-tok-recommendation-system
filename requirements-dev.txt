@@ -1,0 +1,6 @@
+-r requirements-service.txt
+-r requirements-training.txt
+
+pytest>=7.0
+pytest-cov>=5.0
+ruff>=0.6

@@ -7,7 +7,7 @@ Orchestrates:
   3. Build training data mart (features, labels, pairs)
   4. Build comment intelligence snapshots
   5. Train Phase 1 recommender (dense retriever + ranker + graph + trajectory)
-  6. Train Phase 2 learned reranker (bootstrap from datamart pairs)
+  6. Train Phase 2 learned reranker (datamart bootstrap + optional implicit DB feedback)
   7. Fit fabric score calibration from eval split
   8. Validate all artifacts
 
@@ -130,49 +130,27 @@ def step_build_comment_intelligence(
     output_root: Path,
 ) -> Dict[str, Any]:
     logger.info("Step 3/7: Build comment intelligence snapshots")
+    from pydantic import ValidationError
+
     from src.recommendation import (
+        CanonicalDatasetBundle,
         CommentIntelligenceConfig,
         build_comment_intelligence_snapshot_manifest,
-        validate_raw_dataset_jsonl_against_contract,
         build_contract_manifest,
     )
 
     t0 = time.time()
 
-    # Load the bundle we exported and convert to JSONL for validation
+    # Same payload as Step 2 export — parse as the contract model directly. Do not
+    # round-trip through JSONL: raw JSONL validation expects per-line shapes (e.g.
+    # video_id) that author rows do not satisfy.
     bundle_data = json.loads(bundle_json_path.read_text(encoding="utf-8"))
-
-    # We need to go through the contract validation path. Build a minimal JSONL
-    # from the bundle JSON. The validator expects raw JSONL records.
-    jsonl_lines = []
-    for author in bundle_data.get("authors", []):
-        author["_record_type"] = "author"
-        jsonl_lines.append(json.dumps(author, default=str))
-    for video in bundle_data.get("videos", []):
-        video["_record_type"] = "video"
-        jsonl_lines.append(json.dumps(video, default=str))
-    for snap in bundle_data.get("video_snapshots", []):
-        snap["_record_type"] = "video_snapshot"
-        jsonl_lines.append(json.dumps(snap, default=str))
-    for comment in bundle_data.get("comments", []):
-        comment["_record_type"] = "comment"
-        jsonl_lines.append(json.dumps(comment, default=str))
-    for csnap in bundle_data.get("comment_snapshots", []):
-        csnap["_record_type"] = "comment_snapshot"
-        jsonl_lines.append(json.dumps(csnap, default=str))
-
-    raw_jsonl = "\n".join(jsonl_lines)
-    validated = validate_raw_dataset_jsonl_against_contract(
-        raw_jsonl=raw_jsonl,
-        as_of_time=as_of_time,
-        source="train_full_pipeline_comment_intelligence",
-    )
-
-    if not validated.ok or validated.bundle is None:
-        logger.warning("Contract validation failed with %d error(s): %s", len(validated.errors), validated.errors[:5])
-        return {"status": "validation_failed", "errors": validated.errors[:10]}
-
-    bundle = validated.bundle
+    try:
+        bundle = CanonicalDatasetBundle.model_validate(bundle_data)
+    except ValidationError as exc:
+        errs = exc.errors()[:10]
+        logger.warning("Bundle parse failed for comment intelligence: %s", errs)
+        return {"status": "validation_failed", "errors": errs}
     contract_manifest = build_contract_manifest(
         bundle=bundle,
         manifest_root=contract_manifest_root,
@@ -326,24 +304,37 @@ def step_train_recommender(
 
 
 # ---------------------------------------------------------------------------
-# Step 6: Train Phase 2 learned reranker (bootstrap from datamart)
+# Step 6: Train Phase 2 learned reranker (datamart bootstrap + optional DB feedback)
 # ---------------------------------------------------------------------------
 def step_train_reranker(
     datamart_json: Path,
     base_bundle_dir: Path,
     artifact_root: Path,
+    *,
+    db_url: str,
+    phase2_feedback_limit: int,
+    phase2_skip_feedback: bool,
 ) -> Dict[str, Any]:
-    logger.info("Step 6/7: Train Phase 2 learned reranker (bootstrap)")
+    logger.info("Step 6/7: Train Phase 2 learned reranker (bootstrap + optional implicit feedback)")
     from scripts.train_phase2_reranker import train_phase2_reranker
 
     t0 = time.time()
+    feedback_url = "" if phase2_skip_feedback else db_url
+    if phase2_skip_feedback:
+        logger.info("Phase 2: implicit feedback from DB disabled (--skip-phase2-feedback)")
+    else:
+        logger.info(
+            "Phase 2: merging datamart bootstrap with up to %s recent feedback requests from DB",
+            phase2_feedback_limit,
+        )
+
     result = train_phase2_reranker(
-        db_url="",  # No live feedback DB, bootstrap only
+        db_url=feedback_url,
         base_bundle_dir=base_bundle_dir,
         artifact_root=artifact_root,
         objectives=["reach", "engagement", "conversion"],
-        run_name="phase2-bootstrap",
-        limit_requests=0,
+        run_name="phase2-bootstrap-feedback",
+        limit_requests=max(1, int(phase2_feedback_limit)),
         min_pairs_per_objective=12,
         include_synthetic=False,
         include_injected_failures=False,
@@ -355,6 +346,9 @@ def step_train_reranker(
         update_latest=True,
     )
 
+    if result.get("feedback_db_error"):
+        logger.warning("Phase 2 feedback DB note: %s", result["feedback_db_error"])
+
     logger.info("Reranker trained in %s", _elapsed(t0))
     logger.info("Bundle: %s", result['bundle_dir'])
     trained = result.get("trained_objectives", [])
@@ -362,8 +356,16 @@ def step_train_reranker(
     for obj, report in result.get("objective_reports", {}).items():
         status = report.get("status", "unknown")
         reason = report.get("reason", "")
-        pairs = report.get("training_source_mix", {}).get("bootstrap_pair_count", 0)
-        logger.info("  %s: %s (%d bootstrap pairs) %s", obj, status, pairs, reason)
+        mix = report.get("training_source_mix", {}) or {}
+        logger.info(
+            "  %s: %s bootstrap=%s feedback=%s labeling=%s %s",
+            obj,
+            status,
+            mix.get("bootstrap_pair_count", 0),
+            mix.get("feedback_pair_count", 0),
+            mix.get("labeling_pair_count", 0),
+            reason,
+        )
     return result
 
 
@@ -486,6 +488,20 @@ def main() -> int:
         default=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         help="As-of timestamp in ISO-8601.",
     )
+    parser.add_argument(
+        "--phase2-feedback-limit",
+        type=int,
+        default=5000,
+        help=(
+            "Max recommender requests to pull from DB when building Phase 2 implicit-feedback pairs "
+            "(merged after datamart bootstrap rows)."
+        ),
+    )
+    parser.add_argument(
+        "--skip-phase2-feedback",
+        action="store_true",
+        help="Train Phase 2 from datamart bootstrap pairs only (no rec_* feedback tables).",
+    )
     args = parser.parse_args()
 
     db_url = str(args.db_url).strip()
@@ -586,6 +602,9 @@ def main() -> int:
             datamart_json=datamart_json,
             base_bundle_dir=recommender_bundle_dir,
             artifact_root=recommender_root,
+            db_url=db_url,
+            phase2_feedback_limit=max(1, int(args.phase2_feedback_limit)),
+            phase2_skip_feedback=bool(args.skip_phase2_feedback),
         )
     except Exception as e:
         logger.warning("Reranker training failed: %s", e, exc_info=True)

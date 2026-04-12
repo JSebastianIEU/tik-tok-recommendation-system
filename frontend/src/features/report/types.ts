@@ -72,6 +72,7 @@ export interface ComparableItem {
   score_components: {
     semantic_relevance: number;
     intent_alignment: number;
+    performance_quality: number;
     reference_usefulness: number;
     support_confidence: number;
   };

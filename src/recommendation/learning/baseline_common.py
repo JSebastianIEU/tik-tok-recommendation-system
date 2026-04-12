@@ -45,28 +45,32 @@ SUPPORT_FULL_THRESHOLD = 0.75
 SUPPORT_PARTIAL_THRESHOLD = 0.45
 
 DEFAULT_RANKING_WEIGHTS = {
-    "semantic_relevance": 0.40,
-    "intent_alignment": 0.30,
-    "reference_usefulness": 0.20,
+    "semantic_relevance": 0.30,
+    "intent_alignment": 0.25,
+    "performance_quality": 0.20,
+    "reference_usefulness": 0.15,
     "support_confidence": 0.10,
 }
 OBJECTIVE_RANKING_WEIGHTS = {
     "reach": {
-        "semantic_relevance": 0.42,
-        "intent_alignment": 0.26,
-        "reference_usefulness": 0.22,
+        "semantic_relevance": 0.28,
+        "intent_alignment": 0.22,
+        "performance_quality": 0.25,
+        "reference_usefulness": 0.15,
         "support_confidence": 0.10,
     },
     "engagement": {
-        "semantic_relevance": 0.38,
-        "intent_alignment": 0.32,
-        "reference_usefulness": 0.20,
+        "semantic_relevance": 0.28,
+        "intent_alignment": 0.25,
+        "performance_quality": 0.22,
+        "reference_usefulness": 0.15,
         "support_confidence": 0.10,
     },
     "conversion": {
-        "semantic_relevance": 0.34,
-        "intent_alignment": 0.36,
-        "reference_usefulness": 0.20,
+        "semantic_relevance": 0.26,
+        "intent_alignment": 0.30,
+        "performance_quality": 0.20,
+        "reference_usefulness": 0.14,
         "support_confidence": 0.10,
     },
 }
