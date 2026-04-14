@@ -73,7 +73,7 @@ class CorpusScope(BaseModel):
 
 class RecommendationRequest(BaseModel):
     objective: str
-    as_of_time: datetime
+    as_of_time: Optional[datetime] = Field(default_factory=datetime.utcnow)
     query: RecommendationQueryInput
     candidates: List[RecommendationCandidateInput] = Field(default_factory=list)
     corpus_scope: Optional[CorpusScope] = None
@@ -95,7 +95,7 @@ class RecommendationRequest(BaseModel):
 
 class FabricExtractRequest(BaseModel):
     video_id: str
-    as_of_time: datetime
+    as_of_time: Optional[datetime] = Field(default_factory=datetime.utcnow)
     caption: str = ""
     hashtags: List[str] = Field(default_factory=list)
     keywords: List[str] = Field(default_factory=list)
@@ -685,6 +685,12 @@ def chat_rag(request: ChatRAGRequest) -> Dict[str, Any]:
         "content_type": request.content_type,
     }
     candidate_ids = [str(value).strip() for value in request.candidate_ids if str(value).strip()]
+
+    if _runtime.retriever is None:
+        raise HTTPException(
+            status_code=503,
+            detail={"error": "retriever_unavailable", "reason": "retriever_artifact_not_loaded"},
+        )
 
     try:
         results, meta = _runtime.retriever.retrieve(
