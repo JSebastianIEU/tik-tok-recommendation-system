@@ -52,7 +52,7 @@ p = BlipProcessor.from_pretrained('Salesforce/blip-image-captioning-base'); \
 m = BlipForConditionalGeneration.from_pretrained('Salesforce/blip-image-captioning-base'); \
 print('BLIP loaded, params:', sum(x.numel() for x in m.parameters()) // 1_000_000, 'M')"
 
-# 4. KeyBERT + sentence-transformers model
+# 4. KeyBERT + sentence-transformers model (~500MB)
 RUN python -c "\
 from keybert import KeyBERT; \
 kb = KeyBERT('paraphrase-multilingual-MiniLM-L12-v2'); \

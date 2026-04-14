@@ -1,0 +1,816 @@
+/* ════════════════════════════════════════════════════════════
+   MOBILE RESPONSIVE OVERRIDES
+   Loaded after globals.css — higher-specificity rules win.
+   Strategy:
+     > 900px  → desktop (handled in globals.css)
+     640–900px → tablet / large phone (globals.css + light tweaks here)
+     ≤ 640px  → phone portrait: sidebar flips to bottom nav bar
+     ≤ 480px  → small phone: tighter spacing & font scale
+════════════════════════════════════════════════════════════ */
+
+/* ── Global smooth scrolling & text sizing ── */
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+/* Fix the top social pill in place and raise it so it doesn't
+   overlap the upload video or form. The pill remains fixed across pages. */
+.top-social-pill {
+  position: fixed !important;
+  left: 50% !important;
+  transform: translateX(-50%) !important;
+  top: calc(env(safe-area-inset-top) + 56px + 24px) !important;
+  z-index: 1010 !important;
+  transition: transform 220ms ease, opacity 220ms ease;
+}
+
+/* Hide the social pill when user scrolls down */
+body.social-hidden .top-social-pill {
+  transform: translateX(-50%) translateY(-18px) !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+/* ════════════════════════════════════════════════════════════
+   640px — phones (portrait and small landscape)
+════════════════════════════════════════════════════════════ */
+@media (max-width: 640px) {
+
+  /* ── Single scroll owner: body scrolls, nothing else ──
+     Strategy:
+       - html: 100% viewport height (from globals base) — DO NOT set overflow: hidden
+         here, that would clip body's scrollable content to the viewport and break scroll.
+       - body: keeps height: 100% (viewport height) from globals base; content inside
+         (#root, app-shell, app-main) grows taller → body overflows → body scrolls.
+       - All nested containers: height auto + overflow visible, no competing scrollers.
+  ── */
+  html {
+    overflow-x: hidden;   /* only prevent side-scroll; vertical scroll stays on body */
+    /* height: 100% already in globals base — do NOT add overflow: hidden */
+  }
+
+  body {
+    overflow-x: hidden;
+    overflow-y: auto;             /* body is the one scroll container */
+    -webkit-overflow-scrolling: touch;
+    scroll-behavior: smooth;
+    overscroll-behavior-y: none;  /* prevents iOS rubber-band bouncing */
+    /* height: 100% stays from globals base — body = viewport height, content overflows it */
+  }
+
+  #root {
+    height: auto;
+    min-height: 100dvh;
+  }
+
+  .app-shell {
+    height: auto;
+    min-height: 100dvh;
+    overflow: visible;            /* never let app-shell clip its children */
+  }
+
+  /* ── App main: NOT a scroll container — body handles it ── */
+  .app-main {
+    width: 100%;
+    margin-left: 0;
+    height: auto;
+    min-height: calc(100dvh - 56px);
+    padding: 86px 12px 80px;
+    /* ensure there's extra bottom padding so fixed bottom nav doesn't overlap inputs */
+    padding-bottom: calc(96px + env(safe-area-inset-bottom));
+    align-items: stretch;
+    justify-content: flex-start;
+    overflow: visible;            /* must NOT be auto — body scrolls */
+  }
+
+  /* ── Sidebar (mobile): keep visible while scrolling ── */
+  .left-sidebar {
+    position: sticky;
+    top: env(safe-area-inset-top);
+    left: 0;
+    right: 0;
+    width: calc(100% - 24px);
+    margin: 0 12px;
+    height: auto;
+    border-right: none;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: linear-gradient(0deg, rgba(20, 6, 40, 0.97), rgba(38, 15, 64, 0.92));
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border-radius: 14px;
+    z-index: 1005;
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-around;
+    padding: 8px 16px;
+  }
+
+  /* Keep the same sticky behavior in upload flow as well. */
+  body.upload-layout-active .left-sidebar {
+    position: sticky !important;
+    top: env(safe-area-inset-top) !important;
+    left: 0 !important;
+    right: 0 !important;
+    width: calc(100% - 24px) !important;
+    margin: 0 12px !important;
+    height: auto !important;
+    z-index: 1005 !important;
+    transform: none !important;
+    opacity: 1 !important;
+    pointer-events: auto !important;
+    background: linear-gradient(0deg, rgba(20, 6, 40, 0.97), rgba(38, 15, 64, 0.92));
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 14px;
+    padding-bottom: 8px !important;
+  }
+
+  /* Nav links become a horizontal row */
+  .sidebar-nav {
+    position: static;
+    flex-direction: row;
+    gap: 10px;
+    top: auto;
+    left: auto;
+    right: auto;
+  }
+
+  .sidebar-nav-link {
+    min-height: 38px;
+    min-width: 60px;
+    font-size: 0.78rem;
+    padding: 0 14px;
+    border-radius: 10px;
+  }
+
+  /* Icon button & avatar move into the bar */
+  .sidebar-icon-button {
+    position: static;
+    top: auto;
+    left: auto;
+    width: 36px;
+    height: 36px;
+    border-radius: 10px;
+  }
+
+  .sidebar-avatar-button {
+    position: static;
+    top: auto;
+    left: auto;
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+  }
+
+  /* ── TopSocialPill — compact ── */
+  .top-social-pill {
+    /* keep fixed placement even in narrow viewports */
+    position: fixed !important;
+    left: 50% !important;
+    transform: translateX(-50%) !important;
+    top: calc(env(safe-area-inset-top) + 70px) !important;
+    gap: 5px;
+    padding: 5px 9px;
+    border-radius: 12px;
+    transition: transform 220ms ease, opacity 220ms ease;
+    z-index: 1010 !important;
+  }
+
+  .social-badge {
+    width: 30px;
+    height: 30px;
+    border-radius: 7px;
+  }
+
+  .social-badge-icon {
+    width: 14px;
+    height: 14px;
+  }
+
+  .social-badge-active .social-badge-icon {
+    width: 16px;
+    height: 16px;
+  }
+
+  /* ── Main grid & panels ── */
+  .menu-grid {
+    grid-template-columns: 1fr;
+    gap: 12px;
+    height: auto;
+    width: 100%;
+  }
+
+  .panel-transition-wrapper.layout-upload {
+    width: 100%;
+    height: auto;
+  }
+
+  /* Split layout: stacked, form flows to full natural height */
+  .panel-transition-wrapper.layout-split {
+    grid-template-columns: 1fr;
+    width: 100%;
+    height: auto;
+    gap: 12px;
+  }
+
+  /* Columns: no fixed height — let them grow to content */
+  .left-column,
+  .right-column {
+    height: auto;
+    overflow: visible;
+  }
+
+  /* Form panel: body scrolls, so form must NOT have its own overflow-y */
+  .form-panel {
+    overflow-y: visible;
+    overflow-x: visible;
+    flex: none;
+    height: auto;
+    /* leave room for bottom nav when inputs are near viewport bottom */
+    padding-bottom: calc(56px + env(safe-area-inset-bottom) + 16px);
+  }
+
+  .panel-transition-wrapper.layout-split .form-panel {
+    overflow-y: visible;
+    flex: none;
+    min-height: 0;
+  }
+
+  .panel-transition-wrapper.layout-merged,
+  .panel-transition-wrapper.layout-results {
+    width: 100%;
+    height: auto;
+    grid-template-columns: 1fr;
+  }
+
+  .panel-transition-wrapper.layout-results.results-expanded {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+
+  .panel-transition-wrapper.layout-merged .transition-panel-right {
+    display: none;
+  }
+
+  .panel-transition-wrapper.layout-results .transition-panel-left,
+  .panel-transition-wrapper.layout-results.results-expanded .transition-panel-left {
+    opacity: 1;
+    transform: none;
+    max-width: none;
+    overflow: visible;
+    pointer-events: auto;
+  }
+
+  /* ── Upload card & dropzone ──
+     The 9/16 aspect-ratio makes the dropzone ~460px tall on a phone.
+     On mobile we want it wider and much shorter — a compact tile.
+  ── */
+  .upload-card-container {
+    min-height: auto;
+    height: auto;
+    padding: 16px 14px 14px;
+    padding-bottom: calc(56px + env(safe-area-inset-bottom) + 12px);
+  }
+
+  .upload-dropzone {
+    /* Remove the portrait video ratio and use a compact phone-friendly shape */
+    aspect-ratio: auto;
+    width: min(85vw, 300px);
+    height: 200px;           /* fixed compact height */
+    max-width: none;
+    min-width: 0;
+    min-height: 0;
+    border-radius: 18px;
+  }
+
+  .upload-text {
+    font-size: 1.2rem;
+  }
+
+  .upload-icon {
+    margin-bottom: 4px;
+  }
+
+  .upload-button {
+    width: 100%;
+    max-width: 220px;
+    min-width: 0;
+  }
+
+  /* ── Processing card ── */
+  .processing-card {
+    grid-template-columns: 1fr;
+    min-height: 420px;
+    padding: 12px;
+  }
+
+  .processing-preview {
+    min-height: 200px;
+    max-height: 240px;
+  }
+
+  /* ── Preview thumbnail ── */
+  .preview-thumbnail-card {
+    width: 100%;
+    height: auto;
+    max-height: none;
+    margin: 0;
+  }
+
+  /* ── Report panel ── */
+  .report-panel {
+    height: auto;
+    min-height: 0;
+  }
+
+  .report-scroll-container {
+    overflow: visible;
+    height: auto;
+  }
+
+  .report-header {
+    position: relative;
+    padding: 14px 14px 10px;
+  }
+
+  .exec-metrics-grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+  }
+
+  .comparable-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .dc-row {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+
+  .explain-evidence-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .comments-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .comp-stats-row {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 6px;
+  }
+
+  .report-drawer {
+    width: 100%;
+  }
+
+  /* ── Labeling page ── */
+  .labeling-shell {
+    width: 100%;
+    height: auto;
+    min-height: 0;
+    padding: 14px 12px;
+  }
+
+  .labeling-header {
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .labeling-header h1 {
+    font-size: 1.35rem;
+  }
+
+  .labeling-summary-grid,
+  .labeling-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .labeling-case-list {
+    max-height: 200px;
+  }
+
+  /* ── Floating chat widget — sit above bottom nav ── */
+  .floating-chat-widget {
+    right: 12px;
+    bottom: max(calc(56px + env(safe-area-inset-bottom) + 10px), 12px);
+  }
+
+  .floating-chat-panel {
+    width: calc(100vw - 20px);
+    max-width: none;
+    height: min(64vh, 480px);
+  }
+
+  /* ── Background decorations — tone down on mobile ── */
+  .tiktok-watermark {
+    left: -160px;
+    bottom: -160px;
+    width: 380px;
+    opacity: 0.05;
+  }
+
+  .spot-one {
+    width: 180px;
+    height: 180px;
+  }
+
+  .spot-two {
+    width: 140px;
+    height: 140px;
+  }
+}
+
+/* ==================================================================
+   Consolidated mobile rules from globals.css (max-width:900px)
+   These were moved here to keep all mobile overrides in one place.
+   Minor tweak: chat widget uses `max()` to avoid overlap with keyboard.
+================================================================== */
+@media (min-width: 641px) and (max-width: 900px) {
+  body {
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    scroll-behavior: smooth;
+  }
+
+  .app-shell {
+    height: auto;
+    min-height: 100vh;
+    overflow: visible;
+  }
+
+  .left-sidebar {
+    width: 56px;
+  }
+
+  .sidebar-icon-button {
+    left: 12px;
+    top: 40px;
+    width: 30px;
+    height: 30px;
+  }
+
+  .top-social-pill {
+    position: fixed !important;
+    left: 50% !important;
+    transform: translateX(-50%) !important;
+    top: calc(env(safe-area-inset-top) + 56px + 24px) !important;
+    gap: 8px;
+    padding: 8px 10px;
+  }
+
+  .social-badge {
+    width: 34px;
+    height: 34px;
+    border-radius: 8px;
+  }
+
+  .social-badge-icon {
+    width: 18px;
+    height: 18px;
+  }
+
+  .social-badge-active .social-badge-icon {
+    width: 21px;
+    height: 21px;
+  }
+
+  .sidebar-avatar-button {
+    top: 78px;
+    left: 11px;
+    width: 30px;
+    height: 30px;
+  }
+
+  .app-main {
+    width: calc(100% - 24px);
+    margin-left: 12px;
+    height: auto;
+    min-height: 100vh;
+    padding: 88px 8px 24px;
+    align-items: stretch;
+  }
+
+  .menu-grid {
+    grid-template-columns: 1fr;
+    gap: 14px;
+    height: auto;
+  }
+
+  .panel-transition-wrapper.layout-upload {
+    width: min(360px, 90vw);
+  }
+
+  .panel-transition-wrapper.layout-split {
+    grid-template-columns: 1fr;
+    width: 100%;
+    height: auto;
+    gap: 14px;
+  }
+
+  /* Form panel: in stacked mobile layout let it grow to content height */
+  .panel-transition-wrapper.layout-split .form-panel {
+    overflow-y: visible;
+    flex: none;
+    min-height: 0;
+  }
+
+  .panel-transition-wrapper.layout-merged,
+  .panel-transition-wrapper.layout-results {
+    width: 100%;
+    height: auto;
+    grid-template-columns: 1fr;
+  }
+
+  .panel-transition-wrapper.layout-results.results-expanded {
+    grid-template-columns: 1fr;
+    gap: 14px;
+  }
+
+  .panel-transition-wrapper.layout-merged .transition-panel-right {
+    display: none;
+  }
+
+  .panel-transition-wrapper.layout-results .transition-panel-left,
+  .panel-transition-wrapper.layout-results.results-expanded .transition-panel-left {
+    opacity: 1;
+    transform: none;
+    max-width: none;
+    overflow: visible;
+    pointer-events: auto;
+  }
+
+  .upload-card-container {
+    min-height: auto;
+    height: auto;
+    padding: 16px 14px;
+  }
+
+  .upload-dropzone {
+    aspect-ratio: auto;
+    width: min(85vw, 300px);
+    height: 240px;
+    min-height: 0;
+    max-width: none;
+    min-width: 0;
+  }
+
+  .upload-text {
+    font-size: 1.5rem;
+  }
+
+  .processing-card {
+    grid-template-columns: 1fr;
+    min-height: 460px;
+  }
+
+  .preview-thumbnail-card {
+    width: 100%;
+    height: auto;
+    max-height: none;
+    margin: 0 auto;
+  }
+
+  .processing-preview {
+    min-height: 240px;
+  }
+
+  .upload-button {
+    min-width: 166px;
+    width: 100%;
+    max-width: 240px;
+  }
+
+  .floating-chat-widget {
+    right: 12px;
+    bottom: max(calc(56px + env(safe-area-inset-bottom) + 10px), 12px);
+  }
+
+  .floating-chat-panel {
+    width: min(340px, calc(100vw - 20px));
+    height: min(72vh, 500px);
+  }
+
+  .tiktok-watermark {
+    left: -260px;
+    bottom: -260px;
+    width: 520px;
+    opacity: 0.07;
+  }
+
+  .right-column {
+    height: auto;
+  }
+
+  .report-panel {
+    height: auto;
+    min-height: 0;
+  }
+
+  .report-scroll-container {
+    overflow: visible;
+    height: auto;
+  }
+
+  .report-header {
+    position: relative;
+  }
+
+  .exec-metrics-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .comparable-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .dc-row {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+
+  .explain-evidence-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .report-drawer {
+    width: 100%;
+  }
+
+  .sidebar-nav {
+    top: 14px;
+    left: 8px;
+    right: 8px;
+  }
+
+  .sidebar-nav-link {
+    min-height: 28px;
+    font-size: 0.75rem;
+  }
+
+  .sidebar-icon-button {
+    top: 102px;
+  }
+
+  .sidebar-avatar-button {
+    top: 142px;
+  }
+
+  .labeling-shell {
+    width: 100%;
+    height: auto;
+    min-height: 0;
+    padding: 16px 14px;
+  }
+
+  .labeling-header {
+    flex-direction: column;
+  }
+
+  .labeling-summary-grid,
+  .labeling-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .labeling-case-list {
+    max-height: 240px;
+  }
+}
+
+/* When keyboard likely open (input focused), increase bottom spacing and lift the chat widget.
+   JS toggles `body.keyboard-open` on focusin/focusout. */
+body.keyboard-open .app-main,
+body.keyboard-open .form-panel,
+body.keyboard-open .upload-card-container {
+  padding-bottom: calc(320px + env(safe-area-inset-bottom));
+}
+
+body.keyboard-open .floating-chat-widget {
+  /* move the chat widget up above the keyboard by translating it and ensuring high z-index */
+  transform: translateY(-280px);
+  transition: transform 160ms ease, bottom 160ms ease;
+  bottom: calc(16px + env(safe-area-inset-bottom));
+}
+
+@media (min-width: 641px) and (max-width: 900px) {
+  /* keep previous tablet rules intact; keyboard-open adjustments should be smaller */
+  body.keyboard-open .app-main,
+  body.keyboard-open .form-panel {
+    padding-bottom: calc(220px + env(safe-area-inset-bottom));
+  }
+  body.keyboard-open .floating-chat-widget {
+    transform: translateY(-200px);
+  }
+}
+
+  /* Hide bottom nav when user scrolls down on small screens to avoid overlap */
+  @media (max-width: 640px) {
+    .left-sidebar {
+      transition: transform 220ms cubic-bezier(.2,.9,.2,1), opacity 220ms ease;
+      will-change: transform;
+    }
+
+    /* When social pill is fixed, ensure upload panel has space so they don't overlap */
+    .panel-transition-wrapper.layout-upload {
+      margin-top: 24px;
+    }
+  }
+
+/* ════════════════════════════════════════════════════════════
+   480px — small phones (SE, older Androids)
+════════════════════════════════════════════════════════════ */
+@media (max-width: 480px) {
+
+  /* Social pill — even more compact */
+  .top-social-pill {
+    gap: 4px;
+    padding: 4px 7px;
+  }
+
+  .social-badge {
+    width: 26px;
+    height: 26px;
+    border-radius: 6px;
+  }
+
+  .social-badge-icon {
+    width: 12px;
+    height: 12px;
+  }
+
+  .social-badge-active .social-badge-icon {
+    width: 14px;
+    height: 14px;
+  }
+
+  /* Tighten app-main top padding (social pill is smaller now) */
+  .app-main {
+    padding-top: 78px;
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+
+  /* Even more compact dropzone on tiny screens */
+  .upload-dropzone {
+    width: min(88vw, 260px);
+    height: 180px;
+  }
+
+  /* Exec metrics → single column */
+  .exec-metrics-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .upload-text {
+    font-size: 1rem;
+  }
+
+  .floating-chat-panel {
+    width: calc(100vw - 12px);
+    height: min(60vh, 420px);
+  }
+
+  .labeling-header h1 {
+    font-size: 1.2rem;
+  }
+
+  .sidebar-nav-link {
+    min-width: 52px;
+    font-size: 0.72rem;
+    padding: 0 10px;
+  }
+}
+
+/* ════════════════════════════════════════════════════════════
+   640–900px tablet / large phone tweaks
+   (globals.css 900px block already handles the bulk of this;
+   these are additive refinements)
+════════════════════════════════════════════════════════════ */
+@media (min-width: 641px) and (max-width: 900px) {
+
+  body {
+    -webkit-overflow-scrolling: touch;
+    scroll-behavior: smooth;
+  }
+
+  .app-main {
+    padding-top: 96px;
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+
+  .floating-chat-panel {
+    width: min(360px, calc(100vw - 24px));
+  }
+
+  /* Sidebar is still vertical — ensure it doesn't eat too much space */
+  .left-sidebar {
+    width: 52px;
+  }
+
+  .app-main {
+    width: calc(100% - 52px);
+    margin-left: 52px;
+  }
+}

@@ -314,6 +314,13 @@ body {
   overflow: hidden;
 }
 
+.panel-transition-wrapper.layout-split {
+  grid-template-columns: minmax(280px, 350px) minmax(280px, 1fr);
+  width: min(860px, 96vw);
+  height: min(90vh, 800px);
+  gap: 16px;
+}
+
 .panel-transition-wrapper.layout-merged {
   grid-template-columns: 1fr;
   width: min(920px, 92vw);
@@ -849,6 +856,21 @@ body {
   display: flex;
   overflow-y: auto;
   flex-direction: column;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(167, 139, 250, 0.35) transparent;
+}
+
+.form-panel::-webkit-scrollbar {
+  width: 4px;
+}
+
+.form-panel::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.form-panel::-webkit-scrollbar-thumb {
+  background: rgba(167, 139, 250, 0.35);
+  border-radius: 99px;
 }
 
 .response-panel,
@@ -931,6 +953,29 @@ body {
   font: inherit;
   font-size: 0.88rem;
   padding: 0 2px;
+}
+
+/* Standalone inputs (audience, locale) — not inside a tag-field-box */
+.form-field > .tag-inline-input {
+  flex: none;
+  height: 42px;
+  min-width: 0;
+  width: 100%;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 12px;
+  background: rgba(208, 185, 237, 0.18);
+  padding: 0 12px;
+  font-size: 0.92rem;
+  transition: border-color 200ms ease, background-color 200ms ease;
+}
+
+.form-field > .tag-inline-input:hover {
+  border-color: rgba(167, 139, 250, 0.4);
+  background-color: rgba(208, 185, 237, 0.24);
+}
+
+.form-field > .tag-inline-input::placeholder {
+  color: rgba(240, 230, 255, 0.5);
 }
 
 .tag-inline-input::placeholder {
@@ -3330,6 +3375,12 @@ button.comp-card-body:focus-visible {
     height: min(74vh, 580px);
   }
 
+  .panel-transition-wrapper.layout-split {
+    grid-template-columns: minmax(260px, 320px) minmax(260px, 1fr);
+    width: min(780px, 96vw);
+    height: min(90vh, 780px);
+  }
+
   .panel-transition-wrapper.layout-results {
     grid-template-columns: minmax(250px, 290px) minmax(420px, 1fr);
     width: min(1020px, 98vw);
@@ -3337,235 +3388,7 @@ button.comp-card-body:focus-visible {
   }
 }
 
-@media (max-width: 900px) {
-  body {
-    overflow-y: auto;
-  }
-
-  .app-shell {
-    height: auto;
-    min-height: 100vh;
-    overflow: visible;
-  }
-
-  .left-sidebar {
-    width: 56px;
-  }
-
-  .sidebar-icon-button {
-    left: 12px;
-    top: 40px;
-    width: 30px;
-    height: 30px;
-  }
-
-  .top-social-pill {
-    top: 18px;
-    left: 50%;
-    gap: 8px;
-    padding: 8px 10px;
-  }
-
-  .social-badge {
-    width: 34px;
-    height: 34px;
-    border-radius: 8px;
-  }
-
-  .social-badge-icon {
-    width: 18px;
-    height: 18px;
-  }
-
-  .social-badge-active .social-badge-icon {
-    width: 21px;
-    height: 21px;
-  }
-
-  .sidebar-avatar-button {
-    top: 78px;
-    left: 11px;
-    width: 30px;
-    height: 30px;
-  }
-
-  .app-main {
-    width: calc(100% - 24px);
-    margin-left: 12px;
-    height: auto;
-    min-height: 100vh;
-    padding: 88px 8px 24px;
-    align-items: stretch;
-  }
-
-  .menu-grid {
-    grid-template-columns: 1fr;
-    gap: 14px;
-    height: auto;
-  }
-
-  .panel-transition-wrapper.layout-upload {
-    width: min(360px, 90vw);
-  }
-
-  .panel-transition-wrapper.layout-merged,
-  .panel-transition-wrapper.layout-results {
-    width: 100%;
-    height: auto;
-    grid-template-columns: 1fr;
-  }
-
-  .panel-transition-wrapper.layout-results.results-expanded {
-    grid-template-columns: 1fr;
-    gap: 14px;
-  }
-
-  .panel-transition-wrapper.layout-merged .transition-panel-right {
-    display: none;
-  }
-
-  .panel-transition-wrapper.layout-results .transition-panel-left,
-  .panel-transition-wrapper.layout-results.results-expanded .transition-panel-left {
-    opacity: 1;
-    transform: none;
-    max-width: none;
-    overflow: visible;
-    pointer-events: auto;
-  }
-
-  .upload-card-container {
-    min-height: 420px;
-    height: auto;
-    padding: 16px;
-  }
-
-  .upload-dropzone {
-    width: min(100%, 300px);
-    min-height: 360px;
-    height: auto;
-  }
-
-  .upload-text {
-    font-size: 1.5rem;
-  }
-
-  .processing-card {
-    grid-template-columns: 1fr;
-    min-height: 460px;
-  }
-
-  .preview-thumbnail-card {
-    width: 100%;
-    height: auto;
-    max-height: none;
-    margin: 0 auto;
-  }
-
-  .processing-preview {
-    min-height: 240px;
-  }
-
-  .upload-button {
-    min-width: 166px;
-    width: 100%;
-    max-width: 240px;
-  }
-
-  .floating-chat-widget {
-    right: 12px;
-    bottom: 12px;
-  }
-
-  .floating-chat-panel {
-    width: min(340px, calc(100vw - 20px));
-    height: min(72vh, 500px);
-  }
-
-  .tiktok-watermark {
-    left: -260px;
-    bottom: -260px;
-    width: 520px;
-    opacity: 0.07;
-  }
-
-  .right-column {
-    height: auto;
-  }
-
-  .report-panel {
-    height: auto;
-    min-height: 0;
-  }
-
-  .report-scroll-container {
-    overflow: visible;
-    height: auto;
-  }
-
-  .report-header {
-    position: relative;
-  }
-
-  .exec-metrics-grid {
-    grid-template-columns: repeat(2, 1fr);
-  }
-
-  .comparable-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .dc-row {
-    grid-template-columns: 1fr;
-    gap: 6px;
-  }
-
-  .explain-evidence-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .report-drawer {
-    width: 100%;
-  }
-
-  .sidebar-nav {
-    top: 14px;
-    left: 8px;
-    right: 8px;
-  }
-
-  .sidebar-nav-link {
-    min-height: 28px;
-    font-size: 0.75rem;
-  }
-
-  .sidebar-icon-button {
-    top: 102px;
-  }
-
-  .sidebar-avatar-button {
-    top: 142px;
-  }
-
-  .labeling-shell {
-    width: 100%;
-    height: auto;
-    min-height: 0;
-    padding: 16px 14px;
-  }
-
-  .labeling-header {
-    flex-direction: column;
-  }
-
-  .labeling-summary-grid,
-  .labeling-layout {
-    grid-template-columns: 1fr;
-  }
-
-  .labeling-case-list {
-    max-height: 240px;
-  }
-}
+/* Mobile-specific overrides moved to responsive.css (@max-width:900px) */
 
 .comparison-row-head {
   flex-direction: column;
