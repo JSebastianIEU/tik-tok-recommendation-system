@@ -497,6 +497,7 @@ async function callRecommenderService(payload: Record<string, unknown>) {
   const contentType = typeof payload.content_type === "string" ? payload.content_type : "video";
 
   try {
+    console.log("[callRecommenderService] calling", RECOMMENDER_SERVICE_URL);
     const recResp = await fetch(`${RECOMMENDER_SERVICE_URL}/v1/recommendations`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -509,7 +510,10 @@ async function callRecommenderService(payload: Record<string, unknown>) {
       }),
       signal: AbortSignal.timeout(55000),
     });
-    if (!recResp.ok) return null;
+    if (!recResp.ok) {
+      console.error("[callRecommenderService] HTTP", recResp.status, await recResp.text().catch(() => ""));
+      return null;
+    }
     const recData = await recResp.json() as {
       items?: Array<{
         candidate_id: string; score: number; caption?: string; hashtags?: string[];
@@ -567,7 +571,8 @@ async function callRecommenderService(payload: Record<string, unknown>) {
     (report.meta as Record<string, unknown>).recommender_source = "cloud-run-python";
 
     return { report, suggested_hashtags: [] };
-  } catch {
+  } catch (err) {
+    console.error("[callRecommenderService] error:", err);
     return null;
   }
 }
