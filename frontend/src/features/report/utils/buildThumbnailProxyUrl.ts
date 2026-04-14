@@ -1,10 +1,16 @@
+import { buildApiUrl } from "../../../services/api/runtimeConfig";
+
+const THUMBNAIL_PROXY_URL = buildApiUrl("/thumbnail");
+
 /**
- * Returns the best thumbnail URL to display.
- * Uses the raw TikTok CDN URL directly (with no-referrer policy on the img tag).
+ * Proxies TikTok CDN thumbnail URLs through our serverless function
+ * to bypass CORS and expired-signature restrictions.
  */
 export function buildThumbnailProxyUrl(
   thumbnailUrl: string,
   _videoUrl: string
 ): string {
-  return thumbnailUrl.trim();
+  const url = thumbnailUrl.trim();
+  if (!url) return "";
+  return `${THUMBNAIL_PROXY_URL}?url=${encodeURIComponent(url)}`;
 }
