@@ -10,6 +10,8 @@ const DEEPSEEK_BASE_URL =
 const RECOMMENDER_SERVICE_URL = process.env.RECOMMENDER_SERVICE_URL ?? "";
 const DATABASE_URL = process.env.DATABASE_URL ?? "";
 
+export const config = { maxDuration: 60 };
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -418,6 +420,7 @@ interface VideoEnrichment {
   author_username: string;
   author_id: string;
   thumbnail_url: string;
+  video_url: string;
   views: number;
   likes: number;
   comments_count: number;
@@ -443,6 +446,7 @@ async function enrichFromSupabase(
         v.caption,
         v.author_id,
         v.thumbnail_url,
+        v.url AS video_url,
         a.username AS author_username,
         s.plays   AS views,
         s.likes,
@@ -468,6 +472,7 @@ async function enrichFromSupabase(
         author_username: row.author_username ?? row.author_id ?? "unknown",
         author_id: row.author_id ?? "",
         thumbnail_url: row.thumbnail_url ?? "",
+        video_url: row.video_url ?? "",
         views: Number(row.views) || 0,
         likes: Number(row.likes) || 0,
         comments_count: Number(row.comments_count) || 0,
@@ -542,7 +547,7 @@ async function callRecommenderService(payload: Record<string, unknown>) {
         candidate_id: item.candidate_id,
         caption: enriched?.caption || item.caption || "",
         author: enriched?.author_username || item.author_id || "unknown",
-        video_url: "",
+        video_url: enriched?.video_url || "",
         thumbnail_url: enriched?.thumbnail_url || "",
         hashtags: item.hashtags ?? [],
         similarity: item.score,
@@ -607,15 +612,15 @@ async function enrichSummaryWithLLM(report: ReturnType<typeof buildReport>) {
       },
       body: JSON.stringify({
         model: DEEPSEEK_MODEL,
-        temperature: 0.2,
+        ...(DEEPSEEK_MODEL.includes("reasoner") ? {} : { temperature: 0.2 }),
         max_tokens: 1024,
         messages: [
-          {
-            role: "system",
-            content:
-              "You are a senior growth analyst. Return valid JSON only. No markdown.",
-          },
-          { role: "user", content: prompt },
+          ...(DEEPSEEK_MODEL.includes("reasoner")
+            ? []
+            : [{ role: "system" as const, content: "You are a senior growth analyst. Return valid JSON only. No markdown." }]),
+          { role: "user", content: DEEPSEEK_MODEL.includes("reasoner")
+            ? "You are a senior growth analyst. Return valid JSON only. No markdown.\n\n" + prompt
+            : prompt },
         ],
       }),
       signal: AbortSignal.timeout(30000),
