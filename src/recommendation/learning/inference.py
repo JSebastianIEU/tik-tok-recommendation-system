@@ -1254,6 +1254,9 @@ class RecommenderRuntime:
             "graph_bundle_id": self.graph_bundle_id,
             "trajectory_manifest_id": self.trajectory_manifest_id,
             "trajectory_version": self.trajectory_version,
+            "dense_model_name": str(self.manifest.get("dense_model_name") or ""),
+            "retriever_loaded": self.retriever is not None,
+            "comment_index_loaded": self.comment_index is not None,
         }
         mismatches: List[Dict[str, str]] = []
         for key, expected_value in required.items():
