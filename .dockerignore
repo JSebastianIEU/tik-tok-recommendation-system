@@ -1,0 +1,36 @@
+# Frontend (not needed in Python service container)
+frontend/
+node_modules/
+
+# Dev files
+.git/
+.claude/
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+
+# Data & scraper
+scraper/
+eda/
+data/
+notebooks/
+
+# Diagnostics & metrics (not needed at runtime)
+artifacts/recommender/20260412T210030Z-phase2-bootstrap-feedback/diagnostics/
+artifacts/recommender/20260412T210030Z-phase2-bootstrap-feedback/metrics/
+
+# Other recommender bundles (only deploy the target one)
+artifacts/recommender/20260410T*/
+artifacts/recommender/latest
+
+# Skip heavy contract dirs we don't need
+artifacts/contracts/f0119270fe1433f1adea9f41fbfd6eae66124c85ec9618619d0646ae29858bce/
+artifacts/contracts/bundle_export.json
+
+# Large unused files
+*.md
+*.ipynb
+hpc_status.py

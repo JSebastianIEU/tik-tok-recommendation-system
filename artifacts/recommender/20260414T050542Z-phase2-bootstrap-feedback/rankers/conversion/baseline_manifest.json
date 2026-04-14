@@ -1,0 +1,20 @@
+{
+  "ranker_id": "baseline_weighted",
+  "version": "recommender.ranker.baseline.v1",
+  "objective": "conversion",
+  "feature_schema_hash": "ce234443048869888e7fe66606fe65fe3120562b423cb5eeb9bff8e5fa03a012",
+  "weights": {
+    "semantic_relevance": 0.26,
+    "intent_alignment": 0.3,
+    "performance_quality": 0.2,
+    "reference_usefulness": 0.14,
+    "support_confidence": 0.1
+  },
+  "retriever_blend_weights": {
+    "lexical": 1.0,
+    "dense_text": 0.0,
+    "multimodal": 0.0,
+    "graph_dense": 0.0,
+    "trajectory_dense": 0.0
+  }
+}

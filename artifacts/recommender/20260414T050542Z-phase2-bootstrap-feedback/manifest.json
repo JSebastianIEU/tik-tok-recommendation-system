@@ -1,0 +1,480 @@
+{
+  "component": "recommender-learning-v1",
+  "contract_version": "contract.v2",
+  "datamart_version": "datamart.v1",
+  "feature_schema_hash": "ce234443048869888e7fe66606fe65fe3120562b423cb5eeb9bff8e5fa03a012",
+  "ranker_family_schema_hash": "ce234443048869888e7fe66606fe65fe3120562b423cb5eeb9bff8e5fa03a012",
+  "ranker_family_version": "recommender.ranker.baseline.v1",
+  "feature_manifest_id": "f0119270fe1433f1adea9f41fbfd6eae66124c85ec9618619d0646ae29858bce",
+  "feature_manifest_path": "artifacts/contracts/f0119270fe1433f1adea9f41fbfd6eae66124c85ec9618619d0646ae29858bce",
+  "feature_snapshot_manifest_id": null,
+  "feature_snapshot_manifest_path": null,
+  "graph": null,
+  "graph_enabled": false,
+  "graph_embedding_dim": 32,
+  "graph_walk_params": {
+    "walk_length": 12,
+    "num_walks": 20,
+    "context_size": 4,
+    "seed": 13
+  },
+  "graph_weighting_params": {
+    "recency_half_life_days": 45.0,
+    "include_creator_similarity": true,
+    "creator_similarity_top_k": 5,
+    "creator_similarity_min_jaccard": 0.15,
+    "branch_weight": 0.1
+  },
+  "trajectory": null,
+  "trajectory_enabled": false,
+  "trajectory_embedding_dim": 16,
+  "trajectory_feature_version": "trajectory_features.v2",
+  "trajectory_branch_weight": 0.0,
+  "trajectory_encoder_mode": "feature_only",
+  "trajectory_manifest_path": null,
+  "trajectory_version": "trajectory.v2",
+  "comment_feature_manifest_id": null,
+  "comment_feature_manifest_path": null,
+  "comment_priors_manifest_id": null,
+  "comment_priors_manifest_path": null,
+  "comment_intelligence_version": "comment_intelligence.v2",
+  "fabric_version": "fabric.v2",
+  "fabric_registry_signature": "ab1ae5a9e544ad9bca201a1396b4b6654ef7c6303ff7b157da4f490979f09bac",
+  "fabric_schema_hashes": {
+    "text": "11cae0907d5eaeaef8a8b8fe17c4981452ce47aa46460064501270342282f83a",
+    "structure": "19a9aa1762a7d864a9caa6e2696966a7493c2f8eb75cd5f39e269c4bd4b04798",
+    "audio": "68f5912eb8f60b4b8c563c1de078a48dac7b0ad4d8d38d1e0ad0c75b189fd0b4",
+    "visual": "bcf2bf8768d2fc99113e12761711ba6688046ad84e287f49839ef1079fd3dadf"
+  },
+  "objectives": [
+    "reach",
+    "engagement",
+    "conversion"
+  ],
+  "retrieve_k": 200,
+  "max_age_days": 180,
+  "dense_model_name": "sentence-transformers/all-MiniLM-L6-v2",
+  "random_seed": 13,
+  "pair_target_source": "scalar_v1",
+  "policy_reranker": {
+    "version": "policy_reranker.v2",
+    "max_items_per_author": 2,
+    "require_language_match": false,
+    "require_locale_match": false,
+    "max_candidate_age_days": 180,
+    "diversity_topic_weight": 0.05,
+    "diversity_author_weight": 0.03,
+    "freshness_bonus_weight": 0.04,
+    "freshness_half_life_hours": 168.0,
+    "locale_fit_bonus": 0.02
+  },
+  "objective_diagnostics": {
+    "reach": {
+      "path": "diagnostics/objective_reach_baseline.json",
+      "sha256": "5ba1478ecf626a10dc95d5544df43c555aead4912d40f3fcb42b2df4092978a6"
+    },
+    "engagement": {
+      "path": "diagnostics/objective_engagement_baseline.json",
+      "sha256": "b20be70d3f80e7fe647a4bb72cf669cceee3689f5c419bd69847486018cef706"
+    },
+    "conversion": {
+      "path": "diagnostics/objective_conversion_baseline.json",
+      "sha256": "1d8041fcf31cb3d118c159d45e77e93cb5174167496ee2a7234e2232002b524e"
+    }
+  },
+  "objective_ablation_reports": {
+    "reach": {
+      "path": "diagnostics/objective_reach_ablation.json",
+      "sha256": "a861900a4b63574d15dd03f725a07d3056d8cc65f9e3832427ad4bc142983370"
+    },
+    "engagement": {
+      "path": "diagnostics/objective_engagement_ablation.json",
+      "sha256": "0829c4658d22aef1a011f035856d80f2cc08f4d77f80cd141273611392190fbb"
+    },
+    "conversion": {
+      "path": "diagnostics/objective_conversion_ablation.json",
+      "sha256": "300952fb5828f9a1958753c748e8589e53f81e852b01b405a5b70ea3fe6fa326"
+    }
+  },
+  "rows_total": 23333,
+  "pair_rows_total": 559884,
+  "train_rows": 16333,
+  "validation_rows": 3499,
+  "test_rows": 3501,
+  "retriever": {
+    "artifact_version": "retriever.v2.0",
+    "sparse_backend": "bm25",
+    "dense_backend": "sentence-transformers-faiss",
+    "multimodal_backend": "sbert-caption-faiss",
+    "graph_backend": "graph-dna",
+    "trajectory_backend": "trajectory-precomputed-faiss",
+    "objective_blend": {
+      "reach": {
+        "lexical": 0.5,
+        "dense_text": 0.0,
+        "multimodal": 0.0,
+        "graph_dense": 0.5,
+        "trajectory_dense": 0.0
+      },
+      "engagement": {
+        "lexical": 1.0,
+        "dense_text": 0.0,
+        "multimodal": 0.0,
+        "graph_dense": 0.0,
+        "trajectory_dense": 0.0
+      },
+      "conversion": {
+        "lexical": 1.0,
+        "dense_text": 0.0,
+        "multimodal": 0.0,
+        "graph_dense": 0.0,
+        "trajectory_dense": 0.0
+      }
+    },
+    "temporal_shards": [
+      "2018-08",
+      "2018-09",
+      "2018-10",
+      "2019-01",
+      "2019-02",
+      "2019-03",
+      "2019-04",
+      "2019-05",
+      "2019-08",
+      "2019-09",
+      "2019-10",
+      "2019-11",
+      "2019-12",
+      "2020-01",
+      "2020-02",
+      "2020-03",
+      "2020-04",
+      "2020-05",
+      "2020-06",
+      "2020-07",
+      "2020-08",
+      "2020-09",
+      "2020-10",
+      "2020-11",
+      "2020-12",
+      "2021-01",
+      "2021-02",
+      "2021-03",
+      "2021-04",
+      "2021-05",
+      "2021-06",
+      "2021-07",
+      "2021-08",
+      "2021-09",
+      "2021-10",
+      "2021-11",
+      "2021-12",
+      "2022-01",
+      "2022-02",
+      "2022-03",
+      "2022-04",
+      "2022-05",
+      "2022-06",
+      "2022-07",
+      "2022-08",
+      "2022-09",
+      "2022-10",
+      "2022-11",
+      "2022-12",
+      "2023-01",
+      "2023-02",
+      "2023-03",
+      "2023-04",
+      "2023-05",
+      "2023-06",
+      "2023-07",
+      "2023-08",
+      "2023-09",
+      "2023-10",
+      "2023-11",
+      "2023-12",
+      "2024-01",
+      "2024-02",
+      "2024-03",
+      "2024-04",
+      "2024-05",
+      "2024-06",
+      "2024-07",
+      "2024-08",
+      "2024-09",
+      "2024-10",
+      "2024-11",
+      "2024-12",
+      "2025-01",
+      "2025-02",
+      "2025-03",
+      "2025-04",
+      "2025-05",
+      "2025-06",
+      "2025-07",
+      "2025-08",
+      "2025-09",
+      "2025-10",
+      "2025-11",
+      "2025-12",
+      "2026-01"
+    ],
+    "index_cutoff_time": "2026-04-12T22:50:04.527616Z",
+    "graph_bundle_id": "",
+    "graph_version": "graph.baseline.v1",
+    "trajectory_manifest_id": "",
+    "trajectory_version": "trajectory.baseline.v1"
+  },
+  "created_at": "2026-04-14T05:05:40.274376Z",
+  "phase2_learned_reranker": {
+    "version": "recommender.ranker.learned_pairwise.v1",
+    "ranker_id": "learned_pairwise_lgbm",
+    "label_policy_version": "pairwise_supervision.v2",
+    "base_bundle_dir": "artifacts/recommender/20260412T225112Z-pipeline-v1",
+    "training_composition_policy": {
+      "row_concat_order": [
+        "bootstrap",
+        "feedback",
+        "labeling"
+      ],
+      "description": "Pairwise training rows are built as: datamart bootstrap pairs, then implicit UI feedback pairs from Postgres (if available), then optional labeling-session JSON."
+    },
+    "feedback_db_error": null,
+    "feedback_pairwise_summary": {
+      "pair_count": 0,
+      "by_source": {},
+      "by_objective": {}
+    },
+    "feedback_training_support": {
+      "engagement": {
+        "objective_effective": "engagement",
+        "request_count": 5,
+        "served_request_count": 3,
+        "explicit_positive_event_count": 1,
+        "explicit_negative_event_count": 0,
+        "explicit_positive_request_count": 1,
+        "explicit_negative_request_count": 0,
+        "no_good_option_request_count": 0,
+        "weak_positive_request_count": 0,
+        "conflict_request_count": 0,
+        "trainable_request_count": 0,
+        "skipped_unserved_feedback_event_count": 0,
+        "filtered_by_rank_feedback_event_count": 0
+      },
+      "conversion": {
+        "objective_effective": "conversion",
+        "request_count": 4,
+        "served_request_count": 2,
+        "explicit_positive_event_count": 0,
+        "explicit_negative_event_count": 0,
+        "explicit_positive_request_count": 0,
+        "explicit_negative_request_count": 0,
+        "no_good_option_request_count": 0,
+        "weak_positive_request_count": 0,
+        "conflict_request_count": 0,
+        "trainable_request_count": 0,
+        "skipped_unserved_feedback_event_count": 0,
+        "filtered_by_rank_feedback_event_count": 0
+      },
+      "reach": {
+        "objective_effective": "reach",
+        "request_count": 4,
+        "served_request_count": 2,
+        "explicit_positive_event_count": 0,
+        "explicit_negative_event_count": 0,
+        "explicit_positive_request_count": 0,
+        "explicit_negative_request_count": 0,
+        "no_good_option_request_count": 0,
+        "weak_positive_request_count": 0,
+        "conflict_request_count": 0,
+        "trainable_request_count": 0,
+        "skipped_unserved_feedback_event_count": 0,
+        "filtered_by_rank_feedback_event_count": 0
+      }
+    },
+    "labeling_pairwise_summary": {
+      "pair_count": 0,
+      "by_source": {},
+      "by_objective": {}
+    },
+    "bootstrap_pairwise_summary": {
+      "pair_count": 1213294,
+      "by_source": {
+        "bootstrap_rel3_vs_rel1": 61472,
+        "bootstrap_rel3_vs_rel1_reverse": 61472,
+        "bootstrap_rel3_vs_rel0": 100458,
+        "bootstrap_rel3_vs_rel0_reverse": 100458,
+        "bootstrap_rel2_vs_rel0": 211871,
+        "bootstrap_rel2_vs_rel0_reverse": 211871,
+        "bootstrap_rel2_vs_rel1": 232846,
+        "bootstrap_rel2_vs_rel1_reverse": 232846
+      },
+      "by_objective": {
+        "conversion": 394968,
+        "engagement": 341806,
+        "reach": 476520
+      }
+    },
+    "trained_objectives": [
+      "reach",
+      "engagement",
+      "conversion"
+    ],
+    "objective_reports": {
+      "reach": {
+        "objective": "reach",
+        "training_pairs": {
+          "pair_count": 476520,
+          "by_source": {
+            "bootstrap_rel2_vs_rel0": 92617,
+            "bootstrap_rel2_vs_rel0_reverse": 92617,
+            "bootstrap_rel2_vs_rel1": 73399,
+            "bootstrap_rel2_vs_rel1_reverse": 73399,
+            "bootstrap_rel3_vs_rel0": 42351,
+            "bootstrap_rel3_vs_rel0_reverse": 42351,
+            "bootstrap_rel3_vs_rel1": 29893,
+            "bootstrap_rel3_vs_rel1_reverse": 29893
+          },
+          "by_objective": {
+            "reach": 476520
+          }
+        },
+        "training_source_mix": {
+          "bootstrap_pair_count": 476520,
+          "feedback_pair_count": 0,
+          "labeling_pair_count": 0
+        },
+        "feedback_support": {
+          "objective_effective": "reach",
+          "request_count": 4,
+          "served_request_count": 2,
+          "explicit_positive_event_count": 0,
+          "explicit_negative_event_count": 0,
+          "explicit_positive_request_count": 0,
+          "explicit_negative_request_count": 0,
+          "no_good_option_request_count": 0,
+          "weak_positive_request_count": 0,
+          "conflict_request_count": 0,
+          "trainable_request_count": 0,
+          "skipped_unserved_feedback_event_count": 0,
+          "filtered_by_rank_feedback_event_count": 0
+        },
+        "status": "trained",
+        "reason": null,
+        "artifact_path": "rankers/reach/learned_reranker",
+        "dataset_path": "diagnostics/phase2_pairwise_reach.json",
+        "train_summary": {
+          "pair_count": 476520,
+          "positive_pair_count": 238260,
+          "negative_pair_count": 238260,
+          "weighted_train_accuracy": 0.566056,
+          "label_policy_version": "pairwise_supervision.v2",
+          "feature_schema_hash": "f8931cbd496b99b87eef5df338daed553f21266086053bc003b7888faa157d79"
+        }
+      },
+      "engagement": {
+        "objective": "engagement",
+        "training_pairs": {
+          "pair_count": 341806,
+          "by_source": {
+            "bootstrap_rel2_vs_rel1": 120056,
+            "bootstrap_rel2_vs_rel1_reverse": 120056,
+            "bootstrap_rel2_vs_rel0": 43330,
+            "bootstrap_rel2_vs_rel0_reverse": 43330,
+            "bootstrap_rel3_vs_rel1": 5206,
+            "bootstrap_rel3_vs_rel1_reverse": 5206,
+            "bootstrap_rel3_vs_rel0": 2311,
+            "bootstrap_rel3_vs_rel0_reverse": 2311
+          },
+          "by_objective": {
+            "engagement": 341806
+          }
+        },
+        "training_source_mix": {
+          "bootstrap_pair_count": 341806,
+          "feedback_pair_count": 0,
+          "labeling_pair_count": 0
+        },
+        "feedback_support": {
+          "objective_effective": "engagement",
+          "request_count": 5,
+          "served_request_count": 3,
+          "explicit_positive_event_count": 1,
+          "explicit_negative_event_count": 0,
+          "explicit_positive_request_count": 1,
+          "explicit_negative_request_count": 0,
+          "no_good_option_request_count": 0,
+          "weak_positive_request_count": 0,
+          "conflict_request_count": 0,
+          "trainable_request_count": 0,
+          "skipped_unserved_feedback_event_count": 0,
+          "filtered_by_rank_feedback_event_count": 0
+        },
+        "status": "trained",
+        "reason": null,
+        "artifact_path": "rankers/engagement/learned_reranker",
+        "dataset_path": "diagnostics/phase2_pairwise_engagement.json",
+        "train_summary": {
+          "pair_count": 341806,
+          "positive_pair_count": 170903,
+          "negative_pair_count": 170903,
+          "weighted_train_accuracy": 0.531036,
+          "label_policy_version": "pairwise_supervision.v2",
+          "feature_schema_hash": "f8931cbd496b99b87eef5df338daed553f21266086053bc003b7888faa157d79"
+        }
+      },
+      "conversion": {
+        "objective": "conversion",
+        "training_pairs": {
+          "pair_count": 394968,
+          "by_source": {
+            "bootstrap_rel3_vs_rel1": 26373,
+            "bootstrap_rel3_vs_rel1_reverse": 26373,
+            "bootstrap_rel3_vs_rel0": 55796,
+            "bootstrap_rel3_vs_rel0_reverse": 55796,
+            "bootstrap_rel2_vs_rel0": 75924,
+            "bootstrap_rel2_vs_rel0_reverse": 75924,
+            "bootstrap_rel2_vs_rel1": 39391,
+            "bootstrap_rel2_vs_rel1_reverse": 39391
+          },
+          "by_objective": {
+            "conversion": 394968
+          }
+        },
+        "training_source_mix": {
+          "bootstrap_pair_count": 394968,
+          "feedback_pair_count": 0,
+          "labeling_pair_count": 0
+        },
+        "feedback_support": {
+          "objective_effective": "conversion",
+          "request_count": 4,
+          "served_request_count": 2,
+          "explicit_positive_event_count": 0,
+          "explicit_negative_event_count": 0,
+          "explicit_positive_request_count": 0,
+          "explicit_negative_request_count": 0,
+          "no_good_option_request_count": 0,
+          "weak_positive_request_count": 0,
+          "conflict_request_count": 0,
+          "trainable_request_count": 0,
+          "skipped_unserved_feedback_event_count": 0,
+          "filtered_by_rank_feedback_event_count": 0
+        },
+        "status": "trained",
+        "reason": null,
+        "artifact_path": "rankers/conversion/learned_reranker",
+        "dataset_path": "diagnostics/phase2_pairwise_conversion.json",
+        "train_summary": {
+          "pair_count": 394968,
+          "positive_pair_count": 197484,
+          "negative_pair_count": 197484,
+          "weighted_train_accuracy": 0.5902,
+          "label_policy_version": "pairwise_supervision.v2",
+          "feature_schema_hash": "f8931cbd496b99b87eef5df338daed553f21266086053bc003b7888faa157d79"
+        }
+      }
+    },
+    "feedback_max_served_rank": 10
+  }
+}

@@ -1,0 +1,43 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# System deps for scipy / sklearn compiled extensions
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends gcc g++ && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install Python deps (service + training requirements)
+COPY requirements-base.txt requirements-service.txt requirements-training.txt ./
+RUN pip install --no-cache-dir \
+    -r requirements-service.txt \
+    -r requirements-training.txt
+
+# Copy source code
+COPY src/ ./src/
+
+# Copy model artifacts (recommender bundle ~267MB)
+COPY artifacts/recommender/20260412T210030Z-phase2-bootstrap-feedback/ \
+     ./artifacts/recommender/20260412T210030Z-phase2-bootstrap-feedback/
+
+# Copy only the needed contract bundle (skip 428MB full contracts dir)
+# The manifest references feature_manifest_id 3714dd18...
+COPY artifacts/contracts/3714dd18e3728d0d7942582fe3c62fe1325cd70d08863e43c65b6d59e82fb0db/ \
+     ./artifacts/contracts/3714dd18e3728d0d7942582fe3c62fe1325cd70d08863e43c65b6d59e82fb0db/
+
+# Copy hashtag recommender artifacts (~87MB)
+COPY artifacts/hashtag_recommender/ ./artifacts/hashtag_recommender/
+
+# Copy serve script
+COPY scripts/serve_recommender.py ./scripts/serve_recommender.py
+
+# Environment
+ENV RECOMMENDER_BUNDLE_DIR=artifacts/recommender/20260412T210030Z-phase2-bootstrap-feedback
+ENV RECOMMENDER_CORPUS_BUNDLE_PATH=artifacts/contracts/3714dd18e3728d0d7942582fe3c62fe1325cd70d08863e43c65b6d59e82fb0db/bundle.json
+ENV PYTHONUNBUFFERED=1
+ENV PORT=8081
+
+EXPOSE 8081
+
+# Cloud Run sets PORT env var; default to 8081
+CMD ["sh", "-c", "python scripts/serve_recommender.py --host 0.0.0.0 --port ${PORT:-8081} --bundle-dir artifacts/recommender/20260412T210030Z-phase2-bootstrap-feedback"]

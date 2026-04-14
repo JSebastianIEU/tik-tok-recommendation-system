@@ -15,7 +15,7 @@ def main() -> int:
     parser.add_argument(
         "--bundle-dir",
         type=str,
-        default="artifacts/recommender_real/latest",
+        default="artifacts/recommender/20260412T210030Z-phase2-bootstrap-feedback",
         help="Path to recommender bundle directory.",
     )
     parser.add_argument(

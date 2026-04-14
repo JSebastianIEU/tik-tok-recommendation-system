@@ -1,0 +1,992 @@
+{
+  "reach": {
+    "spec": {
+      "objective_id": "reach",
+      "label_key": "reach",
+      "primary_metric": "ndcg@20",
+      "training_loss": "lambdarank",
+      "calibration": "isotonic"
+    },
+    "retriever": {
+      "recall@50": 0.1345953022311761,
+      "recall@100": 0.14840603330541535,
+      "recall@200": 0.16136828364684488
+    },
+    "ranker": {
+      "ndcg@10": 0.18090332457775019,
+      "mrr@10": 0.19915102040816327,
+      "ndcg@20": 0.20771590509716337,
+      "mrr@20": 0.20481680151204143
+    },
+    "backend": "baseline_weighted",
+    "retriever_blend_weights": {
+      "lexical": 0.5,
+      "dense_text": 0.0,
+      "multimodal": 0.0,
+      "graph_dense": 0.5,
+      "trajectory_dense": 0.0
+    },
+    "retriever_weight_gate": {
+      "metric_key": "recall@100",
+      "selected_variant": "learned",
+      "selected_weights": {
+        "lexical": 0.5,
+        "dense_text": 0.0,
+        "multimodal": 0.0,
+        "graph_dense": 0.5,
+        "trajectory_dense": 0.0
+      },
+      "validation": {
+        "learned": {
+          "recall@50": 0.14198634182355113,
+          "recall@100": 0.15854964931709117,
+          "recall@200": 0.1708453303802141
+        },
+        "sparse_baseline": {
+          "recall@50": 0.14198634182355113,
+          "recall@100": 0.15854964931709117,
+          "recall@200": 0.1708453303802141
+        },
+        "selected_not_worse_than_competitor": true
+      },
+      "test": {
+        "learned": {
+          "recall@50": 0.12687135450421255,
+          "recall@100": 0.13780552726599388,
+          "recall@200": 0.15146437058297071
+        },
+        "sparse_baseline": {
+          "recall@50": 0.12687135450421255,
+          "recall@100": 0.13780552726599388,
+          "recall@200": 0.15146437058297071
+        },
+        "selected_not_worse_than_competitor": true
+      }
+    },
+    "retriever_ablation": {
+      "metric_key": "recall@100",
+      "variants": {
+        "full": {
+          "dropped_branches": [],
+          "weights": {
+            "lexical": 0.5,
+            "dense_text": 0.0,
+            "multimodal": 0.0,
+            "graph_dense": 0.5,
+            "trajectory_dense": 0.0
+          },
+          "metrics": {
+            "recall@50": 0.134595,
+            "recall@100": 0.148406,
+            "recall@200": 0.161368
+          },
+          "delta_vs_full": {
+            "recall@50": {
+              "baseline": 0.134595,
+              "variant": 0.134595,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@100": {
+              "baseline": 0.148406,
+              "variant": 0.148406,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@200": {
+              "baseline": 0.161368,
+              "variant": 0.161368,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            }
+          }
+        },
+        "no_lexical": {
+          "dropped_branches": [
+            "lexical"
+          ],
+          "weights": {
+            "lexical": 0.0,
+            "dense_text": 0.0,
+            "multimodal": 0.0,
+            "graph_dense": 1.0,
+            "trajectory_dense": 0.0
+          },
+          "metrics": {
+            "recall@50": 0.004121,
+            "recall@100": 0.007888,
+            "recall@200": 0.016134
+          },
+          "delta_vs_full": {
+            "recall@50": {
+              "baseline": 0.134595,
+              "variant": 0.004121,
+              "delta": -0.130474,
+              "delta_pp": -13.047,
+              "relative_delta_pct": -96.938
+            },
+            "recall@100": {
+              "baseline": 0.148406,
+              "variant": 0.007888,
+              "delta": -0.140518,
+              "delta_pp": -14.052,
+              "relative_delta_pct": -94.685
+            },
+            "recall@200": {
+              "baseline": 0.161368,
+              "variant": 0.016134,
+              "delta": -0.145234,
+              "delta_pp": -14.523,
+              "relative_delta_pct": -90.002
+            }
+          }
+        },
+        "no_dense_text": {
+          "dropped_branches": [
+            "dense_text"
+          ],
+          "weights": {
+            "lexical": 0.5,
+            "dense_text": 0.0,
+            "multimodal": 0.0,
+            "graph_dense": 0.5,
+            "trajectory_dense": 0.0
+          },
+          "metrics": {
+            "recall@50": 0.134595,
+            "recall@100": 0.148406,
+            "recall@200": 0.161368
+          },
+          "delta_vs_full": {
+            "recall@50": {
+              "baseline": 0.134595,
+              "variant": 0.134595,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@100": {
+              "baseline": 0.148406,
+              "variant": 0.148406,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@200": {
+              "baseline": 0.161368,
+              "variant": 0.161368,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            }
+          }
+        },
+        "no_multimodal": {
+          "dropped_branches": [
+            "multimodal"
+          ],
+          "weights": {
+            "lexical": 0.5,
+            "dense_text": 0.0,
+            "multimodal": 0.0,
+            "graph_dense": 0.5,
+            "trajectory_dense": 0.0
+          },
+          "metrics": {
+            "recall@50": 0.134595,
+            "recall@100": 0.148406,
+            "recall@200": 0.161368
+          },
+          "delta_vs_full": {
+            "recall@50": {
+              "baseline": 0.134595,
+              "variant": 0.134595,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@100": {
+              "baseline": 0.148406,
+              "variant": 0.148406,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@200": {
+              "baseline": 0.161368,
+              "variant": 0.161368,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            }
+          }
+        },
+        "no_graph_dense": {
+          "dropped_branches": [
+            "graph_dense"
+          ],
+          "weights": {
+            "lexical": 1.0,
+            "dense_text": 0.0,
+            "multimodal": 0.0,
+            "graph_dense": 0.0,
+            "trajectory_dense": 0.0
+          },
+          "metrics": {
+            "recall@50": 0.134595,
+            "recall@100": 0.148406,
+            "recall@200": 0.161368
+          },
+          "delta_vs_full": {
+            "recall@50": {
+              "baseline": 0.134595,
+              "variant": 0.134595,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@100": {
+              "baseline": 0.148406,
+              "variant": 0.148406,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@200": {
+              "baseline": 0.161368,
+              "variant": 0.161368,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            }
+          }
+        },
+        "no_trajectory_dense": {
+          "dropped_branches": [
+            "trajectory_dense"
+          ],
+          "weights": {
+            "lexical": 0.5,
+            "dense_text": 0.0,
+            "multimodal": 0.0,
+            "graph_dense": 0.5,
+            "trajectory_dense": 0.0
+          },
+          "metrics": {
+            "recall@50": 0.134595,
+            "recall@100": 0.148406,
+            "recall@200": 0.161368
+          },
+          "delta_vs_full": {
+            "recall@50": {
+              "baseline": 0.134595,
+              "variant": 0.134595,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@100": {
+              "baseline": 0.148406,
+              "variant": 0.148406,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@200": {
+              "baseline": 0.161368,
+              "variant": 0.161368,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            }
+          }
+        }
+      },
+      "branch_importance": [
+        {
+          "branch": "lexical",
+          "recall@100_delta_without_branch": -0.140518
+        },
+        {
+          "branch": "dense_text",
+          "recall@100_delta_without_branch": 0.0
+        },
+        {
+          "branch": "multimodal",
+          "recall@100_delta_without_branch": 0.0
+        },
+        {
+          "branch": "graph_dense",
+          "recall@100_delta_without_branch": 0.0
+        },
+        {
+          "branch": "trajectory_dense",
+          "recall@100_delta_without_branch": 0.0
+        }
+      ]
+    }
+  },
+  "engagement": {
+    "spec": {
+      "objective_id": "engagement",
+      "label_key": "engagement",
+      "primary_metric": "ndcg@20",
+      "training_loss": "lambdarank",
+      "calibration": "isotonic"
+    },
+    "retriever": {
+      "recall@50": 0.15182763869346289,
+      "recall@100": 0.16924651109282218,
+      "recall@200": 0.18286342598738065
+    },
+    "ranker": {
+      "ndcg@10": 0.2315587327272691,
+      "mrr@10": 0.27785668934240365,
+      "ndcg@20": 0.25296709459217775,
+      "mrr@20": 0.2816408467226911
+    },
+    "backend": "baseline_weighted",
+    "retriever_blend_weights": {
+      "lexical": 1.0,
+      "dense_text": 0.0,
+      "multimodal": 0.0,
+      "graph_dense": 0.0,
+      "trajectory_dense": 0.0
+    },
+    "retriever_weight_gate": {
+      "metric_key": "recall@100",
+      "selected_variant": "sparse_baseline",
+      "selected_weights": {
+        "lexical": 1.0,
+        "dense_text": 0.0,
+        "multimodal": 0.0,
+        "graph_dense": 0.0,
+        "trajectory_dense": 0.0
+      },
+      "validation": {
+        "learned": {
+          "recall@50": 0.17388918894589972,
+          "recall@100": 0.20054145287604647,
+          "recall@200": 0.22333378341884957
+        },
+        "sparse_baseline": {
+          "recall@50": 0.17914708794670986,
+          "recall@100": 0.20115176883607885,
+          "recall@200": 0.21656809793860832
+        },
+        "selected_not_worse_than_competitor": true
+      },
+      "test": {
+        "learned": {
+          "recall@50": 0.11601660401002506,
+          "recall@100": 0.1303214633806739,
+          "recall@200": 0.14619621971595656
+        },
+        "sparse_baseline": {
+          "recall@50": 0.12541684071289336,
+          "recall@100": 0.13840242968532443,
+          "recall@200": 0.15027977930938458
+        },
+        "selected_not_worse_than_competitor": true
+      }
+    },
+    "retriever_ablation": {
+      "metric_key": "recall@100",
+      "variants": {
+        "full": {
+          "dropped_branches": [],
+          "weights": {
+            "lexical": 1.0,
+            "dense_text": 0.0,
+            "multimodal": 0.0,
+            "graph_dense": 0.0,
+            "trajectory_dense": 0.0
+          },
+          "metrics": {
+            "recall@50": 0.151828,
+            "recall@100": 0.169247,
+            "recall@200": 0.182863
+          },
+          "delta_vs_full": {
+            "recall@50": {
+              "baseline": 0.151828,
+              "variant": 0.151828,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@100": {
+              "baseline": 0.169247,
+              "variant": 0.169247,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@200": {
+              "baseline": 0.182863,
+              "variant": 0.182863,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            }
+          }
+        },
+        "no_lexical": {
+          "dropped_branches": [
+            "lexical"
+          ],
+          "weights": {
+            "lexical": 0.0,
+            "dense_text": 0.25,
+            "multimodal": 0.25,
+            "graph_dense": 0.25,
+            "trajectory_dense": 0.25
+          },
+          "metrics": {
+            "recall@50": 0.071666,
+            "recall@100": 0.090585,
+            "recall@200": 0.111576
+          },
+          "delta_vs_full": {
+            "recall@50": {
+              "baseline": 0.151828,
+              "variant": 0.071666,
+              "delta": -0.080162,
+              "delta_pp": -8.016,
+              "relative_delta_pct": -52.798
+            },
+            "recall@100": {
+              "baseline": 0.169247,
+              "variant": 0.090585,
+              "delta": -0.078662,
+              "delta_pp": -7.866,
+              "relative_delta_pct": -46.478
+            },
+            "recall@200": {
+              "baseline": 0.182863,
+              "variant": 0.111576,
+              "delta": -0.071287,
+              "delta_pp": -7.129,
+              "relative_delta_pct": -38.984
+            }
+          }
+        },
+        "no_dense_text": {
+          "dropped_branches": [
+            "dense_text"
+          ],
+          "weights": {
+            "lexical": 1.0,
+            "dense_text": 0.0,
+            "multimodal": 0.0,
+            "graph_dense": 0.0,
+            "trajectory_dense": 0.0
+          },
+          "metrics": {
+            "recall@50": 0.151828,
+            "recall@100": 0.169247,
+            "recall@200": 0.182863
+          },
+          "delta_vs_full": {
+            "recall@50": {
+              "baseline": 0.151828,
+              "variant": 0.151828,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@100": {
+              "baseline": 0.169247,
+              "variant": 0.169247,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@200": {
+              "baseline": 0.182863,
+              "variant": 0.182863,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            }
+          }
+        },
+        "no_multimodal": {
+          "dropped_branches": [
+            "multimodal"
+          ],
+          "weights": {
+            "lexical": 1.0,
+            "dense_text": 0.0,
+            "multimodal": 0.0,
+            "graph_dense": 0.0,
+            "trajectory_dense": 0.0
+          },
+          "metrics": {
+            "recall@50": 0.151828,
+            "recall@100": 0.169247,
+            "recall@200": 0.182863
+          },
+          "delta_vs_full": {
+            "recall@50": {
+              "baseline": 0.151828,
+              "variant": 0.151828,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@100": {
+              "baseline": 0.169247,
+              "variant": 0.169247,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@200": {
+              "baseline": 0.182863,
+              "variant": 0.182863,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            }
+          }
+        },
+        "no_graph_dense": {
+          "dropped_branches": [
+            "graph_dense"
+          ],
+          "weights": {
+            "lexical": 1.0,
+            "dense_text": 0.0,
+            "multimodal": 0.0,
+            "graph_dense": 0.0,
+            "trajectory_dense": 0.0
+          },
+          "metrics": {
+            "recall@50": 0.151828,
+            "recall@100": 0.169247,
+            "recall@200": 0.182863
+          },
+          "delta_vs_full": {
+            "recall@50": {
+              "baseline": 0.151828,
+              "variant": 0.151828,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@100": {
+              "baseline": 0.169247,
+              "variant": 0.169247,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@200": {
+              "baseline": 0.182863,
+              "variant": 0.182863,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            }
+          }
+        },
+        "no_trajectory_dense": {
+          "dropped_branches": [
+            "trajectory_dense"
+          ],
+          "weights": {
+            "lexical": 1.0,
+            "dense_text": 0.0,
+            "multimodal": 0.0,
+            "graph_dense": 0.0,
+            "trajectory_dense": 0.0
+          },
+          "metrics": {
+            "recall@50": 0.151828,
+            "recall@100": 0.169247,
+            "recall@200": 0.182863
+          },
+          "delta_vs_full": {
+            "recall@50": {
+              "baseline": 0.151828,
+              "variant": 0.151828,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@100": {
+              "baseline": 0.169247,
+              "variant": 0.169247,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@200": {
+              "baseline": 0.182863,
+              "variant": 0.182863,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            }
+          }
+        }
+      },
+      "branch_importance": [
+        {
+          "branch": "lexical",
+          "recall@100_delta_without_branch": -0.078662
+        },
+        {
+          "branch": "dense_text",
+          "recall@100_delta_without_branch": 0.0
+        },
+        {
+          "branch": "multimodal",
+          "recall@100_delta_without_branch": 0.0
+        },
+        {
+          "branch": "graph_dense",
+          "recall@100_delta_without_branch": 0.0
+        },
+        {
+          "branch": "trajectory_dense",
+          "recall@100_delta_without_branch": 0.0
+        }
+      ]
+    }
+  },
+  "conversion": {
+    "spec": {
+      "objective_id": "conversion",
+      "label_key": "conversion",
+      "primary_metric": "ndcg@20",
+      "training_loss": "lambdarank",
+      "calibration": "isotonic"
+    },
+    "retriever": {
+      "recall@50": 0.175591048959571,
+      "recall@100": 0.1915070986808031,
+      "recall@200": 0.20523242086341895
+    },
+    "ranker": {
+      "ndcg@10": 0.16003946546881034,
+      "mrr@10": 0.18993605442176872,
+      "ndcg@20": 0.17208606048825642,
+      "mrr@20": 0.1925480714841451
+    },
+    "backend": "baseline_weighted",
+    "retriever_blend_weights": {
+      "lexical": 1.0,
+      "dense_text": 0.0,
+      "multimodal": 0.0,
+      "graph_dense": 0.0,
+      "trajectory_dense": 0.0
+    },
+    "retriever_weight_gate": {
+      "metric_key": "recall@100",
+      "selected_variant": "sparse_baseline",
+      "selected_weights": {
+        "lexical": 1.0,
+        "dense_text": 0.0,
+        "multimodal": 0.0,
+        "graph_dense": 0.0,
+        "trajectory_dense": 0.0
+      },
+      "validation": {
+        "learned": {
+          "recall@50": 0.18990034991632437,
+          "recall@100": 0.2195135402403773,
+          "recall@200": 0.24385136163091434
+        },
+        "sparse_baseline": {
+          "recall@50": 0.2003940362087327,
+          "recall@100": 0.22162825193975352,
+          "recall@200": 0.23755743191845424
+        },
+        "selected_not_worse_than_competitor": true
+      },
+      "test": {
+        "learned": {
+          "recall@50": 0.14581617400323357,
+          "recall@100": 0.16181515206979652,
+          "recall@200": 0.17796436960434397
+        },
+        "sparse_baseline": {
+          "recall@50": 0.15072450504865623,
+          "recall@100": 0.1613087611726305,
+          "recall@200": 0.172824578261798
+        },
+        "selected_not_worse_than_competitor": false
+      }
+    },
+    "retriever_ablation": {
+      "metric_key": "recall@100",
+      "variants": {
+        "full": {
+          "dropped_branches": [],
+          "weights": {
+            "lexical": 1.0,
+            "dense_text": 0.0,
+            "multimodal": 0.0,
+            "graph_dense": 0.0,
+            "trajectory_dense": 0.0
+          },
+          "metrics": {
+            "recall@50": 0.175591,
+            "recall@100": 0.191507,
+            "recall@200": 0.205232
+          },
+          "delta_vs_full": {
+            "recall@50": {
+              "baseline": 0.175591,
+              "variant": 0.175591,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@100": {
+              "baseline": 0.191507,
+              "variant": 0.191507,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@200": {
+              "baseline": 0.205232,
+              "variant": 0.205232,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            }
+          }
+        },
+        "no_lexical": {
+          "dropped_branches": [
+            "lexical"
+          ],
+          "weights": {
+            "lexical": 0.0,
+            "dense_text": 0.25,
+            "multimodal": 0.25,
+            "graph_dense": 0.25,
+            "trajectory_dense": 0.25
+          },
+          "metrics": {
+            "recall@50": 0.084357,
+            "recall@100": 0.103324,
+            "recall@200": 0.127078
+          },
+          "delta_vs_full": {
+            "recall@50": {
+              "baseline": 0.175591,
+              "variant": 0.084357,
+              "delta": -0.091234,
+              "delta_pp": -9.123,
+              "relative_delta_pct": -51.958
+            },
+            "recall@100": {
+              "baseline": 0.191507,
+              "variant": 0.103324,
+              "delta": -0.088183,
+              "delta_pp": -8.818,
+              "relative_delta_pct": -46.047
+            },
+            "recall@200": {
+              "baseline": 0.205232,
+              "variant": 0.127078,
+              "delta": -0.078154,
+              "delta_pp": -7.815,
+              "relative_delta_pct": -38.081
+            }
+          }
+        },
+        "no_dense_text": {
+          "dropped_branches": [
+            "dense_text"
+          ],
+          "weights": {
+            "lexical": 1.0,
+            "dense_text": 0.0,
+            "multimodal": 0.0,
+            "graph_dense": 0.0,
+            "trajectory_dense": 0.0
+          },
+          "metrics": {
+            "recall@50": 0.175591,
+            "recall@100": 0.191507,
+            "recall@200": 0.205232
+          },
+          "delta_vs_full": {
+            "recall@50": {
+              "baseline": 0.175591,
+              "variant": 0.175591,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@100": {
+              "baseline": 0.191507,
+              "variant": 0.191507,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@200": {
+              "baseline": 0.205232,
+              "variant": 0.205232,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            }
+          }
+        },
+        "no_multimodal": {
+          "dropped_branches": [
+            "multimodal"
+          ],
+          "weights": {
+            "lexical": 1.0,
+            "dense_text": 0.0,
+            "multimodal": 0.0,
+            "graph_dense": 0.0,
+            "trajectory_dense": 0.0
+          },
+          "metrics": {
+            "recall@50": 0.175591,
+            "recall@100": 0.191507,
+            "recall@200": 0.205232
+          },
+          "delta_vs_full": {
+            "recall@50": {
+              "baseline": 0.175591,
+              "variant": 0.175591,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@100": {
+              "baseline": 0.191507,
+              "variant": 0.191507,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@200": {
+              "baseline": 0.205232,
+              "variant": 0.205232,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            }
+          }
+        },
+        "no_graph_dense": {
+          "dropped_branches": [
+            "graph_dense"
+          ],
+          "weights": {
+            "lexical": 1.0,
+            "dense_text": 0.0,
+            "multimodal": 0.0,
+            "graph_dense": 0.0,
+            "trajectory_dense": 0.0
+          },
+          "metrics": {
+            "recall@50": 0.175591,
+            "recall@100": 0.191507,
+            "recall@200": 0.205232
+          },
+          "delta_vs_full": {
+            "recall@50": {
+              "baseline": 0.175591,
+              "variant": 0.175591,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@100": {
+              "baseline": 0.191507,
+              "variant": 0.191507,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@200": {
+              "baseline": 0.205232,
+              "variant": 0.205232,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            }
+          }
+        },
+        "no_trajectory_dense": {
+          "dropped_branches": [
+            "trajectory_dense"
+          ],
+          "weights": {
+            "lexical": 1.0,
+            "dense_text": 0.0,
+            "multimodal": 0.0,
+            "graph_dense": 0.0,
+            "trajectory_dense": 0.0
+          },
+          "metrics": {
+            "recall@50": 0.175591,
+            "recall@100": 0.191507,
+            "recall@200": 0.205232
+          },
+          "delta_vs_full": {
+            "recall@50": {
+              "baseline": 0.175591,
+              "variant": 0.175591,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@100": {
+              "baseline": 0.191507,
+              "variant": 0.191507,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@200": {
+              "baseline": 0.205232,
+              "variant": 0.205232,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            }
+          }
+        }
+      },
+      "branch_importance": [
+        {
+          "branch": "lexical",
+          "recall@100_delta_without_branch": -0.088183
+        },
+        {
+          "branch": "dense_text",
+          "recall@100_delta_without_branch": 0.0
+        },
+        {
+          "branch": "multimodal",
+          "recall@100_delta_without_branch": 0.0
+        },
+        {
+          "branch": "graph_dense",
+          "recall@100_delta_without_branch": 0.0
+        },
+        {
+          "branch": "trajectory_dense",
+          "recall@100_delta_without_branch": 0.0
+        }
+      ]
+    }
+  }
+}
