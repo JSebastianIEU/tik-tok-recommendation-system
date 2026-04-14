@@ -487,6 +487,28 @@ def suggest_hashtags(request: HashtagSuggestRequest) -> Dict[str, Any]:
 _video_analyzer = None
 
 
+@app.on_event("startup")
+async def _preload_video_models():
+    """Pre-load video analysis ML models at startup so first request is fast."""
+    import logging
+    _log = logging.getLogger(__name__)
+    global _video_analyzer
+    try:
+        from .video.analyzer import VideoAnalyzer, _load_whisper_model, _load_ocr_reader, _load_blip, _load_keybert
+        _video_analyzer = VideoAnalyzer()
+        _log.info("startup: pre-loading Whisper model...")
+        _load_whisper_model()
+        _log.info("startup: pre-loading EasyOCR reader...")
+        _load_ocr_reader()
+        _log.info("startup: pre-loading BLIP captioner...")
+        _load_blip()
+        _log.info("startup: pre-loading KeyBERT...")
+        _load_keybert()
+        _log.info("startup: all video models pre-loaded")
+    except Exception as err:
+        _log.warning("startup: video model pre-load failed: %s", err)
+
+
 @app.post("/v1/video/analyze")
 async def video_analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
     global _video_analyzer

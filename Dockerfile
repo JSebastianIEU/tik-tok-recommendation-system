@@ -2,17 +2,75 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# System deps for scipy / sklearn compiled extensions
+# System deps: compiler toolchain + ffmpeg + opencv runtime libs
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends gcc g++ && \
-    rm -rf /var/lib/apt/lists/*
+    apt-get install -y --no-install-recommends \
+        gcc g++ \
+        ffmpeg \
+        libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install Python deps (service + training requirements)
+# Install Python deps (service + training + video analysis)
 COPY requirements-base.txt requirements-service.txt requirements-training.txt ./
 RUN pip install --no-cache-dir \
     -r requirements-service.txt \
     -r requirements-training.txt \
     huggingface_hub
+
+# Video analysis dependencies
+RUN pip install --no-cache-dir \
+    opencv-python-headless>=4.9 \
+    faster-whisper>=1.0 \
+    easyocr>=1.7 \
+    keybert>=0.8 \
+    librosa>=0.10 \
+    decord>=0.6 \
+    imageio-ffmpeg>=0.5 \
+    Pillow>=10.0
+
+# Pre-download ML models at build time to avoid runtime HuggingFace rate limits
+# 1. faster-whisper "base" model (fast on CPU, good enough for keyword extraction)
+RUN python -c "\
+from faster_whisper import WhisperModel; \
+WhisperModel('base', device='cpu', compute_type='int8')"
+
+# 2. EasyOCR detection + recognition models (en, es)
+RUN python -c "\
+import easyocr; \
+easyocr.Reader(['en', 'es'], gpu=False, verbose=True)"
+
+# 3. BLIP image captioning model
+RUN python -c "\
+from transformers import BlipProcessor, BlipForConditionalGeneration; \
+BlipProcessor.from_pretrained('Salesforce/blip-image-captioning-base'); \
+BlipForConditionalGeneration.from_pretrained('Salesforce/blip-image-captioning-base')"
+
+# 4. KeyBERT sentence-transformers model
+RUN python -c "\
+from keybert import KeyBERT; \
+KeyBERT('paraphrase-multilingual-MiniLM-L12-v2')"
+
+# 5. SentenceTransformer for hashtag recommender — download then verify offline load
+RUN python -c "\
+from sentence_transformers import SentenceTransformer; \
+m = SentenceTransformer('all-MiniLM-L6-v2'); \
+print('SentenceTransformer downloaded, dim:', m.get_sentence_embedding_dimension())"
+
+# Verify all models load in offline mode (catches cache misses at build time)
+ENV HF_HUB_OFFLINE=1
+ENV TRANSFORMERS_OFFLINE=1
+ENV HF_DATASETS_OFFLINE=1
+RUN python -c "\
+from sentence_transformers import SentenceTransformer; \
+m = SentenceTransformer('all-MiniLM-L6-v2'); \
+print('OFFLINE OK: SentenceTransformer'); \
+from transformers import BlipProcessor, BlipForConditionalGeneration; \
+BlipProcessor.from_pretrained('Salesforce/blip-image-captioning-base'); \
+BlipForConditionalGeneration.from_pretrained('Salesforce/blip-image-captioning-base'); \
+print('OFFLINE OK: BLIP'); \
+from keybert import KeyBERT; \
+KeyBERT('paraphrase-multilingual-MiniLM-L12-v2'); \
+print('OFFLINE OK: KeyBERT')"
 
 # Copy source code and ensure package is importable
 COPY src/ ./src/
@@ -42,6 +100,12 @@ ENV HASHTAG_RECOMMENDER_DIR=artifacts/hashtag_recommender
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
 ENV PORT=8081
+# Disable demucs (too heavy for Cloud Run memory limits)
+ENV DEMUCS_ENABLED=false
+# Use CPU-friendly BLIP model (pre-downloaded above)
+ENV BLIP_MODEL_ID=Salesforce/blip-image-captioning-base
+# Use faster whisper "base" model (2x faster than "small" on CPU)
+ENV WHISPER_MODEL_SIZE=base
 
 EXPOSE 8081
 
