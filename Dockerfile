@@ -2,17 +2,30 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# System deps for scipy / sklearn compiled extensions
+# System deps: compiler toolchain + ffmpeg + opencv runtime libs
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends gcc g++ && \
-    rm -rf /var/lib/apt/lists/*
+    apt-get install -y --no-install-recommends \
+        gcc g++ \
+        ffmpeg \
+        libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install Python deps (service + training requirements)
+# Install Python deps (service + training + video analysis)
 COPY requirements-base.txt requirements-service.txt requirements-training.txt ./
 RUN pip install --no-cache-dir \
     -r requirements-service.txt \
     -r requirements-training.txt \
     huggingface_hub
+
+# Video analysis dependencies
+RUN pip install --no-cache-dir \
+    opencv-python-headless>=4.9 \
+    faster-whisper>=1.0 \
+    easyocr>=1.7 \
+    keybert>=0.8 \
+    librosa>=0.10 \
+    decord>=0.6 \
+    imageio-ffmpeg>=0.5
 
 # Copy source code and ensure package is importable
 COPY src/ ./src/

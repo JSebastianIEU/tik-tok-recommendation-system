@@ -1088,7 +1088,7 @@ class VideoAnalyzer:
         started = time.perf_counter()
 
         # Step 1: Extract two tiers of frames + metadata
-        vlm_frames, visual_frames, fps, duration, width, height = _extract_frames(video_path)
+        vlm_frames, visual_frames, fps, duration, width, height = _extract_frames(video_path, n_vlm=12)
 
         # Step 2: Extract audio (single 44.1kHz stereo WAV for both demucs and whisper)
         wav_path = _extract_audio_track(video_path)
