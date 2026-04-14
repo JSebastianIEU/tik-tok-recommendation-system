@@ -4,6 +4,7 @@
   "rewrites": [
     { "source": "/chat", "destination": "/api/chat" },
     { "source": "/generate-report", "destination": "/api/generate-report" },
-    { "source": "/upload-video", "destination": "/api/upload-video" }
+    { "source": "/upload-video", "destination": "/api/upload-video" },
+    { "source": "/hashtags/suggest", "destination": "/api/hashtags-suggest" }
   ]
 }
