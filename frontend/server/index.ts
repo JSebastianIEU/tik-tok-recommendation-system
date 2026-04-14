@@ -160,6 +160,60 @@ app.post(
         analysisProvider: uploadAnalysisProvider
       });
 
+      // Generate an LLM-powered caption if no caption was produced by the
+      // analyzer (e.g. when running baseline-only without VLM/BLIP) and
+      // DeepSeek is available.
+      if (!analysis.video_caption && deepSeekClient) {
+        try {
+          const captionContext: string[] = [];
+          if (analysis.transcript) captionContext.push(`Transcript: ${analysis.transcript}`);
+          if (analysis.ocr_text) captionContext.push(`On-screen text: ${analysis.ocr_text}`);
+          const dur = analysis.duration_seconds ?? analysis.asset?.duration_seconds;
+          if (dur) captionContext.push(`Duration: ${dur}s`);
+          if (analysis.visual_features) {
+            const vf = analysis.visual_features;
+            if (vf.resolution) captionContext.push(`Resolution: ${vf.resolution}`);
+            if (vf.dominant_colors?.length) captionContext.push(`Colors: ${vf.dominant_colors.join(", ")}`);
+          }
+          if (analysis.timeline?.length) {
+            const sceneCuts = analysis.timeline.filter((f) => f.is_scene_change).length;
+            captionContext.push(`Scene cuts: ${sceneCuts}`);
+            const avgRelevance =
+              analysis.timeline.reduce((s, f) => s + f.relevance_score, 0) / analysis.timeline.length;
+            captionContext.push(`Average visual relevance: ${avgRelevance.toFixed(2)}`);
+          }
+          captionContext.push(`File name: ${fileName}`);
+
+          const captionCompletion = await deepSeekClient.chat.completions.create({
+            model: DEEPSEEK_MODEL,
+            temperature: 0.5,
+            max_tokens: 200,
+            messages: [
+              {
+                role: "system",
+                content:
+                  "You are a TikTok content strategist. Given video analysis data, write a short, " +
+                  "engaging TikTok caption (1-2 sentences) that describes what the video is about. " +
+                  "Be specific to the content, not generic. Include a hook. " +
+                  "Do NOT include hashtags — those are handled separately. No emojis. Plain text only."
+              },
+              {
+                role: "user",
+                content: captionContext.join("\n")
+              }
+            ]
+          });
+
+          const generatedCaption =
+            captionCompletion.choices[0]?.message?.content?.trim() ?? "";
+          if (generatedCaption) {
+            analysis.video_caption = generatedCaption;
+          }
+        } catch (captionErr) {
+          console.warn("LLM caption generation failed:", captionErr instanceof Error ? captionErr.message : String(captionErr));
+        }
+      }
+
       response.status(201).json(analysis);
     } catch (error) {
       console.error("Upload analysis failed:", error);
@@ -578,6 +632,9 @@ async function buildFallbackItemsFromBundle(params: {
         similarity: { sparse: number; dense: number; fused: number };
         trace: { objective_model: string; ranker_backend: string };
         comment_trace: Record<string, unknown>;
+        score_components?: Record<string, number>;
+        ranking_reasons?: string[];
+        retrieval_branch_scores?: Record<string, number>;
       }>;
     }
   | null
@@ -613,7 +670,14 @@ async function buildFallbackItemsFromBundle(params: {
         hashtags: candidateById.get(item.candidate_id)?.hashtags,
         keywords: candidateById.get(item.candidate_id)?.keywords,
         searchQuery: candidateById.get(item.candidate_id)?.search_query
-      })
+      }),
+      score_components: item.score_components
+        ? Object.fromEntries(
+            Object.entries(item.score_components).filter(([, v]) => v !== undefined).map(([k, v]) => [k, Number(v)])
+          )
+        : undefined,
+      ranking_reasons: item.ranking_reasons,
+      retrieval_branch_scores: item.retrieval_branch_scores
     }))
   };
 }
@@ -2774,6 +2838,42 @@ app.post("/generate-report", async (request, response) => {
     response.status(500).json({
       error: "The report could not be generated right now."
     });
+  }
+});
+
+app.post("/hashtags/suggest", async (request, response) => {
+  try {
+    const { caption, top_n, exclude_tags, include_neighbours } = request.body as {
+      caption?: string;
+      top_n?: number;
+      exclude_tags?: string[];
+      include_neighbours?: boolean;
+    };
+
+    if (!caption || typeof caption !== "string" || !caption.trim()) {
+      response.status(400).json({ error: "A caption is required." });
+      return;
+    }
+
+    const result = await requestHashtagSuggestions({
+      caption: caption.trim(),
+      top_n: top_n ?? 15,
+      exclude_tags: exclude_tags ?? [],
+      include_neighbours: include_neighbours ?? false
+    });
+
+    if (!result.ok) {
+      response.status(502).json({ error: result.error, suggestions: [] });
+      return;
+    }
+
+    // Python API returns { hashtags: [...] }, frontend expects { suggestions: [...] }
+    const raw = result.payload as Record<string, unknown>;
+    const suggestions = raw.suggestions ?? raw.hashtags ?? [];
+    response.json({ suggestions });
+  } catch (error) {
+    console.error("hashtag suggest error:", error);
+    response.status(500).json({ error: "Could not fetch hashtag suggestions.", suggestions: [] });
   }
 });
 

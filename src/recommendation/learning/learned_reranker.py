@@ -19,6 +19,17 @@ from .artifacts import ArtifactRegistry
 from .baseline_common import as_float, round_score, sanitize_probability
 
 
+def _lgbm_device_params() -> dict:
+    """Return LightGBM params for GPU training if available."""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return {"device_type": "gpu", "gpu_use_dp": False}
+    except ImportError:
+        pass
+    return {}
+
+
 LEARNED_RERANKER_VERSION = "recommender.ranker.learned_pairwise.v1"
 LEARNED_RERANKER_ID = "learned_pairwise_lgbm"
 LEARNED_RERANKER_LABEL_POLICY_VERSION = "pairwise_supervision.v2"
@@ -249,9 +260,10 @@ class LearnedPairwiseReranker:
                 min_data_in_bin=1,
                 subsample=0.9,
                 colsample_bytree=0.9,
-                n_jobs=1,
+                n_jobs=-1,
                 verbosity=-1,
                 random_state=int(random_state),
+                **_lgbm_device_params(),
             )
             model.fit(x, y, sample_weight=sample_weight)
             model_type = "lightgbm_classifier"

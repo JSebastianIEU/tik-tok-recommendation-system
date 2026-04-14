@@ -1,0 +1,9 @@
+{
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "rewrites": [
+    { "source": "/chat", "destination": "/api/chat" },
+    { "source": "/generate-report", "destination": "/api/generate-report" },
+    { "source": "/upload-video", "destination": "/api/upload-video" }
+  ]
+}

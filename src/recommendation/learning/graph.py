@@ -19,6 +19,15 @@ from .temporal import parse_dt
 GRAPH_VERSION = "creator_video_dna_graph.v2"
 
 
+def _gpu_svd_available() -> bool:
+    """Check if GPU-accelerated SVD via PyTorch is available."""
+    try:
+        import torch
+        return torch.cuda.is_available()
+    except ImportError:
+        return False
+
+
 def _write_table(frame: pd.DataFrame, output_stem: Path) -> Dict[str, str]:
     parquet_path = output_stem.with_suffix(".parquet")
     jsonl_path = output_stem.with_suffix(".jsonl")
@@ -486,8 +495,17 @@ def _node2vec_like_embeddings(
     matrix = sp.diags(1.0 / row_sums) @ matrix
 
     dim = min(config.embedding_dim, max(2, n - 1))
-    svd = TruncatedSVD(n_components=dim, random_state=config.seed)
-    reduced = svd.fit_transform(matrix).astype(np.float32)
+    if _gpu_svd_available() and n <= 100_000:
+        import torch
+        dense_mat = matrix.toarray() if hasattr(matrix, "toarray") else np.asarray(matrix)
+        t = torch.tensor(dense_mat, dtype=torch.float32, device="cuda")
+        U, S, _ = torch.svd_lowrank(t, q=dim)
+        reduced = (U * S).cpu().numpy().astype(np.float32)
+        del t, U, S
+        torch.cuda.empty_cache()
+    else:
+        svd = TruncatedSVD(n_components=dim, random_state=config.seed)
+        reduced = svd.fit_transform(matrix).astype(np.float32)
     reduced = _normalize_rows(reduced)
     return {node_ids[idx]: reduced[idx].tolist() for idx in range(len(node_ids))}
 

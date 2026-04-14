@@ -1,0 +1,574 @@
+import type { VercelRequest, VercelResponse } from "@vercel/node";
+import { readFileSync } from "fs";
+import { join } from "path";
+
+const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY ?? "";
+const DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL ?? "deepseek-chat";
+const DEEPSEEK_BASE_URL =
+  process.env.DEEPSEEK_BASE_URL ?? "https://api.deepseek.com";
+const RECOMMENDER_SERVICE_URL = process.env.RECOMMENDER_SERVICE_URL ?? "";
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+interface DemoRecord {
+  video_id: string;
+  video_url: string;
+  caption: string;
+  hashtags: string[];
+  keywords?: string[];
+  likes: number;
+  comments_count: number;
+  shares: number;
+  views: number;
+  author?: { nickname?: string; unique_id?: string };
+}
+
+let cachedRecords: DemoRecord[] | null = null;
+
+function loadDemoData(): DemoRecord[] {
+  if (cachedRecords) return cachedRecords;
+  try {
+    const raw = readFileSync(
+      join(process.cwd(), "frontend", "src", "data", "demodata.jsonl"),
+      "utf-8"
+    );
+    cachedRecords = raw
+      .split("\n")
+      .filter((l) => l.trim())
+      .map((l) => JSON.parse(l) as DemoRecord);
+    return cachedRecords;
+  } catch {
+    return [];
+  }
+}
+
+// Real ranker weights from trained model
+const RANKER_WEIGHTS: Record<
+  string,
+  Record<string, number>
+> = {
+  reach: {
+    semantic_relevance: 0.28,
+    intent_alignment: 0.22,
+    performance_quality: 0.25,
+    reference_usefulness: 0.15,
+    support_confidence: 0.1,
+  },
+  engagement: {
+    semantic_relevance: 0.28,
+    intent_alignment: 0.25,
+    performance_quality: 0.22,
+    reference_usefulness: 0.15,
+    support_confidence: 0.1,
+  },
+  conversion: {
+    semantic_relevance: 0.26,
+    intent_alignment: 0.3,
+    performance_quality: 0.2,
+    reference_usefulness: 0.14,
+    support_confidence: 0.1,
+  },
+};
+
+function objectiveWeights(obj: string) {
+  return RANKER_WEIGHTS[obj] ?? RANKER_WEIGHTS.engagement;
+}
+
+function textOverlap(a: string[], b: string[]): number {
+  const setA = new Set(a.map((t) => t.toLowerCase().replace(/^[#@]/, "")));
+  const setB = new Set(b.map((t) => t.toLowerCase().replace(/^[#@]/, "")));
+  if (setA.size === 0 && setB.size === 0) return 0.5;
+  let overlap = 0;
+  for (const t of setA) if (setB.has(t)) overlap++;
+  const union = new Set([...setA, ...setB]).size;
+  return union === 0 ? 0.5 : overlap / union;
+}
+
+function cosineSimilarityWords(a: string, b: string): number {
+  const wordsA = a.toLowerCase().split(/\W+/).filter(Boolean);
+  const wordsB = b.toLowerCase().split(/\W+/).filter(Boolean);
+  const vocab = new Set([...wordsA, ...wordsB]);
+  if (vocab.size === 0) return 0;
+  let dot = 0,
+    magA = 0,
+    magB = 0;
+  for (const w of vocab) {
+    const cA = wordsA.filter((x) => x === w).length;
+    const cB = wordsB.filter((x) => x === w).length;
+    dot += cA * cB;
+    magA += cA * cA;
+    magB += cB * cB;
+  }
+  return magA === 0 || magB === 0 ? 0 : dot / (Math.sqrt(magA) * Math.sqrt(magB));
+}
+
+function scoreCandidate(
+  rec: DemoRecord,
+  description: string,
+  hashtags: string[],
+  objective: string
+) {
+  const w = objectiveWeights(objective);
+  const semantic = cosineSimilarityWords(description, rec.caption);
+  const hashtagSim = textOverlap(hashtags, rec.hashtags ?? []);
+  const intent = hashtagSim * 0.6 + semantic * 0.4;
+  const maxViews = 1e7;
+  const perf = Math.min(
+    1,
+    (Math.log10((rec.views || 1) + 1) / Math.log10(maxViews + 1)) * 0.5 +
+      (rec.likes / Math.max(rec.views, 1)) * 5
+  );
+  const ref = semantic > 0.3 ? 0.7 + semantic * 0.3 : 0.4;
+  const support = hashtagSim > 0.2 ? 0.7 : 0.4;
+
+  const score =
+    w.semantic_relevance * semantic +
+    w.intent_alignment * intent +
+    w.performance_quality * perf +
+    w.reference_usefulness * ref +
+    w.support_confidence * support;
+
+  return {
+    score: Math.round(score * 1000) / 1000,
+    components: {
+      semantic_relevance: Math.round(semantic * 1000) / 1000,
+      intent_alignment: Math.round(intent * 1000) / 1000,
+      performance_quality: Math.round(perf * 1000) / 1000,
+      reference_usefulness: Math.round(ref * 1000) / 1000,
+      support_confidence: Math.round(support * 1000) / 1000,
+    },
+  };
+}
+
+function engRate(rec: DemoRecord): string {
+  const v = rec.views || 1;
+  return (((rec.likes + rec.comments_count + rec.shares) / v) * 100).toFixed(2) + "%";
+}
+
+function buildComparable(
+  rec: DemoRecord,
+  idx: number,
+  description: string,
+  hashtags: string[],
+  objective: string
+) {
+  const scored = scoreCandidate(rec, description, hashtags, objective);
+  const authorName =
+    rec.author?.nickname ?? rec.author?.unique_id ?? "unknown";
+  const matchedKw = hashtags.filter((h) =>
+    (rec.hashtags ?? []).some(
+      (rh) => rh.toLowerCase().replace("#", "") === h.toLowerCase().replace("#", "")
+    )
+  );
+
+  return {
+    id: `comp-${idx}`,
+    candidate_id: rec.video_id,
+    caption: rec.caption,
+    author: authorName,
+    video_url: rec.video_url ?? "",
+    thumbnail_url: "",
+    hashtags: rec.hashtags ?? [],
+    similarity: scored.score,
+    support_level: scored.score > 0.5 ? "full" : scored.score > 0.3 ? "partial" : "low",
+    confidence_label:
+      scored.score > 0.5
+        ? "High confidence"
+        : scored.score > 0.3
+        ? "Medium confidence"
+        : "Low confidence",
+    metrics: {
+      views: rec.views ?? 0,
+      likes: rec.likes ?? 0,
+      comments_count: rec.comments_count ?? 0,
+      shares: rec.shares ?? 0,
+      engagement_rate: engRate(rec),
+    },
+    matched_keywords: matchedKw,
+    observations: [],
+    why_this_was_chosen: `Ranked #${idx + 1} by ${objective} objective scoring.`,
+    ranking_reasons: [
+      `Semantic relevance: ${scored.components.semantic_relevance}`,
+      `Intent alignment: ${scored.components.intent_alignment}`,
+      `Performance quality: ${scored.components.performance_quality}`,
+    ],
+    score_components: scored.components,
+    retrieval_branches: ["bm25_text"],
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Build a full ReportOutput
+// ---------------------------------------------------------------------------
+
+function buildReport(
+  payload: {
+    description: string;
+    hashtags: string[];
+    mentions: string[];
+    objective: string;
+    content_type?: string;
+  },
+  comparables: ReturnType<typeof buildComparable>[]
+) {
+  const now = new Date().toISOString();
+  const reqId = `req-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+  const avgScore =
+    comparables.reduce((s, c) => s + c.similarity, 0) / Math.max(comparables.length, 1);
+  const avgEng =
+    comparables.reduce(
+      (s, c) => s + parseFloat(c.metrics.engagement_rate),
+      0
+    ) / Math.max(comparables.length, 1);
+  const topHashtags = Array.from(
+    new Set(comparables.flatMap((c) => c.hashtags))
+  ).slice(0, 8);
+
+  const scoreComponentAvgs = {
+    semantic_relevance: 0,
+    intent_alignment: 0,
+    performance_quality: 0,
+    reference_usefulness: 0,
+    support_confidence: 0,
+  };
+  for (const c of comparables) {
+    for (const k of Object.keys(scoreComponentAvgs) as (keyof typeof scoreComponentAvgs)[]) {
+      scoreComponentAvgs[k] += c.score_components[k] / comparables.length;
+    }
+  }
+  for (const k of Object.keys(scoreComponentAvgs) as (keyof typeof scoreComponentAvgs)[]) {
+    scoreComponentAvgs[k] = Math.round(scoreComponentAvgs[k] * 1000) / 1000;
+  }
+
+  return {
+    meta: {
+      request_id: reqId,
+      objective: payload.objective,
+      objective_effective: payload.objective === "community" ? "engagement" : payload.objective,
+      generated_at: now,
+      recommender_source: "deterministic-local" as const,
+      fallback_mode: false,
+      fallback_reason: null,
+      evidence_label: comparables.length >= 8 ? "Strong evidence" as const : "Moderate evidence" as const,
+      confidence_label: avgScore > 0.4 ? "High confidence" as const : "Medium confidence" as const,
+      experiment_id: null,
+      variant: null,
+    },
+    header: {
+      title: "TikTok Content Analysis Report",
+      subtitle: `${payload.objective} optimization | ${comparables.length} comparable videos`,
+      badges: {
+        candidates_k: comparables.length,
+        model: "ranker-v2",
+        mode: payload.objective,
+      },
+      disclaimer:
+        "Scores are computed using trained ranker weights. Results may vary.",
+    },
+    executive_summary: {
+      metrics: [
+        { id: "avg-score", label: "Avg Relevance Score", value: avgScore.toFixed(3) },
+        { id: "avg-eng", label: "Avg Engagement Rate", value: avgEng.toFixed(2) + "%" },
+        { id: "candidates", label: "Videos Analyzed", value: String(comparables.length) },
+        { id: "objective", label: "Optimization Target", value: payload.objective },
+      ],
+      extracted_keywords: payload.hashtags.map((h) => h.replace("#", "")),
+      meaning_points: [
+        `Top comparable videos show an average engagement rate of ${avgEng.toFixed(2)}%.`,
+        `Content in this niche is optimized for ${payload.objective}.`,
+        `${topHashtags.length} recurring hashtags identified across comparables.`,
+      ],
+      summary_text: `Analysis of ${comparables.length} comparable TikTok videos for ${payload.objective} optimization. The top-ranked video scored ${comparables[0]?.similarity.toFixed(3) ?? "N/A"} in relevance.`,
+    },
+    comparables,
+    direct_comparison: {
+      rows: [
+        {
+          id: "dc-sem",
+          label: "Semantic Relevance",
+          your_value_label: scoreComponentAvgs.semantic_relevance.toFixed(2),
+          comparable_value_label: "baseline",
+          your_value_pct: scoreComponentAvgs.semantic_relevance * 100,
+          comparable_value_pct: 50,
+        },
+        {
+          id: "dc-intent",
+          label: "Intent Alignment",
+          your_value_label: scoreComponentAvgs.intent_alignment.toFixed(2),
+          comparable_value_label: "baseline",
+          your_value_pct: scoreComponentAvgs.intent_alignment * 100,
+          comparable_value_pct: 50,
+        },
+      ],
+      note: "Comparison against corpus average baseline.",
+    },
+    relevant_comments: { items: [], disclaimer: "Comment analysis not available in this mode." },
+    recommendations: {
+      items: [
+        {
+          id: "rec-1",
+          title: `Optimize for ${payload.objective}`,
+          priority: "High" as const,
+          effort: "Medium" as const,
+          evidence: `Based on ${comparables.length} comparable videos`,
+          rationale: `Top-performing videos in this niche use hashtags like ${topHashtags.slice(0, 3).join(", ")}`,
+          confidence_label: "High confidence" as const,
+          effect_area: "topic_alignment" as const,
+          caveats: [],
+          evidence_refs: comparables.slice(0, 3).map((c) => c.candidate_id),
+        },
+      ],
+    },
+    reasoning: {
+      evidence_pack: {
+        version: "1.0",
+        request: {
+          request_id: reqId,
+          objective: payload.objective,
+          objective_effective: payload.objective === "community" ? "engagement" : payload.objective,
+          fallback_mode: false,
+        },
+        query_summary: {
+          description: payload.description,
+          hashtags: payload.hashtags,
+          mentions: payload.mentions,
+          content_type: payload.content_type,
+        },
+        candidate_summary: {
+          final_count: comparables.length,
+          top_k_considered: comparables.length,
+          support_mix: {
+            full: comparables.filter((c) => c.support_level === "full").length,
+            partial: comparables.filter((c) => c.support_level === "partial").length,
+            low: comparables.filter((c) => c.support_level === "low").length,
+          },
+          branch_mix: { bm25_text: comparables.length },
+        },
+        top_candidates: comparables.slice(0, 5).map((c, i) => ({
+          candidate_id: c.candidate_id,
+          rank: i + 1,
+          score: c.similarity,
+          support_level: c.support_level,
+          score_components: c.score_components,
+          ranking_reasons: c.ranking_reasons,
+          hashtags: c.hashtags,
+        })),
+        aggregate_patterns: {
+          repeated_hashtags: topHashtags.map((t) => ({
+            tag: t,
+            support_count: comparables.filter((c) => c.hashtags.includes(t)).length,
+          })),
+          repeated_content_types: [],
+          repeated_ranking_reasons: [],
+          score_component_averages: scoreComponentAvgs,
+        },
+        contrast_signals: { top_vs_rest: [], mismatches: [], conflicts: [] },
+        evidence_quality: {
+          sufficient: comparables.length >= 5,
+          confidence: avgScore,
+          missing_flags: [],
+        },
+      },
+      explanation_units: [
+        {
+          explanation_id: "exp-1",
+          claim_type: "pattern_summary" as const,
+          statement: `Videos in this niche average ${avgEng.toFixed(2)}% engagement rate.`,
+          evidence_refs: comparables.slice(0, 3).map((c) => c.candidate_id),
+          confidence: avgScore,
+          status: avgScore > 0.4 ? "strong" as const : "moderate" as const,
+          caveats: [],
+        },
+      ],
+      recommendation_units: [
+        {
+          recommendation_id: "runit-1",
+          action: `Use trending hashtags: ${topHashtags.slice(0, 5).join(", ")}`,
+          rationale: "These hashtags appear most frequently among high-scoring comparables.",
+          priority: "High" as const,
+          effort: "Low" as const,
+          confidence: 0.8,
+          evidence_refs: comparables.slice(0, 3).map((c) => c.candidate_id),
+          expected_effect_area: "topic_alignment" as const,
+          caveats: [],
+        },
+      ],
+      reasoning_metadata: {
+        version: "1.0",
+        fallback_mode: false,
+        evidence_sufficiency: comparables.length >= 5,
+        reasoning_confidence: avgScore,
+        missing_evidence_flags: [],
+      },
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Try to call Cloud Run recommender service
+// ---------------------------------------------------------------------------
+
+async function callRecommenderService(payload: Record<string, unknown>) {
+  if (!RECOMMENDER_SERVICE_URL) return null;
+
+  try {
+    const resp = await fetch(`${RECOMMENDER_SERVICE_URL}/generate-report`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(55000),
+    });
+    if (!resp.ok) return null;
+    return (await resp.json()) as { report: unknown; suggested_hashtags?: unknown[] };
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Optionally enrich with DeepSeek
+// ---------------------------------------------------------------------------
+
+async function enrichSummaryWithLLM(report: ReturnType<typeof buildReport>) {
+  if (!DEEPSEEK_API_KEY) return report;
+
+  try {
+    const top3 = report.comparables.slice(0, 3);
+    const prompt = [
+      "Given this TikTok content analysis data, write a 2-3 sentence executive summary and 3 actionable recommendations.",
+      `Objective: ${report.meta.objective}`,
+      `Top comparable videos:`,
+      ...top3.map(
+        (c, i) =>
+          `${i + 1}. "${c.caption}" (score: ${c.similarity}, engagement: ${c.metrics.engagement_rate}, hashtags: ${c.hashtags.join(", ")})`
+      ),
+      "",
+      "Return JSON: { summary_text: string, recommendations: [{ title: string, rationale: string }] }",
+      "No markdown, no emojis, plain JSON only.",
+    ].join("\n");
+
+    const resp = await fetch(`${DEEPSEEK_BASE_URL}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${DEEPSEEK_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: DEEPSEEK_MODEL,
+        temperature: 0.2,
+        max_tokens: 1024,
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a senior growth analyst. Return valid JSON only. No markdown.",
+          },
+          { role: "user", content: prompt },
+        ],
+      }),
+      signal: AbortSignal.timeout(30000),
+    });
+
+    if (!resp.ok) return report;
+
+    const data = (await resp.json()) as {
+      choices: { message: { content: string } }[];
+    };
+    const raw = data.choices?.[0]?.message?.content?.trim() ?? "";
+    const jsonMatch = raw.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return report;
+
+    const parsed = JSON.parse(jsonMatch[0]) as {
+      summary_text?: string;
+      recommendations?: { title: string; rationale: string }[];
+    };
+
+    if (parsed.summary_text) {
+      report.executive_summary.summary_text = parsed.summary_text;
+    }
+    if (parsed.recommendations && Array.isArray(parsed.recommendations)) {
+      for (let i = 0; i < Math.min(parsed.recommendations.length, 3); i++) {
+        const r = parsed.recommendations[i];
+        if (report.recommendations.items[i]) {
+          report.recommendations.items[i].title = r.title;
+          report.recommendations.items[i].rationale = r.rationale;
+        } else {
+          report.recommendations.items.push({
+            id: `rec-llm-${i}`,
+            title: r.title,
+            priority: "Medium" as const,
+            effort: "Medium" as const,
+            evidence: `LLM-generated from ${top3.length} comparables`,
+            rationale: r.rationale,
+            confidence_label: "Medium confidence" as const,
+            effect_area: "topic_alignment" as const,
+            caveats: [],
+            evidence_refs: top3.map((c) => c.candidate_id),
+          });
+        }
+      }
+    }
+  } catch {
+    // LLM enrichment is best-effort
+  }
+
+  return report;
+}
+
+// ---------------------------------------------------------------------------
+// Handler
+// ---------------------------------------------------------------------------
+
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+
+  if (req.method === "OPTIONS") return res.status(204).end();
+  if (req.method !== "POST")
+    return res.status(405).json({ error: "Method not allowed" });
+
+  const body = req.body as Record<string, unknown>;
+  const description =
+    typeof body.description === "string" ? body.description.trim() : "";
+  const hashtags = Array.isArray(body.hashtags)
+    ? (body.hashtags as string[])
+    : [];
+  const mentions = Array.isArray(body.mentions)
+    ? (body.mentions as string[])
+    : [];
+  const objective =
+    typeof body.objective === "string" ? body.objective : "engagement";
+  const contentType =
+    typeof body.content_type === "string" ? body.content_type : undefined;
+
+  // 1) Try Cloud Run recommender service
+  const serviceResult = await callRecommenderService(body);
+  if (serviceResult) {
+    return res.json(serviceResult);
+  }
+
+  // 2) Local scoring from demodata
+  const records = loadDemoData();
+  if (records.length === 0) {
+    return res.status(500).json({ error: "No candidate data available." });
+  }
+
+  const scored = records.map((rec, idx) =>
+    buildComparable(rec, idx, description, hashtags, objective)
+  );
+  scored.sort((a, b) => b.similarity - a.similarity);
+  const top = scored.slice(0, 10);
+
+  let report = buildReport(
+    { description, hashtags, mentions, objective, content_type: contentType },
+    top
+  );
+
+  report = await enrichSummaryWithLLM(report);
+
+  return res.json({ report, suggested_hashtags: [] });
+}

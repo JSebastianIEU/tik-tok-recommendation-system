@@ -1,0 +1,46 @@
+# Everything except what Vercel needs
+artifacts/
+src/
+scraper/
+eda/
+diagnostics/
+venv/
+.venv/
+data/
+models/
+notebooks/
+hpc_logs/
+.git/
+.claude/
+node_modules/
+scripts/
+docs/
+tests/
+*.pkl
+*.npy
+*.pt
+*.pth
+*.safetensors
+*.parquet
+*.feather
+*.h5
+*.hdf5
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+Dockerfile*
+.dockerignore
+hpc_status.py
+requirements*.txt
+*.ipynb
+
+# Exclude frontend node_modules (Vercel installs deps itself)
+frontend/node_modules/
+
+# Exclude uploaded assets
+frontend/artifacts/
