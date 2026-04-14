@@ -53,9 +53,9 @@ DEFAULT_RANKING_WEIGHTS = {
 }
 OBJECTIVE_RANKING_WEIGHTS = {
     "reach": {
-        "semantic_relevance": 0.28,
-        "intent_alignment": 0.22,
-        "performance_quality": 0.25,
+        "semantic_relevance": 0.25,
+        "intent_alignment": 0.20,
+        "performance_quality": 0.30,
         "reference_usefulness": 0.15,
         "support_confidence": 0.10,
     },
@@ -67,11 +67,11 @@ OBJECTIVE_RANKING_WEIGHTS = {
         "support_confidence": 0.10,
     },
     "conversion": {
-        "semantic_relevance": 0.26,
-        "intent_alignment": 0.30,
-        "performance_quality": 0.20,
-        "reference_usefulness": 0.14,
-        "support_confidence": 0.10,
+        "semantic_relevance": 0.20,
+        "intent_alignment": 0.35,
+        "performance_quality": 0.15,
+        "reference_usefulness": 0.15,
+        "support_confidence": 0.15,
     },
 }
 
