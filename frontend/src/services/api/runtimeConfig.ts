@@ -27,8 +27,18 @@ function isVercelHost(): boolean {
 
 const configuredBaseUrl = normalizeBaseUrl(import.meta.env.VITE_API_BASE_URL ?? "");
 
+// When running on Vercel, ignore any localhost API URL that was baked in at
+// build time and use the deployment's own origin instead.
+const isLocalhostUrl =
+  configuredBaseUrl.includes("localhost") ||
+  configuredBaseUrl.includes("127.0.0.1");
+
 export const API_BASE_URL =
-  configuredBaseUrl || (isVercelHost() ? window.location.origin : DEFAULT_LOCAL_API_BASE_URL);
+  configuredBaseUrl && !(isVercelHost() && isLocalhostUrl)
+    ? configuredBaseUrl
+    : isVercelHost()
+      ? window.location.origin
+      : DEFAULT_LOCAL_API_BASE_URL;
 
 export const MOCK_ONLY_MODE =
   isTruthy(import.meta.env.VITE_USE_MOCK_ONLY) || isGitHubPagesHost();
