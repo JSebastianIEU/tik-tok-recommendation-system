@@ -17,10 +17,18 @@ function isGitHubPagesHost(): boolean {
   return hostname.endsWith("github.io");
 }
 
+function isVercelHost(): boolean {
+  if (typeof window === "undefined") {
+    return false;
+  }
+  const hostname = window.location.hostname.toLowerCase();
+  return hostname.endsWith(".vercel.app") || hostname.endsWith(".vercel.sh");
+}
+
 const configuredBaseUrl = normalizeBaseUrl(import.meta.env.VITE_API_BASE_URL ?? "");
 
 export const API_BASE_URL =
-  configuredBaseUrl || DEFAULT_LOCAL_API_BASE_URL;
+  configuredBaseUrl || (isVercelHost() ? window.location.origin : DEFAULT_LOCAL_API_BASE_URL);
 
 export const MOCK_ONLY_MODE =
   isTruthy(import.meta.env.VITE_USE_MOCK_ONLY) || isGitHubPagesHost();

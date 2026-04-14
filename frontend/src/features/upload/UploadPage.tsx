@@ -7,11 +7,10 @@ import {
   PanelTransitionWrapper,
   type LayoutMode
 } from "./components/PanelTransitionWrapper";
-import { PreviewThumbnailCard } from "./components/PreviewThumbnailCard";
 import { ProcessingCard } from "./components/ProcessingCard";
 import { UploadCard } from "./components/UploadCard";
 import { UploadForm } from "./components/UploadForm";
-import { VideoTimeline } from "./components/VideoTimeline";
+import { VideoPlayerPanel } from "./components/VideoPlayerPanel";
 import { useUploadWorkflow } from "./hooks/useUploadWorkflow";
 
 interface UploadPageProps {
@@ -52,19 +51,11 @@ export function UploadPage(props: UploadPageProps): JSX.Element {
         onRetry={uploadWorkflow.retryProcessing}
       />
     ) : layoutMode === "results" ? (
-      <>
-        <PreviewThumbnailCard
-          videoUrl={uploadWorkflow.previewUrl}
-          fileName={uploadWorkflow.selectedFile?.name ?? null}
-        />
-        {uploadWorkflow.analysisResult?.timeline &&
-          uploadWorkflow.analysisResult.timeline.length > 0 && (
-            <VideoTimeline
-              timeline={uploadWorkflow.analysisResult.timeline}
-              duration={uploadWorkflow.analysisResult.duration_seconds ?? 0}
-            />
-          )}
-      </>
+      <VideoPlayerPanel
+        videoUrl={uploadWorkflow.previewUrl}
+        fileName={uploadWorkflow.selectedFile?.name ?? null}
+        analysis={uploadWorkflow.analysisResult}
+      />
     ) : (
       <UploadCard
         fileName={uploadWorkflow.selectedFile?.name ?? null}
@@ -79,6 +70,8 @@ export function UploadPage(props: UploadPageProps): JSX.Element {
       <div className="results-reveal">
         <ReportPanel
           report={uploadWorkflow.reportResult}
+          suggestedHashtags={uploadWorkflow.reportHashtags}
+          userHashtags={uploadWorkflow.userHashtags}
           isExpanded={isReportExpanded}
           onToggleExpand={() => setIsReportExpanded((previous) => !previous)}
           onShowPreview={() => setIsReportExpanded(false)}

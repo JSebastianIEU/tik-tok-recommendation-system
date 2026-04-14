@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 export interface ProcessingStep {
   id: string;
@@ -9,8 +9,14 @@ export interface ProcessingStep {
 
 export type ProcessingStatus = "idle" | "processing" | "done" | "error";
 
+/**
+ * Progress callback passed to the task so it can advance the stepper
+ * in real-time as each phase completes.
+ */
+export type ProgressCallback = (stepId: string) => void;
+
 interface StartProcessingParams<TResult> {
-  task: () => Promise<TResult>;
+  task: (onProgress: ProgressCallback) => Promise<TResult>;
   onSuccess: (result: TResult) => void;
   onError?: (error: unknown) => void;
 }
@@ -40,11 +46,17 @@ export function useProcessingFlow(
   const [currentStepIndex, setCurrentStepIndex] = useState<number>(-1);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  const timersRef = useRef<number[]>([]);
   const flowIdRef = useRef<number>(0);
+  const timersRef = useRef<number[]>([]);
 
   const totalDurationMs = useMemo(() => {
     return steps.reduce((total, step) => total + step.durationMs, 0);
+  }, [steps]);
+
+  const stepIdToIndex = useMemo(() => {
+    const map = new Map<string, number>();
+    steps.forEach((step, idx) => map.set(step.id, idx));
+    return map;
   }, [steps]);
 
   const clearTimers = useCallback((): void => {
@@ -74,7 +86,6 @@ export function useProcessingFlow(
         if (settled || flowIdRef.current !== currentFlowId) {
           return;
         }
-
         settled = true;
         clearTimers();
         setStatus("error");
@@ -87,47 +98,43 @@ export function useProcessingFlow(
       setErrorMessage(null);
       setCurrentStepIndex(steps.length > 0 ? 0 : -1);
 
-      const taskPromise = task();
+      // Progress callback: task calls onProgress("stepId") to advance
+      const onProgress: ProgressCallback = (stepId: string) => {
+        if (flowIdRef.current !== currentFlowId || settled) return;
+        const idx = stepIdToIndex.get(stepId);
+        if (idx !== undefined) {
+          setCurrentStepIndex(idx);
+        }
+      };
 
-      // Schedule visual step progression independently from business logic.
+      // Also schedule timer-based fallback progression so if the task
+      // doesn't call onProgress, steps still advance visually.
       let accumulatedMs = steps.length > 0 ? steps[0].durationMs : 0;
       for (let index = 1; index < steps.length; index += 1) {
+        const capturedIndex = index;
         const timerId = window.setTimeout(() => {
-          if (flowIdRef.current !== currentFlowId) {
-            return;
-          }
-          setCurrentStepIndex(index);
+          if (flowIdRef.current !== currentFlowId) return;
+          // Only advance if we haven't already passed this step
+          setCurrentStepIndex((prev) => Math.max(prev, capturedIndex));
         }, accumulatedMs);
-
         timersRef.current.push(timerId);
         accumulatedMs += steps[index].durationMs;
       }
 
-      const finishTimerId = window.setTimeout(async () => {
-        if (flowIdRef.current !== currentFlowId) {
-          return;
-        }
+      const taskPromise = task(onProgress);
 
-        try {
-          const result = await taskPromise;
-          if (settled || flowIdRef.current !== currentFlowId) {
-            return;
-          }
-
+      taskPromise
+        .then((result) => {
+          if (settled || flowIdRef.current !== currentFlowId) return;
           settled = true;
+          clearTimers();
           setCurrentStepIndex(steps.length > 0 ? steps.length - 1 : -1);
           setStatus("done");
           onSuccess(result);
-        } catch (error) {
-          failProcessing(error);
-        }
-      }, totalDurationMs);
-
-      timersRef.current.push(finishTimerId);
-
-      void taskPromise.catch(failProcessing);
+        })
+        .catch(failProcessing);
     },
-    [clearTimers, steps, totalDurationMs]
+    [clearTimers, steps, totalDurationMs, stepIdToIndex]
   );
 
   useEffect(() => {

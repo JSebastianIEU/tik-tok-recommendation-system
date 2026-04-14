@@ -12,11 +12,19 @@ import { PROCESSING_STEPS } from "../processingSteps";
 import {
   useProcessingFlow,
   type ProcessingStatus,
-  type ProcessingStep
+  type ProcessingStep,
+  type ProgressCallback
 } from "./useProcessingFlow";
 
 interface UseUploadWorkflowParams {
   analysisService: IVideoAnalysisService;
+}
+
+export interface ReportHashtagSuggestion {
+  hashtag: string;
+  score: number;
+  frequency: number;
+  avg_engagement: number;
 }
 
 interface UseUploadWorkflowResult {
@@ -27,6 +35,8 @@ interface UseUploadWorkflowResult {
   error: string | null;
   analysisResult: VideoAnalysisResult | null;
   reportResult: ReportOutput | null;
+  reportHashtags: ReportHashtagSuggestion[];
+  userHashtags: string[];
   uploadSession: number;
   isBusy: boolean;
   isAnalyzing: boolean;
@@ -51,6 +61,7 @@ interface UseUploadWorkflowResult {
 interface UploadTaskResult {
   analysis: VideoAnalysisResult;
   report: ReportOutput;
+  hashtags: ReportHashtagSuggestion[];
 }
 
 const INITIAL_FORM_VALUES: UploadFormValues = {
@@ -70,17 +81,7 @@ const INITIAL_FORM_VALUES: UploadFormValues = {
 const PROCESSING_ERROR_MESSAGE =
   "A processing error happened. Please try again.";
 
-const REPORT_STEP_INDEX = PROCESSING_STEPS.findIndex((step) => step.id === "report");
-const REPORT_STEP_START_DELAY_MS = PROCESSING_STEPS.slice(
-  0,
-  Math.max(0, REPORT_STEP_INDEX)
-).reduce((total, step) => total + step.durationMs, 0);
-
-function wait(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    window.setTimeout(resolve, ms);
-  });
-}
+// no-op: step progression is now real-time via onProgress callback
 
 function buildSignalHints(
   formValues: UploadFormValues,
@@ -138,6 +139,7 @@ export function useUploadWorkflow(
     null
   );
   const [reportResult, setReportResult] = useState<ReportOutput | null>(null);
+  const [reportHashtags, setReportHashtags] = useState<ReportHashtagSuggestion[]>([]);
   const [uploadSession, setUploadSession] = useState<number>(0);
   const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
   const [preAnalysis, setPreAnalysis] = useState<VideoAnalysisResult | null>(null);
@@ -282,18 +284,9 @@ export function useUploadWorkflow(
             }));
           }
 
-          // Pre-fill hashtags from keywords
-          const suggestedHashtags = result.keyTopics
-            .map((kw) => kw.replace(/\s+/g, "").toLowerCase())
-            .filter((tag) => tag.length > 1)
-            .slice(0, 5);
-          if (suggestedHashtags.length > 0) {
-            setFormValues((prev) => ({
-              ...prev,
-              hashtags:
-                prev.hashtags.length === 0 ? suggestedHashtags : prev.hashtags
-            }));
-          }
+          // Hashtags are NOT auto-filled from keyTopics.
+          // The real hashtag recommender suggests them inside the
+          // hashtag field once the user writes a description.
 
           return current;
         });
@@ -334,11 +327,15 @@ export function useUploadWorkflow(
     setPhase("processing");
 
     processingFlow.startProcessing({
-      task: async (): Promise<UploadTaskResult> => {
-        const taskStartedAt = Date.now();
+      task: async (onProgress: ProgressCallback): Promise<UploadTaskResult> => {
+        // Step 1: Upload & analyze video (frames, vision, transcript, timeline)
+        onProgress("upload");
+
         const requestSignalHints = buildSignalHints(formValues);
 
-        // Reuse pre-analysis from file-select if available; otherwise analyze now
+        // Run video analysis — this calls the Python service which does
+        // frame extraction, scene detection, whisper, OCR, etc.
+        onProgress("frames");
         const analysis = preAnalysis ?? await analysisService.analyzeVideo({
           file: selectedFile,
           mentions: formValues.mentions,
@@ -351,6 +348,13 @@ export function useUploadWorkflow(
           locale: formValues.locale,
           signal_hints: requestSignalHints
         });
+
+        // Video analysis done — expose timeline immediately so
+        // VideoPlayerPanel renders even if report generation fails.
+        setAnalysisResult(analysis);
+        onProgress("timeline");
+
+        // Step 2: Build signal hints & generate report
         const mergedSignalHints = mergeSignalHints(
           analysis.signal_hints,
           requestSignalHints
@@ -360,17 +364,9 @@ export function useUploadWorkflow(
           buildSignalHints(formValues, analysis)
         );
 
-        const elapsedMs = Date.now() - taskStartedAt;
-        const remainingBeforeReportStep = Math.max(
-          0,
-          REPORT_STEP_START_DELAY_MS - elapsedMs
-        );
+        onProgress("compare");
 
-        if (remainingBeforeReportStep > 0) {
-          await wait(remainingBeforeReportStep);
-        }
-
-        const report = await generateReport({
+        const reportResult = await generateReport({
           asset_id: analysis.asset_id,
           mentions: formValues.mentions,
           hashtags: formValues.hashtags,
@@ -383,11 +379,14 @@ export function useUploadWorkflow(
           signal_hints: reportSignalHints
         });
 
-        return { analysis, report };
+        onProgress("report");
+
+        return { analysis, report: reportResult.report, hashtags: reportResult.suggested_hashtags ?? [] };
       },
       onSuccess: (result) => {
         setAnalysisResult(result.analysis);
         setReportResult(result.report);
+        setReportHashtags(result.hashtags);
         setError(null);
         setPhase("done");
       },
@@ -413,6 +412,8 @@ export function useUploadWorkflow(
     error,
     analysisResult,
     reportResult,
+    reportHashtags,
+    userHashtags: formValues.hashtags,
     uploadSession,
     isBusy,
     isAnalyzing,

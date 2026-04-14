@@ -21,20 +21,34 @@ export interface GenerateReportPayload {
 
 interface GenerateReportResponse {
   report: ReportOutput;
+  suggested_hashtags?: Array<{
+    hashtag: string;
+    score: number;
+    frequency: number;
+    avg_engagement: number;
+  }>;
 }
 
-function fallbackToMock(payload: GenerateReportPayload): ReportOutput {
-  return generateMockReport({
-    seedVideoId: payload.asset_id ?? payload.seed_video_id ?? "uploaded-asset",
-    mentions: payload.mentions,
-    hashtags: payload.hashtags,
-    description: payload.description
-  });
+export interface GenerateReportResult {
+  report: ReportOutput;
+  suggested_hashtags: GenerateReportResponse["suggested_hashtags"];
+}
+
+function fallbackToMock(payload: GenerateReportPayload): GenerateReportResult {
+  return {
+    report: generateMockReport({
+      seedVideoId: payload.asset_id ?? payload.seed_video_id ?? "uploaded-asset",
+      mentions: payload.mentions,
+      hashtags: payload.hashtags,
+      description: payload.description
+    }),
+    suggested_hashtags: []
+  };
 }
 
 export async function generateReport(
   payload: GenerateReportPayload
-): Promise<ReportOutput> {
+): Promise<GenerateReportResult> {
   if (MOCK_ONLY_MODE) {
     return fallbackToMock(payload);
   }
@@ -58,5 +72,8 @@ export async function generateReport(
   }
 
   const parsed = (await response.json()) as GenerateReportResponse;
-  return parsed.report;
+  return {
+    report: parsed.report,
+    suggested_hashtags: parsed.suggested_hashtags ?? []
+  };
 }
