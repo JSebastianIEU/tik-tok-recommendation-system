@@ -8,6 +8,7 @@ import type {
   UploadPhase,
   VideoAnalysisResult
 } from "../../../services/contracts/models";
+import { suggestDescription } from "../../../services/api/suggestDescriptionApi";
 import { PROCESSING_STEPS } from "../processingSteps";
 import {
   useProcessingFlow,
@@ -274,19 +275,54 @@ export function useUploadWorkflow(
           setPreAnalysis(result);
           setIsAnalyzing(false);
 
-          // Pre-fill description from VLM caption or transcript
-          const suggestedDescription =
-            result.video_caption || result.transcript || "";
-          if (suggestedDescription) {
-            setFormValues((prev) => ({
-              ...prev,
-              description: prev.description || suggestedDescription
-            }));
-          }
+          // Use DeepSeek to generate a smart description from all analysis data.
+          // Falls back to raw caption/transcript if the API call fails.
+          suggestDescription(
+            result,
+            formValues.objective,
+            formValues.content_type,
+            formValues.locale
+          )
+            .then((suggestion) => {
+              if (suggestion.description) {
+                setFormValues((prev) => ({
+                  ...prev,
+                  description: prev.description || suggestion.description
+                }));
+              } else {
+                // Fallback: use raw VLM caption or transcript
+                const fallback = result.video_caption || result.transcript || "";
+                if (fallback) {
+                  setFormValues((prev) => ({
+                    ...prev,
+                    description: prev.description || fallback
+                  }));
+                }
+              }
 
-          // Hashtags are NOT auto-filled from keyTopics.
-          // The real hashtag recommender suggests them inside the
-          // hashtag field once the user writes a description.
+              // Auto-fill suggested hashtags from DeepSeek
+              if (suggestion.hashtags && suggestion.hashtags.length > 0) {
+                setFormValues((prev) => {
+                  if (prev.hashtags.length > 0) return prev;
+                  return {
+                    ...prev,
+                    hashtags: suggestion.hashtags.slice(0, 8).map((h) =>
+                      h.replace(/^#/, "").trim().toLowerCase()
+                    ).filter(Boolean)
+                  };
+                });
+              }
+            })
+            .catch(() => {
+              // Fallback on error: use raw caption/transcript
+              const fallback = result.video_caption || result.transcript || "";
+              if (fallback) {
+                setFormValues((prev) => ({
+                  ...prev,
+                  description: prev.description || fallback
+                }));
+              }
+            });
 
           return current;
         });

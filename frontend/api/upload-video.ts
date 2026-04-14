@@ -6,11 +6,11 @@ const DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL ?? "deepseek-chat";
 const DEEPSEEK_BASE_URL =
   process.env.DEEPSEEK_BASE_URL ?? "https://api.deepseek.com";
 
-interface UploadJsonBody {
-  file_name?: string;
-  file_type?: string;
-  file_size?: number;
-}
+export const config = {
+  api: {
+    bodyParser: false,
+  },
+};
 
 function collectBody(req: VercelRequest): Promise<Buffer> {
   return new Promise((resolve, reject) => {
@@ -72,29 +72,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== "POST")
     return res.status(405).json({ error: "Method not allowed" });
 
-  // Support both JSON body (new) and raw octet-stream with headers (legacy)
-  let fileName = (req.headers["x-file-name"] as string) ?? "uploaded_video.mp4";
-  let fileType = (req.headers["x-file-type"] as string) ?? "video/mp4";
+  const fileName =
+    (req.headers["x-file-name"] as string) ?? "uploaded_video.mp4";
+  const fileType =
+    (req.headers["x-file-type"] as string) ?? "video/mp4";
 
-  const contentType = (req.headers["content-type"] ?? "").toString().toLowerCase();
-
-  if (contentType.includes("application/json")) {
-    // New path: small JSON payload with metadata only
-    try {
-      const raw = await collectBody(req);
-      const jsonBody = JSON.parse(raw.toString("utf-8")) as UploadJsonBody;
-      if (jsonBody.file_name) fileName = jsonBody.file_name;
-      if (jsonBody.file_type) fileType = jsonBody.file_type;
-    } catch {
-      return res.status(400).json({ error: "Invalid JSON body." });
-    }
-  } else {
-    // Legacy path: consume raw binary body (not stored on Vercel)
-    try {
-      await collectBody(req);
-    } catch {
-      return res.status(400).json({ error: "Failed to read upload." });
-    }
+  // Consume the body (we don't store it on Vercel, but we need to read it)
+  try {
+    await collectBody(req);
+  } catch {
+    return res.status(400).json({ error: "Failed to read upload." });
   }
 
   const assetId = randomUUID();
