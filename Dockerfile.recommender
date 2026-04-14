@@ -32,6 +32,7 @@ snapshot_download( \
         'artifacts/recommender/20260414T050542Z-phase2-bootstrap-feedback/**', \
         'artifacts/contracts/f0119270fe1433f1adea9f41fbfd6eae66124c85ec9618619d0646ae29858bce/bundle.json', \
         'artifacts/hashtag_recommender/**', \
+        'artifacts/comment_intelligence/features/**', \
     ] \
 )"
 
@@ -39,10 +40,14 @@ snapshot_download( \
 ENV RECOMMENDER_BUNDLE_DIR=artifacts/recommender/20260414T050542Z-phase2-bootstrap-feedback
 ENV RECOMMENDER_CORPUS_BUNDLE_PATH=artifacts/contracts/f0119270fe1433f1adea9f41fbfd6eae66124c85ec9618619d0646ae29858bce/bundle.json
 ENV HASHTAG_RECOMMENDER_DIR=artifacts/hashtag_recommender
+ENV COMMENT_INTELLIGENCE_DIR=artifacts/comment_intelligence/features
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
 ENV PORT=8081
 
 EXPOSE 8081
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
+  CMD python -c "import urllib.request,json; d=json.loads(urllib.request.urlopen('http://127.0.0.1:8081/v1/health').read()); exit(0 if d.get('ok') and d.get('retriever_loaded') else 1)"
 
 CMD ["sh", "-c", "python scripts/serve_recommender.py --host 0.0.0.0 --port ${PORT:-8081} --bundle-dir artifacts/recommender/20260414T050542Z-phase2-bootstrap-feedback"]

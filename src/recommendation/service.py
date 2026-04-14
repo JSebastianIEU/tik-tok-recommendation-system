@@ -146,6 +146,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+import logging as _logging
+
+_service_logger = _logging.getLogger("recommendation.service")
+
 _runtime: Optional[RecommenderRuntime] = None
 _runtime_marker: Optional[Tuple[str, int]] = None
 _fabric = _load_fabric()
@@ -213,6 +217,49 @@ def _ensure_runtime(force_reload: bool = False) -> RecommenderRuntime:
     return _runtime
 
 
+@app.on_event("startup")
+def _startup_prewarm() -> None:
+    """Eagerly load the recommender runtime so the first request is fast."""
+    _service_logger.info("startup: pre-warming recommender runtime...")
+    try:
+        runtime = _ensure_runtime()
+        _service_logger.info("startup: runtime loaded from %s", runtime.bundle_dir)
+        if runtime.retriever is not None:
+            warmup_query = {
+                "row_id": "__warmup__",
+                "query_id": "__warmup__",
+                "text": "test",
+                "caption": "test",
+                "hashtags": [],
+                "keywords": [],
+                "search_query": "test",
+                "topic_key": "",
+                "content_type": "",
+                "language": "",
+                "locale": "",
+                "author_id": None,
+                "as_of_time": None,
+            }
+            try:
+                runtime.retriever.retrieve(
+                    query_row=warmup_query, top_k=1, objective="engagement",
+                    return_metadata=False,
+                )
+                _service_logger.info("startup: warm-up retrieval complete")
+            except Exception as warn:
+                _service_logger.warning("startup: warm-up retrieval skipped: %s", warn)
+    except Exception as error:
+        _service_logger.error("startup: failed to pre-warm runtime: %s", error)
+
+
+@app.get("/v1/warmup")
+def warmup_check() -> Dict[str, Any]:
+    """Readiness probe — returns ready only when the runtime is loaded."""
+    if _runtime is None:
+        return {"ready": False, "reason": "runtime_not_loaded"}
+    return {"ready": True, "bundle_dir": str(_runtime.bundle_dir)}
+
+
 @app.get("/v1/health")
 def health() -> Dict[str, Any]:
     try:
@@ -227,6 +274,9 @@ def health() -> Dict[str, Any]:
         "ok": True,
         "status": "ready",
         "bundle_dir": str(runtime.bundle_dir),
+        "retriever_loaded": runtime.retriever is not None,
+        "retriever_load_warning": runtime.retriever_load_warning,
+        "comment_index_loaded": runtime.comment_index is not None,
     }
 
 
