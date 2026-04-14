@@ -221,9 +221,17 @@ __marimo__/
 # Claude Code workspace
 .claude/
 
-# Generated model/data artifacts
-artifacts/
+# Model artifacts (binaries hosted on HuggingFace, only manifests tracked in git)
 *.pkl
+artifacts/contracts/
+artifacts/datamart/
+artifacts/comment_intelligence/
+artifacts/hashtag_recommender/
+artifacts/recommender/*/retriever/*.pkl
+artifacts/recommender/*/rankers/*/learned_reranker/model.pkl
+artifacts/recommender/*/graph/
+artifacts/recommender/*/trajectory/
+
 data/real/
 frontend/.env.local
 .vite/
