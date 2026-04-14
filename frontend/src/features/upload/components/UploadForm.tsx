@@ -359,7 +359,7 @@ export function UploadForm(props: UploadFormProps): JSX.Element {
             className="glass-textarea"
             value={values.description}
             disabled={disabled}
-            placeholder={isAnalyzing ? "Analyzing video for suggestions..." : "Describe your video content"}
+            placeholder={isAnalyzing ? "AI is analyzing your video and writing a description..." : "Describe your video content"}
             onChange={(event) => onDescriptionChange(event.target.value)}
           />
         </div>
