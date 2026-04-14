@@ -1,0 +1,11 @@
+{
+  "installCommand": "cd frontend && npm install",
+  "buildCommand": "cd frontend && npm run build",
+  "outputDirectory": "frontend/dist",
+  "framework": "vite",
+  "rewrites": [
+    { "source": "/chat", "destination": "/api/chat" },
+    { "source": "/generate-report", "destination": "/api/generate-report" },
+    { "source": "/upload-video", "destination": "/api/upload-video" }
+  ]
+}

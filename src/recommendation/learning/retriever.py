@@ -35,6 +35,61 @@ except Exception:  # pragma: no cover - optional dependency
 
 logger = logging.getLogger(__name__)
 
+
+def _sbert_device() -> str:
+    """Pick best available device for sentence-transformers."""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return "cuda"
+    except ImportError:
+        pass
+    return "cpu"
+
+
+def _to_gpu_index(index, max_k: int = 0):
+    """Move a FAISS index to GPU if available (requires faiss-gpu).
+
+    GPU FAISS limits k-selection to 2048. If the index will be searched with
+    k > 2048 (pass max_k to signal this), the index stays on CPU.
+    """
+    if faiss is None:
+        return index
+    if max_k > 2048:
+        return index
+    try:
+        res = faiss.StandardGpuResources()
+        return faiss.index_cpu_to_gpu(res, 0, index)
+    except (AttributeError, RuntimeError):
+        return index
+
+
+_gpu_embedding_cache: Dict[int, Any] = {}  # id(np_array) -> GPU tensor
+
+
+def _gpu_dot_scores(embeddings: np.ndarray, query_vec: np.ndarray) -> Optional[np.ndarray]:
+    """Compute inner-product scores on GPU via torch.matmul.
+
+    Bypasses FAISS entirely — no k-selection limit. Caches the embedding
+    matrix on GPU across calls (keyed by numpy array id) so only the query
+    vector is uploaded each time.  Returns None if GPU unavailable.
+    """
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            return None
+        dev = torch.device("cuda")
+        arr_id = id(embeddings)
+        emb = _gpu_embedding_cache.get(arr_id)
+        if emb is None:
+            emb = torch.as_tensor(embeddings, dtype=torch.float32, device=dev)
+            _gpu_embedding_cache[arr_id] = emb
+        q = torch.as_tensor(query_vec, dtype=torch.float32, device=dev)
+        scores = (emb @ q).cpu().numpy()
+        return scores
+    except (ImportError, RuntimeError):
+        return None
+
 RUNTIME_OBJECTIVES = ("reach", "engagement", "conversion")
 CREATOR_RETRIEVAL_VERSION = "creator_retrieval.v1"
 CREATOR_RETRIEVAL_MAX_BLEND_WEIGHT = 0.16
@@ -469,6 +524,7 @@ class HybridRetriever:
         self._multimodal_faiss: Any = None
         self._graph_faiss: Any = None
         self._trajectory_faiss: Any = None
+        self._row_id_to_idx: Dict[str, int] = {rid: i for i, rid in enumerate(row_ids)}
         self.graph_bundle_id = str(self.graph_payload.get("graph_bundle_id") or "")
         self.graph_version = str(self.graph_payload.get("graph_version") or "")
         self.trajectory_manifest_id = str(
@@ -589,11 +645,14 @@ class HybridRetriever:
         _sbert_encoder = None  # stored for reuse in multimodal branch
         if SentenceTransformer is not None:
             try:
-                _sbert_encoder = SentenceTransformer(cfg.dense_model_name)
+                _device = _sbert_device()
+                _sbert_encoder = SentenceTransformer(cfg.dense_model_name, device=_device)
+                logger.info("SentenceTransformer device: %s", _device)
                 embeddings = _sbert_encoder.encode(
                     row_texts,
                     convert_to_numpy=True,
                     normalize_embeddings=True,
+                    batch_size=256,
                 ).astype(np.float32)
                 dense_backend = (
                     "sentence-transformers-faiss"
@@ -640,6 +699,7 @@ class HybridRetriever:
                 caption_texts,
                 convert_to_numpy=True,
                 normalize_embeddings=True,
+                batch_size=256,
             ).astype(np.float32)
             multimodal_matrix = mm_embeddings
             multimodal_backend = (
@@ -1062,7 +1122,7 @@ class HybridRetriever:
             model_name = self.dense_payload["model_name"]
             try:
                 if self._dense_encoder is None:
-                    self._dense_encoder = SentenceTransformer(model_name)
+                    self._dense_encoder = SentenceTransformer(model_name, device=_sbert_device())
                 query_embedding = self._dense_encoder.encode(
                     [query_text],
                     convert_to_numpy=True,
@@ -1071,10 +1131,14 @@ class HybridRetriever:
             except Exception:  # pragma: no cover
                 return np.zeros(len(self.row_ids), dtype=np.float32)
             embeddings = self.dense_payload["embeddings"]
+            gpu_scores = _gpu_dot_scores(np.asarray(embeddings, dtype=np.float32), query_embedding)
+            if gpu_scores is not None:
+                return gpu_scores.astype(np.float32)
             if faiss is not None and self.dense_backend.endswith("faiss"):
                 if self._dense_faiss is None:
-                    self._dense_faiss = faiss.IndexFlatIP(int(embeddings.shape[1]))
-                    self._dense_faiss.add(np.asarray(embeddings, dtype=np.float32))
+                    idx = faiss.IndexFlatIP(int(embeddings.shape[1]))
+                    idx.add(np.asarray(embeddings, dtype=np.float32))
+                    self._dense_faiss = _to_gpu_index(idx, max_k=len(self.row_ids))
                 scores, indices = self._dense_faiss.search(
                     np.expand_dims(query_embedding, axis=0), len(self.row_ids)
                 )
@@ -1099,10 +1163,14 @@ class HybridRetriever:
             return np.zeros(len(self.row_ids), dtype=np.float32)
         dim = int(self.multimodal_payload.get("dimension", embeddings.shape[1] if embeddings.ndim == 2 else 4))
         query_vec = _query_multimodal_fallback(query_row, max(1, dim))
+        gpu_scores = _gpu_dot_scores(embeddings, query_vec)
+        if gpu_scores is not None:
+            return gpu_scores.astype(np.float32)
         if faiss is not None and self.multimodal_backend.endswith("faiss"):
             if self._multimodal_faiss is None:
-                self._multimodal_faiss = faiss.IndexFlatIP(int(embeddings.shape[1]))
-                self._multimodal_faiss.add(np.asarray(embeddings, dtype=np.float32))
+                idx = faiss.IndexFlatIP(int(embeddings.shape[1]))
+                idx.add(np.asarray(embeddings, dtype=np.float32))
+                self._multimodal_faiss = _to_gpu_index(idx, max_k=len(self.row_ids))
             scores, indices = self._multimodal_faiss.search(
                 np.expand_dims(query_vec, axis=0),
                 len(self.row_ids),
@@ -1128,10 +1196,14 @@ class HybridRetriever:
             )
         )
         query_vec, trace = _query_graph_vector(query_row, self.graph_payload, max(1, dim))
+        gpu_scores = _gpu_dot_scores(embeddings, query_vec)
+        if gpu_scores is not None:
+            return gpu_scores.astype(np.float32), trace
         if faiss is not None and self.graph_backend.endswith("faiss"):
             if self._graph_faiss is None:
-                self._graph_faiss = faiss.IndexFlatIP(int(embeddings.shape[1]))
-                self._graph_faiss.add(np.asarray(embeddings, dtype=np.float32))
+                idx = faiss.IndexFlatIP(int(embeddings.shape[1]))
+                idx.add(np.asarray(embeddings, dtype=np.float32))
+                self._graph_faiss = _to_gpu_index(idx, max_k=len(self.row_ids))
             scores, indices = self._graph_faiss.search(
                 np.expand_dims(query_vec, axis=0),
                 len(self.row_ids),
@@ -1161,10 +1233,19 @@ class HybridRetriever:
             max(1, dim),
             payload=self.trajectory_payload,
         )
+        traj_trace = {
+            "source": "trajectory_features",
+            "trajectory_manifest_id": self.trajectory_manifest_id,
+            "trajectory_version": self.trajectory_version,
+        }
+        gpu_scores = _gpu_dot_scores(embeddings, query_vec)
+        if gpu_scores is not None:
+            return gpu_scores.astype(np.float32), traj_trace
         if faiss is not None and self.trajectory_backend.endswith("faiss"):
             if self._trajectory_faiss is None:
-                self._trajectory_faiss = faiss.IndexFlatIP(int(embeddings.shape[1]))
-                self._trajectory_faiss.add(np.asarray(embeddings, dtype=np.float32))
+                idx = faiss.IndexFlatIP(int(embeddings.shape[1]))
+                idx.add(np.asarray(embeddings, dtype=np.float32))
+                self._trajectory_faiss = _to_gpu_index(idx, max_k=len(self.row_ids))
             scores, indices = self._trajectory_faiss.search(
                 np.expand_dims(query_vec, axis=0),
                 len(self.row_ids),
@@ -1173,11 +1254,7 @@ class HybridRetriever:
             for idx, score in zip(indices[0], scores[0]):
                 if idx >= 0:
                     out[int(idx)] = float(score)
-            return out, {
-                "source": "trajectory_features",
-                "trajectory_manifest_id": self.trajectory_manifest_id,
-                "trajectory_version": self.trajectory_version,
-            }
+            return out, traj_trace
         return np.dot(embeddings, query_vec).astype(np.float32), {
             "source": "trajectory_features",
             "trajectory_manifest_id": self.trajectory_manifest_id,
@@ -1230,6 +1307,60 @@ class HybridRetriever:
             if len(filtered) >= min_required or tier == 3:
                 return filtered, tier
         return temporal_candidates, 3
+
+    def compute_branch_scores(
+        self, query_row: Dict[str, Any]
+    ) -> Dict[str, np.ndarray]:
+        """Pre-compute and normalize all 5 branch score arrays for a query.
+
+        Returns a dict with keys: lexical, dense_text, multimodal, graph_dense,
+        trajectory_dense.  Each value is a float32 array of len(row_ids).
+        Use with fuse_and_rank() to avoid recomputing scores across weight combos.
+        """
+        query_text = row_text(query_row)
+        query_lexical_text = row_lexical_text(query_row)
+        if not query_text.strip():
+            query_text = str(query_row.get("topic_key") or "general")
+        if not query_lexical_text.strip():
+            query_lexical_text = query_text.lower()
+
+        graph_raw, _ = self._graph_scores(query_row)
+        traj_raw, _ = self._trajectory_scores(query_row)
+        return {
+            "lexical": _normalize_scores(self._sparse_scores(query_lexical_text)),
+            "dense_text": _normalize_scores(self._dense_scores(query_text)),
+            "multimodal": _normalize_scores(self._multimodal_scores(query_row)),
+            "graph_dense": _normalize_scores(graph_raw),
+            "trajectory_dense": _normalize_scores(traj_raw),
+        }
+
+    def fuse_and_rank(
+        self,
+        branch_scores: Dict[str, np.ndarray],
+        weights: Dict[str, float],
+        candidate_ids: Sequence[str],
+        top_k: int = 200,
+    ) -> List[Dict[str, Any]]:
+        """Fuse pre-computed branch scores with given weights and rank.
+
+        Lightweight: only does weighted sum + argsort.  No SBERT/FAISS calls.
+        """
+        fused = np.zeros(len(self.row_ids), dtype=np.float32)
+        for branch, w in weights.items():
+            if w > 0 and branch in branch_scores:
+                fused += w * branch_scores[branch]
+
+        id_set = set(candidate_ids)
+        id_to_idx = self._row_id_to_idx
+        valid = [(idx, fused[idx]) for cid in id_set if (idx := id_to_idx.get(cid)) is not None]
+        valid.sort(key=lambda x: x[1], reverse=True)
+        results = []
+        for idx, score in valid[:top_k]:
+            results.append({
+                "candidate_row_id": self.row_ids[idx],
+                "fused_score": float(score),
+            })
+        return results
 
     def retrieve(
         self,
