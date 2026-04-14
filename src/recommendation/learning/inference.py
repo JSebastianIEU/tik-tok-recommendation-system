@@ -999,6 +999,42 @@ class RecommenderRuntime:
                 self.comment_index_source_path = None
                 self.comment_index_load_error = str(error)
 
+        # Auto-discover comment intelligence from well-known directories
+        import os as _os
+        discovery_dirs: List[Path] = []
+        env_dir = _os.environ.get("COMMENT_INTELLIGENCE_DIR", "").strip()
+        if env_dir:
+            discovery_dirs.append(Path(env_dir))
+        discovery_dirs.extend([
+            self.bundle_dir.parent.parent / "comment_intelligence" / "features",
+            Path("artifacts") / "comment_intelligence" / "features",
+        ])
+        best_manifest: Optional[Path] = None
+        best_generated_at: Optional[str] = None
+        for search_dir in discovery_dirs:
+            if not search_dir.is_dir():
+                continue
+            for child in search_dir.iterdir():
+                candidate = child / "manifest.json"
+                if not candidate.exists():
+                    continue
+                try:
+                    payload = json.loads(candidate.read_text(encoding="utf-8"))
+                    gen_at = str(payload.get("generated_at") or "")
+                    if best_generated_at is None or gen_at > best_generated_at:
+                        best_manifest = candidate
+                        best_generated_at = gen_at
+                except Exception:
+                    continue
+        if best_manifest is not None:
+            try:
+                _, rows = load_comment_intelligence_snapshot_manifest(best_manifest)
+                self.comment_index = _CommentManifestIndex(rows)
+                self.comment_index_source_path = str(best_manifest)
+                self.comment_index_load_error = None
+            except Exception as error:
+                self.comment_index_load_error = f"auto_discover_failed: {error}"
+
     def _manifest_comment_for_row_id(self, *, row_id: str, as_of: datetime) -> Optional[Dict[str, Any]]:
         if self.comment_index is None:
             return None
