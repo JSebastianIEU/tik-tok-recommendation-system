@@ -977,6 +977,26 @@ class RecommenderRuntime:
             self.retriever = None
             self.retriever_load_warning = f"retriever_load_failed: {error}"
 
+        # Reconcile graph/trajectory metadata with actual retriever blend
+        if self.retriever is not None and manifest_path.exists():
+            try:
+                ret_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                blend = ret_manifest.get("objective_blend") or {}
+                graph_used = any(
+                    float((weights or {}).get("graph_dense") or 0) > 0
+                    for weights in blend.values()
+                )
+                trajectory_used = any(
+                    float((weights or {}).get("trajectory_dense") or 0) > 0
+                    for weights in blend.values()
+                )
+                if not graph_used:
+                    self.graph_bundle_id = ""
+                if not trajectory_used:
+                    self.trajectory_manifest_id = ""
+            except Exception:
+                pass
+
     def _load_comment_feature_index(self) -> None:
         manifest_path = self.manifest.get("comment_feature_manifest_path")
         manifest_id = self.manifest.get("comment_feature_manifest_id")
