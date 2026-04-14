@@ -1,12 +1,14 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { readFileSync } from "fs";
 import { join } from "path";
+import { Client as PgClient } from "pg";
 
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY ?? "";
 const DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL ?? "deepseek-chat";
 const DEEPSEEK_BASE_URL =
   process.env.DEEPSEEK_BASE_URL ?? "https://api.deepseek.com";
 const RECOMMENDER_SERVICE_URL = process.env.RECOMMENDER_SERVICE_URL ?? "";
+const DATABASE_URL = process.env.DATABASE_URL ?? "";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -408,6 +410,80 @@ function buildReport(
 }
 
 // ---------------------------------------------------------------------------
+// Supabase enrichment — fetch real engagement metrics for candidate IDs
+// ---------------------------------------------------------------------------
+
+interface VideoEnrichment {
+  caption: string;
+  author_username: string;
+  author_id: string;
+  thumbnail_url: string;
+  views: number;
+  likes: number;
+  comments_count: number;
+  shares: number;
+}
+
+async function enrichFromSupabase(
+  candidateIds: string[]
+): Promise<Map<string, VideoEnrichment>> {
+  const map = new Map<string, VideoEnrichment>();
+  if (!DATABASE_URL || candidateIds.length === 0) return map;
+
+  const client = new PgClient({
+    connectionString: DATABASE_URL,
+    ssl: { rejectUnauthorized: false },
+  });
+  try {
+    await client.connect();
+
+    const sql = `
+      SELECT
+        v.video_id,
+        v.caption,
+        v.author_id,
+        v.thumbnail_url,
+        a.username AS author_username,
+        s.plays   AS views,
+        s.likes,
+        s.comments_count,
+        s.shares
+      FROM videos v
+      LEFT JOIN authors a ON a.author_id = v.author_id
+      LEFT JOIN LATERAL (
+        SELECT vs.plays, vs.likes, vs.comments_count, vs.shares
+        FROM video_snapshots vs
+        WHERE vs.video_id = v.video_id
+        ORDER BY vs.scraped_at DESC
+        LIMIT 1
+      ) s ON true
+      WHERE v.video_id = ANY($1)
+    `;
+
+    const result = await client.query(sql, [candidateIds]);
+
+    for (const row of result.rows) {
+      map.set(row.video_id, {
+        caption: row.caption ?? "",
+        author_username: row.author_username ?? row.author_id ?? "unknown",
+        author_id: row.author_id ?? "",
+        thumbnail_url: row.thumbnail_url ?? "",
+        views: Number(row.views) || 0,
+        likes: Number(row.likes) || 0,
+        comments_count: Number(row.comments_count) || 0,
+        shares: Number(row.shares) || 0,
+      });
+    }
+  } catch (err) {
+    console.error("[enrichFromSupabase] error:", err);
+  } finally {
+    await client.end().catch(() => {});
+  }
+
+  return map;
+}
+
+// ---------------------------------------------------------------------------
 // Try to call Cloud Run recommender service
 // ---------------------------------------------------------------------------
 
@@ -446,19 +522,24 @@ async function callRecommenderService(payload: Record<string, unknown>) {
     const items = recData.items ?? [];
     if (items.length === 0) return null;
 
+    // Enrich with real Supabase data (views, likes, captions, author names)
+    const candidateIds = items.map((it) => it.candidate_id);
+    const enrichment = await enrichFromSupabase(candidateIds);
+
     const comparables = items.map((item, idx) => {
-      const v = item.views ?? 0;
-      const l = item.likes ?? 0;
-      const cc = item.comments_count ?? 0;
-      const s = item.shares ?? 0;
-      const er = item.engagement_rate ?? (v > 0 ? (l + cc + s) / v : 0);
+      const enriched = enrichment.get(item.candidate_id);
+      const v = enriched?.views ?? item.views ?? 0;
+      const l = enriched?.likes ?? item.likes ?? 0;
+      const cc = enriched?.comments_count ?? item.comments_count ?? 0;
+      const s = enriched?.shares ?? item.shares ?? 0;
+      const er = v > 0 ? (l + cc + s) / v : 0;
       return {
         id: `comp-${idx}`,
         candidate_id: item.candidate_id,
-        caption: item.caption ?? "",
-        author: item.author_id ?? "unknown",
+        caption: enriched?.caption || item.caption || "",
+        author: enriched?.author_username || item.author_id || "unknown",
         video_url: "",
-        thumbnail_url: "",
+        thumbnail_url: enriched?.thumbnail_url || "",
         hashtags: item.hashtags ?? [],
         similarity: item.score,
         support_level: item.score > 0.5 ? "full" : item.score > 0.3 ? "partial" : "low",
