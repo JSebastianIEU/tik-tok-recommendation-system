@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from datetime import datetime
 from pathlib import Path
@@ -134,7 +135,16 @@ def _load_fabric() -> FeatureFabric:
         return FeatureFabric()
 
 
+from fastapi.middleware.cors import CORSMiddleware
+
 app = FastAPI(title="Recommendation Service", version="v1")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 _runtime: Optional[RecommenderRuntime] = None
 _runtime_marker: Optional[Tuple[str, int]] = None
 _fabric = _load_fabric()
