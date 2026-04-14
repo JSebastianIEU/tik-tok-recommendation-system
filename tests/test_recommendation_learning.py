@@ -305,7 +305,7 @@ def test_recommender_runtime_community_objective_returns_effective_model(tmp_pat
         candidates=candidates,
         top_k=5,
         retrieve_k=20,
-        routing={"stage_budgets_ms": {"retrieval": 300000, "ranking": 300000}},
+        routing={"stage_budgets_ms": {"retrieval": 5000, "ranking": 5000}},
         debug=True,
     )
     assert response["objective"] == "community"
@@ -345,7 +345,7 @@ def test_recommender_runtime_can_retrieve_from_bundle_index_without_candidates(t
         candidates=[],
         top_k=5,
         retrieve_k=20,
-        routing={"stage_budgets_ms": {"retrieval": 300000, "ranking": 300000}},
+        routing={"stage_budgets_ms": {"retrieval": 5000, "ranking": 5000}},
         debug=True,
     )
     assert len(response["items"]) > 0

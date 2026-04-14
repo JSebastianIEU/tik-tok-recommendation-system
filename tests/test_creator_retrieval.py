@@ -224,7 +224,7 @@ def test_runtime_surfaces_retrieval_personalization_metadata(tmp_path: Path):
             "author_id": query["author_id"],
         },
         candidates=[],
-        routing={"stage_budgets_ms": {"retrieval": 300000, "ranking": 300000}},
+        routing={"stage_budgets_ms": {"retrieval": 5000, "ranking": 5000}},
         user_context={
             "creator_id": "creator-55",
             "objective_effective": "engagement",
