@@ -1,0 +1,27 @@
+# Artifacts downloaded from HuggingFace at build time
+artifacts/
+
+# Frontend (not needed in Python service container)
+frontend/
+node_modules/
+
+# Dev files
+.git/
+.claude/
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+
+# Data & scraper
+scraper/
+eda/
+data/
+notebooks/
+
+# Docs
+*.md
+*.ipynb
+hpc_status.py
