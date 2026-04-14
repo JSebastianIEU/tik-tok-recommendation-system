@@ -1,0 +1,992 @@
+{
+  "reach": {
+    "spec": {
+      "objective_id": "reach",
+      "label_key": "reach",
+      "primary_metric": "ndcg@20",
+      "training_loss": "lambdarank",
+      "calibration": "isotonic"
+    },
+    "retriever": {
+      "recall@50": 0.0,
+      "recall@100": 0.0,
+      "recall@200": 0.0
+    },
+    "ranker": {
+      "ndcg@10": 0.0,
+      "mrr@10": 0.0,
+      "ndcg@20": 0.0,
+      "mrr@20": 0.0
+    },
+    "backend": "baseline_weighted",
+    "retriever_blend_weights": {
+      "lexical": 0.41666666666666663,
+      "dense_text": 0.23148148148148145,
+      "multimodal": 0.1851851851851852,
+      "graph_dense": 0.0925925925925926,
+      "trajectory_dense": 0.07407407407407407
+    },
+    "retriever_weight_gate": {
+      "metric_key": "recall@100",
+      "selected_variant": "learned",
+      "selected_weights": {
+        "lexical": 0.41666666666666663,
+        "dense_text": 0.23148148148148145,
+        "multimodal": 0.1851851851851852,
+        "graph_dense": 0.0925925925925926,
+        "trajectory_dense": 0.07407407407407407
+      },
+      "validation": {
+        "learned": {
+          "recall@50": 0.0,
+          "recall@100": 0.0,
+          "recall@200": 0.0
+        },
+        "sparse_baseline": {
+          "recall@50": 0.0,
+          "recall@100": 0.0,
+          "recall@200": 0.0
+        },
+        "selected_not_worse_than_competitor": true
+      },
+      "test": {
+        "learned": {
+          "recall@50": 0.0,
+          "recall@100": 0.0,
+          "recall@200": 0.0
+        },
+        "sparse_baseline": {
+          "recall@50": 0.0,
+          "recall@100": 0.0,
+          "recall@200": 0.0
+        },
+        "selected_not_worse_than_competitor": true
+      }
+    },
+    "retriever_ablation": {
+      "metric_key": "recall@100",
+      "variants": {
+        "full": {
+          "dropped_branches": [],
+          "weights": {
+            "lexical": 0.416667,
+            "dense_text": 0.231481,
+            "multimodal": 0.185185,
+            "graph_dense": 0.092593,
+            "trajectory_dense": 0.074074
+          },
+          "metrics": {
+            "recall@50": 0.0,
+            "recall@100": 0.0,
+            "recall@200": 0.0
+          },
+          "delta_vs_full": {
+            "recall@50": {
+              "baseline": 0.0,
+              "variant": 0.0,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@100": {
+              "baseline": 0.0,
+              "variant": 0.0,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@200": {
+              "baseline": 0.0,
+              "variant": 0.0,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            }
+          }
+        },
+        "no_lexical": {
+          "dropped_branches": [
+            "lexical"
+          ],
+          "weights": {
+            "lexical": 0.0,
+            "dense_text": 0.396825,
+            "multimodal": 0.31746,
+            "graph_dense": 0.15873,
+            "trajectory_dense": 0.126984
+          },
+          "metrics": {
+            "recall@50": 0.0,
+            "recall@100": 0.0,
+            "recall@200": 0.0
+          },
+          "delta_vs_full": {
+            "recall@50": {
+              "baseline": 0.0,
+              "variant": 0.0,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@100": {
+              "baseline": 0.0,
+              "variant": 0.0,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@200": {
+              "baseline": 0.0,
+              "variant": 0.0,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            }
+          }
+        },
+        "no_dense_text": {
+          "dropped_branches": [
+            "dense_text"
+          ],
+          "weights": {
+            "lexical": 0.542169,
+            "dense_text": 0.0,
+            "multimodal": 0.240964,
+            "graph_dense": 0.120482,
+            "trajectory_dense": 0.096386
+          },
+          "metrics": {
+            "recall@50": 0.0,
+            "recall@100": 0.0,
+            "recall@200": 0.0
+          },
+          "delta_vs_full": {
+            "recall@50": {
+              "baseline": 0.0,
+              "variant": 0.0,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@100": {
+              "baseline": 0.0,
+              "variant": 0.0,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@200": {
+              "baseline": 0.0,
+              "variant": 0.0,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            }
+          }
+        },
+        "no_multimodal": {
+          "dropped_branches": [
+            "multimodal"
+          ],
+          "weights": {
+            "lexical": 0.511364,
+            "dense_text": 0.284091,
+            "multimodal": 0.0,
+            "graph_dense": 0.113636,
+            "trajectory_dense": 0.090909
+          },
+          "metrics": {
+            "recall@50": 0.0,
+            "recall@100": 0.0,
+            "recall@200": 0.0
+          },
+          "delta_vs_full": {
+            "recall@50": {
+              "baseline": 0.0,
+              "variant": 0.0,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@100": {
+              "baseline": 0.0,
+              "variant": 0.0,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@200": {
+              "baseline": 0.0,
+              "variant": 0.0,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            }
+          }
+        },
+        "no_graph_dense": {
+          "dropped_branches": [
+            "graph_dense"
+          ],
+          "weights": {
+            "lexical": 0.459184,
+            "dense_text": 0.255102,
+            "multimodal": 0.204082,
+            "graph_dense": 0.0,
+            "trajectory_dense": 0.081633
+          },
+          "metrics": {
+            "recall@50": 0.0,
+            "recall@100": 0.0,
+            "recall@200": 0.0
+          },
+          "delta_vs_full": {
+            "recall@50": {
+              "baseline": 0.0,
+              "variant": 0.0,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@100": {
+              "baseline": 0.0,
+              "variant": 0.0,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@200": {
+              "baseline": 0.0,
+              "variant": 0.0,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            }
+          }
+        },
+        "no_trajectory_dense": {
+          "dropped_branches": [
+            "trajectory_dense"
+          ],
+          "weights": {
+            "lexical": 0.45,
+            "dense_text": 0.25,
+            "multimodal": 0.2,
+            "graph_dense": 0.1,
+            "trajectory_dense": 0.0
+          },
+          "metrics": {
+            "recall@50": 0.0,
+            "recall@100": 0.0,
+            "recall@200": 0.0
+          },
+          "delta_vs_full": {
+            "recall@50": {
+              "baseline": 0.0,
+              "variant": 0.0,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@100": {
+              "baseline": 0.0,
+              "variant": 0.0,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@200": {
+              "baseline": 0.0,
+              "variant": 0.0,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            }
+          }
+        }
+      },
+      "branch_importance": [
+        {
+          "branch": "lexical",
+          "recall@100_delta_without_branch": 0.0
+        },
+        {
+          "branch": "dense_text",
+          "recall@100_delta_without_branch": 0.0
+        },
+        {
+          "branch": "multimodal",
+          "recall@100_delta_without_branch": 0.0
+        },
+        {
+          "branch": "graph_dense",
+          "recall@100_delta_without_branch": 0.0
+        },
+        {
+          "branch": "trajectory_dense",
+          "recall@100_delta_without_branch": 0.0
+        }
+      ]
+    }
+  },
+  "engagement": {
+    "spec": {
+      "objective_id": "engagement",
+      "label_key": "engagement",
+      "primary_metric": "ndcg@20",
+      "training_loss": "lambdarank",
+      "calibration": "isotonic"
+    },
+    "retriever": {
+      "recall@50": 0.0,
+      "recall@100": 0.0,
+      "recall@200": 0.0
+    },
+    "ranker": {
+      "ndcg@10": 0.28865738409817165,
+      "mrr@10": 0.35341292517006806,
+      "ndcg@20": 0.3155834035004448,
+      "mrr@20": 0.35752457970613094
+    },
+    "backend": "baseline_weighted",
+    "retriever_blend_weights": {
+      "lexical": 0.41666666666666663,
+      "dense_text": 0.23148148148148145,
+      "multimodal": 0.1851851851851852,
+      "graph_dense": 0.0925925925925926,
+      "trajectory_dense": 0.07407407407407407
+    },
+    "retriever_weight_gate": {
+      "metric_key": "recall@100",
+      "selected_variant": "learned",
+      "selected_weights": {
+        "lexical": 0.41666666666666663,
+        "dense_text": 0.23148148148148145,
+        "multimodal": 0.1851851851851852,
+        "graph_dense": 0.0925925925925926,
+        "trajectory_dense": 0.07407407407407407
+      },
+      "validation": {
+        "learned": {
+          "recall@50": 0.0,
+          "recall@100": 0.0,
+          "recall@200": 0.0
+        },
+        "sparse_baseline": {
+          "recall@50": 0.0,
+          "recall@100": 0.0,
+          "recall@200": 0.0
+        },
+        "selected_not_worse_than_competitor": true
+      },
+      "test": {
+        "learned": {
+          "recall@50": 0.0,
+          "recall@100": 0.0,
+          "recall@200": 0.0
+        },
+        "sparse_baseline": {
+          "recall@50": 0.0,
+          "recall@100": 0.0,
+          "recall@200": 0.0
+        },
+        "selected_not_worse_than_competitor": true
+      }
+    },
+    "retriever_ablation": {
+      "metric_key": "recall@100",
+      "variants": {
+        "full": {
+          "dropped_branches": [],
+          "weights": {
+            "lexical": 0.416667,
+            "dense_text": 0.231481,
+            "multimodal": 0.185185,
+            "graph_dense": 0.092593,
+            "trajectory_dense": 0.074074
+          },
+          "metrics": {
+            "recall@50": 0.0,
+            "recall@100": 0.0,
+            "recall@200": 0.0
+          },
+          "delta_vs_full": {
+            "recall@50": {
+              "baseline": 0.0,
+              "variant": 0.0,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@100": {
+              "baseline": 0.0,
+              "variant": 0.0,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@200": {
+              "baseline": 0.0,
+              "variant": 0.0,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            }
+          }
+        },
+        "no_lexical": {
+          "dropped_branches": [
+            "lexical"
+          ],
+          "weights": {
+            "lexical": 0.0,
+            "dense_text": 0.396825,
+            "multimodal": 0.31746,
+            "graph_dense": 0.15873,
+            "trajectory_dense": 0.126984
+          },
+          "metrics": {
+            "recall@50": 0.0,
+            "recall@100": 0.0,
+            "recall@200": 0.0
+          },
+          "delta_vs_full": {
+            "recall@50": {
+              "baseline": 0.0,
+              "variant": 0.0,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@100": {
+              "baseline": 0.0,
+              "variant": 0.0,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@200": {
+              "baseline": 0.0,
+              "variant": 0.0,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            }
+          }
+        },
+        "no_dense_text": {
+          "dropped_branches": [
+            "dense_text"
+          ],
+          "weights": {
+            "lexical": 0.542169,
+            "dense_text": 0.0,
+            "multimodal": 0.240964,
+            "graph_dense": 0.120482,
+            "trajectory_dense": 0.096386
+          },
+          "metrics": {
+            "recall@50": 0.0,
+            "recall@100": 0.0,
+            "recall@200": 0.0
+          },
+          "delta_vs_full": {
+            "recall@50": {
+              "baseline": 0.0,
+              "variant": 0.0,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@100": {
+              "baseline": 0.0,
+              "variant": 0.0,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@200": {
+              "baseline": 0.0,
+              "variant": 0.0,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            }
+          }
+        },
+        "no_multimodal": {
+          "dropped_branches": [
+            "multimodal"
+          ],
+          "weights": {
+            "lexical": 0.511364,
+            "dense_text": 0.284091,
+            "multimodal": 0.0,
+            "graph_dense": 0.113636,
+            "trajectory_dense": 0.090909
+          },
+          "metrics": {
+            "recall@50": 0.0,
+            "recall@100": 0.0,
+            "recall@200": 0.0
+          },
+          "delta_vs_full": {
+            "recall@50": {
+              "baseline": 0.0,
+              "variant": 0.0,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@100": {
+              "baseline": 0.0,
+              "variant": 0.0,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@200": {
+              "baseline": 0.0,
+              "variant": 0.0,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            }
+          }
+        },
+        "no_graph_dense": {
+          "dropped_branches": [
+            "graph_dense"
+          ],
+          "weights": {
+            "lexical": 0.459184,
+            "dense_text": 0.255102,
+            "multimodal": 0.204082,
+            "graph_dense": 0.0,
+            "trajectory_dense": 0.081633
+          },
+          "metrics": {
+            "recall@50": 0.0,
+            "recall@100": 0.0,
+            "recall@200": 0.0
+          },
+          "delta_vs_full": {
+            "recall@50": {
+              "baseline": 0.0,
+              "variant": 0.0,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@100": {
+              "baseline": 0.0,
+              "variant": 0.0,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@200": {
+              "baseline": 0.0,
+              "variant": 0.0,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            }
+          }
+        },
+        "no_trajectory_dense": {
+          "dropped_branches": [
+            "trajectory_dense"
+          ],
+          "weights": {
+            "lexical": 0.45,
+            "dense_text": 0.25,
+            "multimodal": 0.2,
+            "graph_dense": 0.1,
+            "trajectory_dense": 0.0
+          },
+          "metrics": {
+            "recall@50": 0.0,
+            "recall@100": 0.0,
+            "recall@200": 0.0
+          },
+          "delta_vs_full": {
+            "recall@50": {
+              "baseline": 0.0,
+              "variant": 0.0,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@100": {
+              "baseline": 0.0,
+              "variant": 0.0,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@200": {
+              "baseline": 0.0,
+              "variant": 0.0,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            }
+          }
+        }
+      },
+      "branch_importance": [
+        {
+          "branch": "lexical",
+          "recall@100_delta_without_branch": 0.0
+        },
+        {
+          "branch": "dense_text",
+          "recall@100_delta_without_branch": 0.0
+        },
+        {
+          "branch": "multimodal",
+          "recall@100_delta_without_branch": 0.0
+        },
+        {
+          "branch": "graph_dense",
+          "recall@100_delta_without_branch": 0.0
+        },
+        {
+          "branch": "trajectory_dense",
+          "recall@100_delta_without_branch": 0.0
+        }
+      ]
+    }
+  },
+  "conversion": {
+    "spec": {
+      "objective_id": "conversion",
+      "label_key": "conversion",
+      "primary_metric": "ndcg@20",
+      "training_loss": "lambdarank",
+      "calibration": "isotonic"
+    },
+    "retriever": {
+      "recall@50": 0.0,
+      "recall@100": 0.0,
+      "recall@200": 0.0
+    },
+    "ranker": {
+      "ndcg@10": 0.0,
+      "mrr@10": 0.0,
+      "ndcg@20": 0.0,
+      "mrr@20": 0.0
+    },
+    "backend": "baseline_weighted",
+    "retriever_blend_weights": {
+      "lexical": 0.41666666666666663,
+      "dense_text": 0.23148148148148145,
+      "multimodal": 0.1851851851851852,
+      "graph_dense": 0.0925925925925926,
+      "trajectory_dense": 0.07407407407407407
+    },
+    "retriever_weight_gate": {
+      "metric_key": "recall@100",
+      "selected_variant": "learned",
+      "selected_weights": {
+        "lexical": 0.41666666666666663,
+        "dense_text": 0.23148148148148145,
+        "multimodal": 0.1851851851851852,
+        "graph_dense": 0.0925925925925926,
+        "trajectory_dense": 0.07407407407407407
+      },
+      "validation": {
+        "learned": {
+          "recall@50": 0.0,
+          "recall@100": 0.0,
+          "recall@200": 0.0
+        },
+        "sparse_baseline": {
+          "recall@50": 0.0,
+          "recall@100": 0.0,
+          "recall@200": 0.0
+        },
+        "selected_not_worse_than_competitor": true
+      },
+      "test": {
+        "learned": {
+          "recall@50": 0.0,
+          "recall@100": 0.0,
+          "recall@200": 0.0
+        },
+        "sparse_baseline": {
+          "recall@50": 0.0,
+          "recall@100": 0.0,
+          "recall@200": 0.0
+        },
+        "selected_not_worse_than_competitor": true
+      }
+    },
+    "retriever_ablation": {
+      "metric_key": "recall@100",
+      "variants": {
+        "full": {
+          "dropped_branches": [],
+          "weights": {
+            "lexical": 0.416667,
+            "dense_text": 0.231481,
+            "multimodal": 0.185185,
+            "graph_dense": 0.092593,
+            "trajectory_dense": 0.074074
+          },
+          "metrics": {
+            "recall@50": 0.0,
+            "recall@100": 0.0,
+            "recall@200": 0.0
+          },
+          "delta_vs_full": {
+            "recall@50": {
+              "baseline": 0.0,
+              "variant": 0.0,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@100": {
+              "baseline": 0.0,
+              "variant": 0.0,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@200": {
+              "baseline": 0.0,
+              "variant": 0.0,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            }
+          }
+        },
+        "no_lexical": {
+          "dropped_branches": [
+            "lexical"
+          ],
+          "weights": {
+            "lexical": 0.0,
+            "dense_text": 0.396825,
+            "multimodal": 0.31746,
+            "graph_dense": 0.15873,
+            "trajectory_dense": 0.126984
+          },
+          "metrics": {
+            "recall@50": 0.0,
+            "recall@100": 0.0,
+            "recall@200": 0.0
+          },
+          "delta_vs_full": {
+            "recall@50": {
+              "baseline": 0.0,
+              "variant": 0.0,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@100": {
+              "baseline": 0.0,
+              "variant": 0.0,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@200": {
+              "baseline": 0.0,
+              "variant": 0.0,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            }
+          }
+        },
+        "no_dense_text": {
+          "dropped_branches": [
+            "dense_text"
+          ],
+          "weights": {
+            "lexical": 0.542169,
+            "dense_text": 0.0,
+            "multimodal": 0.240964,
+            "graph_dense": 0.120482,
+            "trajectory_dense": 0.096386
+          },
+          "metrics": {
+            "recall@50": 0.0,
+            "recall@100": 0.0,
+            "recall@200": 0.0
+          },
+          "delta_vs_full": {
+            "recall@50": {
+              "baseline": 0.0,
+              "variant": 0.0,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@100": {
+              "baseline": 0.0,
+              "variant": 0.0,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@200": {
+              "baseline": 0.0,
+              "variant": 0.0,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            }
+          }
+        },
+        "no_multimodal": {
+          "dropped_branches": [
+            "multimodal"
+          ],
+          "weights": {
+            "lexical": 0.511364,
+            "dense_text": 0.284091,
+            "multimodal": 0.0,
+            "graph_dense": 0.113636,
+            "trajectory_dense": 0.090909
+          },
+          "metrics": {
+            "recall@50": 0.0,
+            "recall@100": 0.0,
+            "recall@200": 0.0
+          },
+          "delta_vs_full": {
+            "recall@50": {
+              "baseline": 0.0,
+              "variant": 0.0,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@100": {
+              "baseline": 0.0,
+              "variant": 0.0,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@200": {
+              "baseline": 0.0,
+              "variant": 0.0,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            }
+          }
+        },
+        "no_graph_dense": {
+          "dropped_branches": [
+            "graph_dense"
+          ],
+          "weights": {
+            "lexical": 0.459184,
+            "dense_text": 0.255102,
+            "multimodal": 0.204082,
+            "graph_dense": 0.0,
+            "trajectory_dense": 0.081633
+          },
+          "metrics": {
+            "recall@50": 0.0,
+            "recall@100": 0.0,
+            "recall@200": 0.0
+          },
+          "delta_vs_full": {
+            "recall@50": {
+              "baseline": 0.0,
+              "variant": 0.0,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@100": {
+              "baseline": 0.0,
+              "variant": 0.0,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@200": {
+              "baseline": 0.0,
+              "variant": 0.0,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            }
+          }
+        },
+        "no_trajectory_dense": {
+          "dropped_branches": [
+            "trajectory_dense"
+          ],
+          "weights": {
+            "lexical": 0.45,
+            "dense_text": 0.25,
+            "multimodal": 0.2,
+            "graph_dense": 0.1,
+            "trajectory_dense": 0.0
+          },
+          "metrics": {
+            "recall@50": 0.0,
+            "recall@100": 0.0,
+            "recall@200": 0.0
+          },
+          "delta_vs_full": {
+            "recall@50": {
+              "baseline": 0.0,
+              "variant": 0.0,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@100": {
+              "baseline": 0.0,
+              "variant": 0.0,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            },
+            "recall@200": {
+              "baseline": 0.0,
+              "variant": 0.0,
+              "delta": 0.0,
+              "delta_pp": 0.0,
+              "relative_delta_pct": 0.0
+            }
+          }
+        }
+      },
+      "branch_importance": [
+        {
+          "branch": "lexical",
+          "recall@100_delta_without_branch": 0.0
+        },
+        {
+          "branch": "dense_text",
+          "recall@100_delta_without_branch": 0.0
+        },
+        {
+          "branch": "multimodal",
+          "recall@100_delta_without_branch": 0.0
+        },
+        {
+          "branch": "graph_dense",
+          "recall@100_delta_without_branch": 0.0
+        },
+        {
+          "branch": "trajectory_dense",
+          "recall@100_delta_without_branch": 0.0
+        }
+      ]
+    }
+  }
+}

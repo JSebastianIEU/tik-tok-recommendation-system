@@ -1,0 +1,51 @@
+{
+  "asset_id": "upl_52f9b1b1aa9660c45f2d081d",
+  "asset": {
+    "asset_id": "upl_52f9b1b1aa9660c45f2d081d",
+    "checksum_sha256": "52f9b1b1aa9660c45f2d081d34bd2fe3ab6febc15b5e881be0e61d6d65945e8a",
+    "file_name": "WhatsApp_Video_2026-04-14_at_13.21.42.mp4",
+    "mime_type": "video/mp4",
+    "size_bytes": 7595118,
+    "stored_at": "2026-04-14T14:02:35.937Z",
+    "has_audio": true,
+    "has_video": true,
+    "orientation": "portrait",
+    "storage_path": "/Users/arimoreira/Desktop/Tik-Tok-Recommendation-System/frontend/artifacts/uploaded_assets/upl_52f9b1b1aa9660c45f2d081d.mp4",
+    "duration_seconds": 50.7342,
+    "width": 1080,
+    "height": 1920,
+    "fps": 29.97
+  },
+  "signal_hints": {
+    "duration_seconds": 50.73,
+    "fps": 29.97,
+    "estimated_scene_cuts": 28,
+    "visual_motion_score": 0.2698,
+    "speech_seconds": 27.98,
+    "music_seconds": 22.75,
+    "tempo_bpm": 107.8,
+    "audio_energy": 0.2401,
+    "loudness_lufs": -24.6
+  },
+  "analysis": {
+    "summary": "Uploaded asset WhatsApp_Video_2026-04-14_at_13.21.42.mp4 looks like a portrait 50.7s clip at 1080x1920, with audio, and currently reads as balanced pacing with low visual motion.",
+    "keyTopics": [
+      "portrait framing",
+      "balanced pacing",
+      "audio-backed delivery",
+      "high-definition render"
+    ],
+    "suggestedEdits": [
+      "Tighten the first two seconds so the value proposition lands before the first pause.",
+      "Balance captions with the existing audio track so silent viewers still catch the core message.",
+      "Preserve the current pacing, but add one deliberate payoff beat near the end for a stronger finish.",
+      "Use one or two cleaner hero shots so the strongest frames anchor the rest of the edit."
+    ],
+    "metrics": {
+      "retention": 91,
+      "hookStrength": 66,
+      "clarity": 77
+    }
+  },
+  "analysis_provider": "baseline"
+}

@@ -607,7 +607,11 @@ export async function requestHashtagSuggestions(
         status: response.status
       };
     }
-    const parsed = (await response.json()) as HashtagSuggestResponsePayload;
+    const raw = (await response.json()) as Record<string, unknown>;
+    const parsed: HashtagSuggestResponsePayload = {
+      suggestions: (raw.suggestions ?? raw.hashtags ?? []) as HashtagSuggestion[],
+      neighbours: (raw.neighbours ?? []) as HashtagSuggestResponsePayload["neighbours"],
+    };
     return { ok: true, payload: parsed };
   } catch (error) {
     return {

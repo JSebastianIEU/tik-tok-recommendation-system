@@ -21,6 +21,9 @@ export const RECOMMENDER_CORPUS_PROVIDER =
 export const RECOMMENDER_CORPUS_BUNDLE_PATH =
   process.env.RECOMMENDER_CORPUS_BUNDLE_PATH?.trim() ||
   path.resolve(process.cwd(), "../artifacts/contracts/latest_supabase_bundle.json");
+export const KNOWLEDGE_BASE_PATH =
+  process.env.KNOWLEDGE_BASE_PATH?.trim() ||
+  path.resolve(process.cwd(), "server/knowledgeBase/data/tiktok_kb.v1.json");
 
 export const RECOMMENDER_BASE_URL =
   process.env.RECOMMENDER_BASE_URL?.trim() || "http://127.0.0.1:8081";

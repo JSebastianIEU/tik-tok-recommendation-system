@@ -79,6 +79,7 @@ export interface UiFeedbackEventRecord {
   labelDirection: "positive" | "negative" | "neutral" | "context";
   metadata?: Record<string, unknown>;
   createdAt: string;
+  userId?: string | null;
 }
 
 export interface CreatorPreferenceProfile {
@@ -403,6 +404,18 @@ CREATE TABLE IF NOT EXISTS rec_ui_feedback_events (
   FOREIGN KEY (request_id) REFERENCES rec_request_events(request_id) ON DELETE CASCADE
 );
 `);
+    await this.pool.query(
+      "ALTER TABLE rec_ui_feedback_events ADD COLUMN IF NOT EXISTS user_id TEXT;"
+    );
+    await this.pool.query(
+      "CREATE INDEX IF NOT EXISTS idx_rec_ui_feedback_events_user_id ON rec_ui_feedback_events(user_id);"
+    );
+    await this.pool.query(
+      "ALTER TABLE rec_request_events ADD COLUMN IF NOT EXISTS user_id TEXT;"
+    );
+    await this.pool.query(
+      "CREATE INDEX IF NOT EXISTS idx_rec_request_events_user_id ON rec_request_events(user_id);"
+    );
   }
 
   async writeRecommendationTrace(params: {
@@ -564,17 +577,24 @@ ON CONFLICT (request_id, candidate_id) DO UPDATE SET
     objectiveEffective: string;
     historyDays?: number;
     maxFeedbackRows?: number;
+    userId?: string;
   }): Promise<CreatorPreferenceProfile | null> {
     if (!this.pool || this.initError) {
       return null;
     }
     const creatorId = normalizeTextToken(params.creatorId);
+    const userId = params.userId ? normalizeTextToken(params.userId) : null;
     const objectiveEffective = normalizeTextToken(params.objectiveEffective);
-    if (!creatorId || !objectiveEffective) {
+    if ((!creatorId && !userId) || !objectiveEffective) {
       return null;
     }
     const historyDays = Math.max(7, Math.min(365, Math.round(params.historyDays ?? 180)));
     const maxFeedbackRows = Math.max(50, Math.min(5000, Math.round(params.maxFeedbackRows ?? 750)));
+
+    const userClause = userId
+      ? `(uife.user_id = $1 OR COALESCE(re.request_context->>'creator_id', '') = $1)`
+      : `COALESCE(re.request_context->>'creator_id', '') = $1`;
+    const lookupId = userId ?? creatorId!;
 
     const rows = await this.pool.query(
       `
@@ -591,7 +611,7 @@ JOIN rec_ui_feedback_events uife
 JOIN rec_served_outputs so
   ON so.request_id = re.request_id
  AND so.candidate_id = uife.entity_id
-WHERE COALESCE(re.request_context->>'creator_id', '') = $1
+WHERE ${userClause}
   AND uife.entity_type = 'comparable'
   AND uife.signal_strength = 'strong'
   AND uife.event_name IN (
@@ -603,7 +623,7 @@ WHERE COALESCE(re.request_context->>'creator_id', '') = $1
 ORDER BY uife.created_at DESC
 LIMIT $3
 `,
-      [creatorId, String(historyDays), maxFeedbackRows]
+      [lookupId, String(historyDays), maxFeedbackRows]
     );
 
     type AggregateEntry = {
@@ -804,10 +824,10 @@ LIMIT $3
       `
 INSERT INTO rec_ui_feedback_events (
   request_id, event_name, entity_type, entity_id, section, rank, objective_effective,
-  experiment_id, variant, signal_strength, label_direction, metadata, created_at
+  experiment_id, variant, signal_strength, label_direction, metadata, created_at, user_id
 ) VALUES (
   $1::uuid, $2, $3, $4, $5, $6, $7,
-  $8, $9, $10, $11, $12::jsonb, $13::timestamptz
+  $8, $9, $10, $11, $12::jsonb, $13::timestamptz, $14
 );
 `,
       [
@@ -823,7 +843,8 @@ INSERT INTO rec_ui_feedback_events (
         event.signalStrength,
         event.labelDirection,
         JSON.stringify(sanitizeForDerivedOnly(event.metadata ?? {})),
-        event.createdAt
+        event.createdAt,
+        event.userId ?? null
       ]
     );
   }

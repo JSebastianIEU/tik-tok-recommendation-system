@@ -355,7 +355,7 @@ export class FeedbackGateway {
   }
 
   async recordUiFeedback(
-    event: UiFeedbackEventRecord
+    event: UiFeedbackEventRecord & { userId?: string | null }
   ): Promise<RecordUiFeedbackResult> {
     if (!this.store.isReady()) {
       return { ok: true, ready: false };
@@ -372,6 +372,7 @@ export class FeedbackGateway {
 
   async getCreatorContext(params: {
     creatorId?: string;
+    userId?: string;
     objective?: string;
     mapObjective: (value: string | undefined) => string;
   }): Promise<Record<string, unknown> | undefined> {
@@ -379,16 +380,21 @@ export class FeedbackGateway {
       typeof params.creatorId === "string" && params.creatorId.trim()
         ? params.creatorId.trim().toLowerCase()
         : "";
-    if (!creatorId || !this.store.isReady()) {
+    const userId =
+      typeof params.userId === "string" && params.userId.trim()
+        ? params.userId.trim().toLowerCase()
+        : "";
+    if ((!creatorId && !userId) || !this.store.isReady()) {
       return undefined;
     }
     try {
       return (
         (await this.store.loadCreatorPreferenceProfile({
-          creatorId,
+          creatorId: creatorId || userId,
           objectiveEffective: params.mapObjective(params.objective),
           historyDays: 180,
-          maxFeedbackRows: 750
+          maxFeedbackRows: 750,
+          userId: userId || undefined
         })) as Record<string, unknown> | null
       ) ?? undefined;
     } catch (error) {

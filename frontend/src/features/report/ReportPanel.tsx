@@ -103,9 +103,37 @@ export function ReportPanel(props: ReportPanelProps): JSX.Element {
     }
   };
 
-  // Stub handlers — ComparablesSection still expects these in the interface
-  const noopLabel = (): void => {};
-  const noopSave = (): void => {};
+  const [feedbackState, setFeedbackState] = useState<
+    Record<string, "relevant" | "not_relevant" | "saved" | undefined>
+  >({});
+
+  const handleMarkRelevant = (item: ComparableItem, label: "relevant" | "not_relevant"): void => {
+    setFeedbackState((prev) => ({ ...prev, [item.candidate_id]: label }));
+    void sendReportFeedback({
+      ...buildFeedbackBase(report),
+      event_name: label === "relevant" ? "comparable_marked_relevant" : "comparable_marked_not_relevant",
+      entity_type: "comparable",
+      entity_id: item.candidate_id,
+      section: "comparables",
+      signal_strength: "strong",
+      label_direction: label === "relevant" ? "positive" : "negative",
+      metadata: { hashtags: item.hashtags, author: item.author }
+    });
+  };
+
+  const handleSaveComparable = (item: ComparableItem): void => {
+    setFeedbackState((prev) => ({ ...prev, [item.candidate_id]: "saved" }));
+    void sendReportFeedback({
+      ...buildFeedbackBase(report),
+      event_name: "comparable_saved",
+      entity_type: "comparable",
+      entity_id: item.candidate_id,
+      section: "comparables",
+      signal_strength: "strong",
+      label_direction: "positive",
+      metadata: { hashtags: item.hashtags, author: item.author }
+    });
+  };
 
   return (
     <section ref={reportRef} className="glass-card report-panel">
@@ -141,9 +169,9 @@ export function ReportPanel(props: ReportPanelProps): JSX.Element {
             selectedComparableId={selectedComparableId}
             onSelectComparable={handleComparableSelection}
             onOpenVideo={trackComparableOpen}
-            onMarkRelevant={noopLabel}
-            onSaveComparable={noopSave}
-            feedbackState={{}}
+            onMarkRelevant={handleMarkRelevant}
+            onSaveComparable={handleSaveComparable}
+            feedbackState={feedbackState}
           />
 
           <InsightsSection reasoning={report.reasoning} />

@@ -1,0 +1,117 @@
+{
+  "version": "tiktok_kb.v1",
+  "entries": [
+    {
+      "id": "algo-early-hold-v1",
+      "title": "Early hold strongly influences distribution depth",
+      "category": "algorithm",
+      "content": [
+        "Videos with stronger first-second clarity usually unlock deeper recommendation distribution.",
+        "Fast context plus clear outcome framing tends to improve qualified watch-through."
+      ],
+      "action_hint": "State the payoff in the first 1-2 seconds before any setup detail.",
+      "impact_area": "early_hold",
+      "keywords": ["algorithm", "distribution", "first seconds", "hook", "fyp"],
+      "objective_tags": ["reach", "engagement"],
+      "updated_at": "2026-04-14T00:00:00Z",
+      "confidence": "high",
+      "active": true
+    },
+    {
+      "id": "hooks-specificity-v1",
+      "title": "Specific hooks outperform generic openers",
+      "category": "hooks",
+      "content": [
+        "Concrete hooks that promise one clear outcome tend to outperform broad intros.",
+        "Showing proof quickly reduces early drop-off."
+      ],
+      "action_hint": "Replace generic opening lines with one precise promise plus immediate proof shot.",
+      "impact_area": "hook_strength",
+      "keywords": ["hook", "opening", "first line", "promise", "drop-off"],
+      "objective_tags": ["engagement", "conversion"],
+      "updated_at": "2026-04-14T00:00:00Z",
+      "confidence": "high",
+      "active": true
+    },
+    {
+      "id": "retention-pattern-interrupt-v1",
+      "title": "Pattern interrupts help protect mid-video retention",
+      "category": "retention",
+      "content": [
+        "One deliberate format shift around the middle of the video can reduce passive scrolling.",
+        "Visual or narrative contrast points often stabilize completion rate."
+      ],
+      "action_hint": "Insert one mid-video pattern interrupt (angle change, text beat, or pacing shift).",
+      "impact_area": "mid_video_retention",
+      "keywords": ["retention", "watch time", "completion", "pattern interrupt", "pacing"],
+      "objective_tags": ["engagement", "reach"],
+      "updated_at": "2026-04-14T00:00:00Z",
+      "confidence": "medium",
+      "active": true
+    },
+    {
+      "id": "cta-specific-comment-v1",
+      "title": "Specific comment prompts drive higher response quality",
+      "category": "cta",
+      "content": [
+        "Specific CTAs usually outperform broad asks like 'let me know what you think'.",
+        "Binary or short-answer prompts lower friction and increase interaction rate."
+      ],
+      "action_hint": "End with a direct, one-step comment prompt that is easy to answer in one sentence.",
+      "impact_area": "comment_rate",
+      "keywords": ["cta", "call to action", "comment", "engagement", "prompt"],
+      "objective_tags": ["engagement", "conversion"],
+      "updated_at": "2026-04-14T00:00:00Z",
+      "confidence": "high",
+      "active": true
+    },
+    {
+      "id": "creator-pattern-consistency-v1",
+      "title": "Top creators keep repeatable format signatures",
+      "category": "creators",
+      "content": [
+        "High-performing creators often repeat a recognizable structure while rotating topics.",
+        "Consistency in hook style and cadence improves audience expectation and return behavior."
+      ],
+      "action_hint": "Define one repeatable format template and reuse it across posts for 2-3 weeks.",
+      "impact_area": "format_consistency",
+      "keywords": ["top creators", "creator strategy", "consistency", "format", "series"],
+      "objective_tags": ["reach", "engagement"],
+      "updated_at": "2026-04-14T00:00:00Z",
+      "confidence": "medium",
+      "active": true
+    },
+    {
+      "id": "hashtags-intent-balance-v1",
+      "title": "Hashtag performance improves with intent balance",
+      "category": "hashtags",
+      "content": [
+        "A balanced hashtag set usually includes one broad context tag plus niche intent tags.",
+        "Overly broad tag stacks can dilute relevance and reduce qualified engagement."
+      ],
+      "action_hint": "Use 3-5 hashtags: one context tag, two niche-intent tags, and one format/community tag.",
+      "impact_area": "qualified_discovery",
+      "keywords": ["hashtags", "tags", "discoverability", "niche", "reach"],
+      "objective_tags": ["reach", "engagement"],
+      "updated_at": "2026-04-14T00:00:00Z",
+      "confidence": "high",
+      "active": true
+    },
+    {
+      "id": "content-format-quick-value-v1",
+      "title": "Quick-value formats perform well in crowded feeds",
+      "category": "content_formats",
+      "content": [
+        "Formats that deliver one practical takeaway quickly tend to compete better in high-scroll environments.",
+        "Clear structure (hook, value, CTA) improves comprehension and completion."
+      ],
+      "action_hint": "Adopt a three-part structure: hook, one focused value block, then a direct CTA.",
+      "impact_area": "clarity_and_completion",
+      "keywords": ["format", "what performs well", "structure", "value", "short form"],
+      "objective_tags": ["engagement", "conversion"],
+      "updated_at": "2026-04-14T00:00:00Z",
+      "confidence": "medium",
+      "active": true
+    }
+  ]
+}

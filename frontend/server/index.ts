@@ -30,6 +30,7 @@ import {
   RECOMMENDER_EXPERIMENT_TREATMENT_RATIO,
   RECOMMENDER_FEEDBACK_DB_URL,
   RECOMMENDER_FEEDBACK_ENABLED,
+  KNOWLEDGE_BASE_PATH,
   RECOMMENDER_BASE_URL,
   RECOMMENDER_FALLBACK_BUNDLE_DIR,
   RECOMMENDER_FALLBACK_CACHE_TTL_MS,
@@ -55,6 +56,10 @@ import { applyNarrativePolish, validateNarrativePolish } from "./report/polish";
 import { buildReportReasoning } from "./report/reasoning";
 import { HARD_CODED_EXTRACTED_KEYWORDS } from "./prompts/seedVideoContext";
 import { parseGenerateReportRequest } from "./validation/parseGenerateReportRequest";
+import {
+  parseChatRequest,
+  type ChatHistoryMessage
+} from "./validation/parseChatRequest";
 import { parseReportFeedbackRequest } from "./validation/parseReportFeedbackRequest";
 import { parseRecommendationsRequest } from "./validation/parseRecommendationsRequest";
 import { validateReportOutput } from "./validation/validateReportOutput";
@@ -95,12 +100,12 @@ import {
   LabelingSessionStore,
   type LabelingReviewLabel
 } from "./labeling/store";
-
-interface ChatRequestBody {
-  report?: unknown;
-  question?: string;
-  videoAnalysis?: Record<string, unknown> | null;
-}
+import {
+  loadKnowledgeBaseStore,
+  searchKnowledgeBase,
+  type KnowledgeBaseEntry,
+  type KnowledgeBaseStore
+} from "./knowledgeBase/knowledgeBase";
 
 const TIKTOK_OEMBED_URL = "https://www.tiktok.com/oembed?url=";
 const THUMBNAIL_FETCH_TIMEOUT_MS = 7000;
@@ -115,6 +120,17 @@ const deepSeekClient = DEEPSEEK_ENABLED
     })
   : null;
 const uploadAnalysisProvider = createUploadAnalysisProvider();
+let knowledgeBaseStore: KnowledgeBaseStore;
+try {
+  knowledgeBaseStore = await loadKnowledgeBaseStore(KNOWLEDGE_BASE_PATH);
+  console.info(
+    `Knowledge base loaded: version=${knowledgeBaseStore.version} entries=${knowledgeBaseStore.entries.length}`
+  );
+} catch (error) {
+  const reason = error instanceof Error ? error.message : String(error);
+  console.error(`Knowledge base startup validation failed (${KNOWLEDGE_BASE_PATH}): ${reason}`);
+  throw error;
+}
 
 app.use(
   cors({
@@ -2067,10 +2083,18 @@ app.post("/recommendations", async (request, response) => {
       return;
     }
     const creatorId = extractCreatorId(seedRecord);
+    const rawBody = request.body as Record<string, unknown>;
+    const reqUserId =
+      typeof rawBody.user_id === "string" && rawBody.user_id.trim()
+        ? rawBody.user_id.trim()
+        : typeof request.headers["x-user-id"] === "string" && request.headers["x-user-id"].trim()
+          ? request.headers["x-user-id"].trim()
+          : undefined;
     const userContext = isUploadedQuery
       ? undefined
       : await feedbackGateway.getCreatorContext({
-          creatorId,
+          creatorId: creatorId ?? reqUserId,
+          userId: reqUserId,
           objective: body.objective,
           mapObjective: mapObjectiveForRecommender
         });
@@ -2453,10 +2477,18 @@ app.post("/generate-report", async (request, response) => {
       return;
     }
     const creatorId = extractCreatorId(seed);
+    const reportRawBody = request.body as Record<string, unknown>;
+    const reportUserId =
+      typeof reportRawBody.user_id === "string" && reportRawBody.user_id.trim()
+        ? reportRawBody.user_id.trim()
+        : typeof request.headers["x-user-id"] === "string" && request.headers["x-user-id"].trim()
+          ? request.headers["x-user-id"].trim()
+          : undefined;
     const userContext = isUploadedQuery
       ? undefined
       : await feedbackGateway.getCreatorContext({
-          creatorId,
+          creatorId: creatorId ?? reportUserId,
+          userId: reportUserId,
           objective: body.objective,
           mapObjective: mapObjectiveForRecommender
         });
@@ -2897,7 +2929,8 @@ app.post("/report-feedback", async (request, response) => {
     signalStrength: parsed.value.signal_strength,
     labelDirection: parsed.value.label_direction,
     metadata: parsed.value.metadata,
-    createdAt: new Date().toISOString()
+    createdAt: new Date().toISOString(),
+    userId: parsed.value.user_id ?? null
   });
   response.status(202).json(result);
 });
@@ -2913,25 +2946,95 @@ interface RAGVideo {
   keywords: string[];
   author_id: string;
   content_type: string;
+  language?: string;
   fused_score: number;
+  branch_scores?: Record<string, number>;
 }
 
 interface ToolResult {
   source: string;
   videos?: RAGVideo[];
   hashtags?: string[];
+  knowledgeBaseEntries?: KnowledgeBaseEntry[];
+  knowledgeBaseMeta?: Record<string, unknown>;
+  retrievalMeta?: Record<string, unknown>;
   error?: string;
 }
 
-function chatNeedsCorpusSearch(question: string): boolean {
-  const q = question.toLowerCase();
+function truncateForPrompt(value: string, maxChars: number): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "";
+  }
+  if (trimmed.length <= maxChars) {
+    return trimmed;
+  }
+  return `${trimmed.slice(0, maxChars)}...`;
+}
+
+function sanitizeChatCaption(value: string, maxChars: number): string {
+  return truncateForPrompt(value.replace(/\s+/g, " ").trim(), maxChars);
+}
+
+function formatCorpusExamples(videos: RAGVideo[]): string {
+  const exampleLines = videos.slice(0, 2).map((video, index) => {
+    const caption = sanitizeChatCaption(video.caption, 120);
+    const tagPreview = (video.hashtags ?? []).slice(0, 3).join(", ");
+    const score = Number.isFinite(video.fused_score) ? video.fused_score.toFixed(2) : "n/a";
+    const tagSuffix = tagPreview ? ` | tags: ${tagPreview}` : "";
+    return `${index + 1}. "${caption}" (score ${score}${tagSuffix})`;
+  });
+
+  if (exampleLines.length === 0) {
+    return "";
+  }
+
+  return `Relevant examples from similar videos:\n${exampleLines.join("\n")}`;
+}
+
+function chatWantsExamples(question: string): boolean {
+  const normalized = question.toLowerCase();
   return (
-    q.includes("similar") || q.includes("like") || q.includes("compare") ||
-    q.includes("trend") || q.includes("competitor") || q.includes("example") ||
-    q.includes("what works") || q.includes("best performing") ||
-    q.includes("top video") || q.includes("recommend") || q.includes("find") ||
-    q.includes("show me") || q.includes("search") || q.includes("corpus")
+    normalized.includes("example") ||
+    normalized.includes("examples") ||
+    normalized.includes("similar video") ||
+    normalized.includes("reference")
   );
+}
+
+function chatNeedsKnowledgeBase(question: string): boolean {
+  const normalized = question.toLowerCase();
+  return (
+    normalized.includes("algorithm") ||
+    normalized.includes("what performs") ||
+    normalized.includes("what works") ||
+    normalized.includes("top creator") ||
+    normalized.includes("top creators") ||
+    normalized.includes("top hashtag") ||
+    normalized.includes("top hashtags") ||
+    normalized.includes("trend")
+  );
+}
+
+function uniqueStrings(values: string[], maxItems: number): string[] {
+  const output: string[] = [];
+  const seen = new Set<string>();
+  for (const value of values) {
+    const normalized = value.trim();
+    if (!normalized) {
+      continue;
+    }
+    const dedupeKey = normalized.toLowerCase();
+    if (seen.has(dedupeKey)) {
+      continue;
+    }
+    seen.add(dedupeKey);
+    output.push(normalized);
+    if (output.length >= maxItems) {
+      break;
+    }
+  }
+  return output;
 }
 
 function chatNeedsHashtags(question: string): boolean {
@@ -2939,17 +3042,165 @@ function chatNeedsHashtags(question: string): boolean {
   return q.includes("hashtag") || q.includes("tag") || q.includes("#");
 }
 
-async function callRAGRetrieval(question: string): Promise<ToolResult> {
+function resolveChatObjective(params: {
+  objectiveEffective?: string;
+  report: ReportOutput | null;
+}): string {
+  const objectiveCandidate =
+    params.objectiveEffective ||
+    params.report?.meta.objective_effective ||
+    params.report?.meta.objective;
+  const mapped = mapObjectiveForRecommender(objectiveCandidate);
+  return mapped === "community" ? "engagement" : mapped;
+}
+
+function inferMetricFocus(question: string, objective: string): string {
+  const normalized = question.toLowerCase();
+  if (normalized.includes("retention")) return "retention";
+  if (normalized.includes("hook")) return "hook_strength";
+  if (normalized.includes("share")) return "share_rate";
+  if (normalized.includes("comment")) return "comment_rate";
+  if (normalized.includes("save")) return "save_rate";
+  if (normalized.includes("view")) return "views";
+  if (normalized.includes("watch time")) return "watch_time";
+  return objective === "conversion" ? "conversion_rate" : objective === "reach" ? "reach" : "engagement_rate";
+}
+
+function buildHistoryContext(history: ChatHistoryMessage[]): {
+  summary: string;
+  recentTurns: string[];
+} {
+  const filtered = history
+    .map((item) => ({
+      role: item.role,
+      content: truncateForPrompt(item.content, 360)
+    }))
+    .filter((item) => item.content.length > 0);
+
+  const withoutIntro = filtered.filter(
+    (item) => !item.content.toLowerCase().startsWith("report loaded. ask me")
+  );
+  const usable = withoutIntro.length > 0 ? withoutIntro : filtered;
+  const recent = usable.slice(-8);
+  const older = usable.slice(0, Math.max(0, usable.length - recent.length));
+  const summary = older.length
+    ? older
+        .slice(-6)
+        .map((item) => `${item.role}: ${item.content}`)
+        .join(" | ")
+    : "";
+  const recentTurns = recent.map((item) => `${item.role}: ${item.content}`);
+  return { summary, recentTurns };
+}
+
+function buildReportRagSignals(report: ReportOutput | null): {
+  hashtags: string[];
+  keywords: string[];
+  language?: string;
+  locale?: string;
+  contentType?: string;
+  primaryCta?: string;
+  topicKey?: string;
+} {
+  if (!report) {
+    return { hashtags: [], keywords: [] };
+  }
+
+  const topComparables = report.comparables.slice(0, 8);
+  const hashtags = uniqueStrings(
+    topComparables.flatMap((item) => item.hashtags || []),
+    24
+  );
+  const keywords = uniqueStrings(
+    [
+      ...report.executive_summary.extracted_keywords,
+      ...topComparables.flatMap((item) => item.matched_keywords || [])
+    ],
+    30
+  );
+  const querySummary = report.reasoning?.evidence_pack?.query_summary;
+  const contentType =
+    typeof querySummary?.content_type === "string" ? querySummary.content_type : undefined;
+  const primaryCta =
+    typeof querySummary?.primary_cta === "string" ? querySummary.primary_cta : undefined;
+  const language =
+    typeof querySummary?.language === "string" ? querySummary.language : undefined;
+  const locale =
+    typeof querySummary?.locale === "string" ? querySummary.locale : undefined;
+
+  return {
+    hashtags,
+    keywords,
+    language,
+    locale,
+    contentType,
+    primaryCta,
+    topicKey: keywords[0] || hashtags[0]?.replace(/^#/, "")
+  };
+}
+
+function buildEvidenceRefs(report: ReportOutput | null, tools: ToolResult[]): string[] {
+  const refs: string[] = [];
+  if (report) {
+    refs.push(...report.recommendations.items.flatMap((item) => item.evidence_refs || []));
+    refs.push(...report.comparables.slice(0, 5).map((item) => `candidate:${item.candidate_id}`));
+  }
+  const corpusTool = tools.find((tool) => tool.source === "corpus_search");
+  if (corpusTool?.videos) {
+    refs.push(...corpusTool.videos.slice(0, 8).map((item) => `retrieved:${item.video_id}`));
+  }
+  return uniqueStrings(refs, 24);
+}
+
+async function callRAGRetrieval(params: {
+  question: string;
+  objective: string;
+  report: ReportOutput | null;
+  videoAnalysis: Record<string, unknown> | null;
+  history: ChatHistoryMessage[];
+}): Promise<ToolResult> {
+  const reportSignals = buildReportRagSignals(params.report);
+  const recentUserQuestions = params.history
+    .filter((item) => item.role === "user")
+    .slice(-3)
+    .map((item) => truncateForPrompt(item.content, 240));
+  const transcriptHint =
+    typeof params.videoAnalysis?.transcript === "string"
+      ? truncateForPrompt(params.videoAnalysis.transcript, 800)
+      : undefined;
+
+  const payload = {
+    question: params.question,
+    top_k: 8,
+    objective: params.objective,
+    report_hashtags: reportSignals.hashtags,
+    report_keywords: reportSignals.keywords,
+    topic_key: reportSignals.topicKey,
+    language: reportSignals.language,
+    locale: reportSignals.locale,
+    content_type: reportSignals.contentType,
+    primary_cta: reportSignals.primaryCta,
+    transcript_hint: transcriptHint,
+    recent_user_questions: recentUserQuestions
+  };
+
   try {
     const res = await fetch(`${RECOMMENDER_BASE_URL}/v1/chat/rag`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ question, top_k: 5, objective: "engagement" }),
+      body: JSON.stringify(payload),
       signal: AbortSignal.timeout(10_000),
     });
     if (!res.ok) return { source: "corpus_search", error: `HTTP ${res.status}` };
-    const data = await res.json() as { retrieved_videos: RAGVideo[] };
-    return { source: "corpus_search", videos: data.retrieved_videos ?? [] };
+    const data = await res.json() as {
+      retrieved_videos?: RAGVideo[];
+      retrieval_meta?: Record<string, unknown>;
+    };
+    return {
+      source: "corpus_search",
+      videos: data.retrieved_videos ?? [],
+      retrievalMeta: data.retrieval_meta ?? {}
+    };
   } catch (err) {
     return { source: "corpus_search", error: String(err) };
   }
@@ -2971,6 +3222,34 @@ async function callHashtagSuggest(question: string): Promise<ToolResult> {
   }
 }
 
+async function callKnowledgeBaseSearch(params: {
+  question: string;
+  objective: string;
+  priority: "high" | "low";
+}): Promise<ToolResult> {
+  try {
+    const result = searchKnowledgeBase(knowledgeBaseStore, {
+      question: params.question,
+      objective: params.objective,
+      maxResults: 3,
+      priority: params.priority
+    });
+    return {
+      source: "knowledge_base",
+      knowledgeBaseEntries: result.entries,
+      knowledgeBaseMeta: {
+        priority: result.priority,
+        matched_categories: result.matched_categories
+      }
+    };
+  } catch (error) {
+    return {
+      source: "knowledge_base",
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+}
+
 interface TimelineFrame {
   timestamp_sec: number;
   relevance_score: number;
@@ -2982,11 +3261,32 @@ interface TimelineFrame {
 
 function buildAgenticPrompt(params: {
   question: string;
+  objectiveEffective: string;
+  metricFocus: string;
   report: ReportOutput | null;
   videoAnalysis: Record<string, unknown> | null;
+  history: ChatHistoryMessage[];
   toolResults: ToolResult[];
 }): string {
   const sections: string[] = [];
+  const historyContext = buildHistoryContext(params.history);
+
+  sections.push(
+    `## Coaching Goal\nObjective: ${params.objectiveEffective}\nMetric focus: ${params.metricFocus}`
+  );
+
+  if (historyContext.summary || historyContext.recentTurns.length > 0) {
+    const memoryLines: string[] = [];
+    if (historyContext.summary) {
+      memoryLines.push(`Earlier summary: ${historyContext.summary}`);
+    }
+    if (historyContext.recentTurns.length > 0) {
+      memoryLines.push(
+        "Recent turns:\n" + historyContext.recentTurns.map((line) => `- ${line}`).join("\n")
+      );
+    }
+    sections.push(`## Conversation Memory\n${memoryLines.join("\n")}`);
+  }
 
   // Video analysis context (timeline-aware)
   if (params.videoAnalysis) {
@@ -2994,8 +3294,10 @@ function buildAgenticPrompt(params: {
     const dur = va.duration_seconds ?? "unknown";
     const faces = va.face_count ?? 0;
     const scenes = va.scene_cuts ?? 0;
-    const transcript = va.transcript || "none";
-    const caption = va.video_caption || "none";
+    const transcript =
+      typeof va.transcript === "string" ? truncateForPrompt(va.transcript, 900) : "none";
+    const caption =
+      typeof va.video_caption === "string" ? truncateForPrompt(va.video_caption, 280) : "none";
 
     sections.push(
       `## Your Video Analysis\nDuration: ${dur}s | Faces detected: ${faces} | Scene cuts: ${scenes}\nTranscript: ${transcript}\nVLM Caption: ${caption}`
@@ -3003,10 +3305,11 @@ function buildAgenticPrompt(params: {
 
     const timeline = va.timeline as TimelineFrame[] | undefined;
     if (timeline && timeline.length > 0) {
-      const lines = timeline.map((f) => {
+      const selectedTimeline = timeline.slice(0, 24);
+      const lines = selectedTimeline.map((f) => {
         let line = `[${Number(f.timestamp_sec).toFixed(1)}s] relevance=${Math.round(f.relevance_score * 100)}% motion=${Math.round(f.motion_score * 100)}% faces=${f.face_count}`;
         if (f.is_scene_change) line += " SCENE_CHANGE";
-        if (f.ocr_text) line += ` text="${f.ocr_text}"`;
+        if (f.ocr_text) line += ` text="${truncateForPrompt(f.ocr_text, 90)}"`;
         return line;
       });
       sections.push(`## Frame-by-Frame Timeline\n${lines.join("\n")}`);
@@ -3016,13 +3319,31 @@ function buildAgenticPrompt(params: {
   // Report context
   if (params.report) {
     const r = params.report;
+    const metricLines = r.executive_summary.metrics
+      .slice(0, 8)
+      .map((metric) => `- ${metric.label}: ${metric.value}`);
     const topComps = r.comparables
       .slice(0, 5)
-      .map((c) => `"${c.caption}" [${c.hashtags.slice(0, 5).join(", ")}]`)
+      .map(
+        (c, idx) =>
+          `${idx + 1}. "${truncateForPrompt(c.caption, 160)}" [${c.hashtags
+            .slice(0, 5)
+            .join(", ")}] | support=${c.support_level} | why=${truncateForPrompt(c.why_this_was_chosen, 160)} | reasons=${c.ranking_reasons.slice(0, 3).join(", ")}`
+      )
       .join("\n  ");
-    const recs = r.recommendations.items.map((i) => `- ${i.title}: ${i.detail}`).join("\n");
+    const recs = r.recommendations.items
+      .slice(0, 5)
+      .map((item) => `- ${item.title}: ${truncateForPrompt(item.rationale, 190)} (evidence: ${item.evidence})`)
+      .join("\n");
+    const reasoningRecs = r.reasoning.recommendation_units
+      .slice(0, 4)
+      .map(
+        (item) =>
+          `- ${truncateForPrompt(item.action, 150)} | rationale=${truncateForPrompt(item.rationale, 150)} | area=${item.expected_effect_area} | confidence=${item.confidence.toFixed(2)}`
+      )
+      .join("\n");
     sections.push(
-      `## Recommendation Report\n${r.executive_summary.summary_text}\n\nTop comparables:\n  ${topComps}\n\nRecommendations:\n${recs}`
+      `## Recommendation Report\nSummary: ${truncateForPrompt(r.executive_summary.summary_text, 320)}\n\nKey metrics:\n${metricLines.join("\n")}\n\nTop comparables:\n  ${topComps}\n\nRecommendations:\n${recs}\n\nReasoning recommendation units:\n${reasoningRecs}`
     );
   }
 
@@ -3030,14 +3351,42 @@ function buildAgenticPrompt(params: {
   for (const tool of params.toolResults) {
     if (tool.source === "corpus_search" && tool.videos && tool.videos.length > 0) {
       const videoLines = tool.videos.map(
-        (v) => `- "${v.caption}" [hashtags: ${v.hashtags.join(", ")}] score=${v.fused_score} type=${v.content_type}`
+        (v) =>
+          `- "${truncateForPrompt(v.caption, 140)}" [hashtags: ${v.hashtags.join(", ")}] score=${v.fused_score} type=${v.content_type} language=${v.language ?? "unknown"} branch_scores=${JSON.stringify(v.branch_scores ?? {})}`
       );
-      sections.push(`## Similar Videos Retrieved from Corpus (${tool.videos.length} results)\n${videoLines.join("\n")}`);
+      sections.push(
+        `## Similar Videos Retrieved from Corpus (${tool.videos.length} results)\n${videoLines.join("\n")}`
+      );
+      if (tool.retrievalMeta) {
+        sections.push(`## Retrieval Metadata\n${JSON.stringify(tool.retrievalMeta, null, 2)}`);
+      }
     }
     if (tool.source === "hashtags" && tool.hashtags && tool.hashtags.length > 0) {
       sections.push(`## AI-Suggested Hashtags\n${tool.hashtags.join(", ")}`);
     }
+    if (
+      tool.source === "knowledge_base" &&
+      tool.knowledgeBaseEntries &&
+      tool.knowledgeBaseEntries.length > 0
+    ) {
+      const lines = tool.knowledgeBaseEntries.map((entry, index) => {
+        const facts = entry.content.slice(0, 2).map((line) => truncateForPrompt(line, 120)).join(" | ");
+        return `${index + 1}. ${entry.title} [${entry.category}] -> action: ${truncateForPrompt(entry.action_hint, 120)} | facts: ${facts}`;
+      });
+      sections.push(`## TikTok Knowledge Base Insights\n${lines.join("\n")}`);
+    }
   }
+
+  sections.push(
+    "## Response Format Requirements\n" +
+      "Respond in this exact structure:\n" +
+      "1) Quick diagnosis (one sentence)\n" +
+      "2) Top 3 actions (numbered)\n" +
+      "3) Expected impact (short lines tied to metrics)\n" +
+      "4) One follow-up question\n" +
+      "Do not include a weekly test plan.\n" +
+      "Do not include extra sections unless the user explicitly requests them."
+  );
 
   sections.push(`## User Question\n${params.question}`);
 
@@ -3050,28 +3399,39 @@ function buildAgenticPrompt(params: {
 
 app.post("/chat", async (request, response) => {
   try {
-    const body = request.body as ChatRequestBody;
-    const question = typeof body.question === "string" ? body.question.trim() : "";
-
-    if (!question) {
-      response.status(400).json({ error: "A question is required." });
+    const parsed = parseChatRequest(request.body);
+    if (!parsed.ok) {
+      response.status(400).json({ error: parsed.error });
       return;
     }
+    const { question, report, videoAnalysis, history } = parsed.value;
+    const objectiveEffective = resolveChatObjective({
+      objectiveEffective: parsed.value.objectiveEffective,
+      report
+    });
+    const metricFocus = parsed.value.metricFocus || inferMetricFocus(question, objectiveEffective);
 
-    const report: ReportOutput | null = validateReportOutput(body.report)
-      ? (body.report as ReportOutput)
-      : null;
-
-    const videoAnalysis = body.videoAnalysis ?? null;
-
-    // --- Tool calls based on intent ---
+    // --- Tool calls: corpus RAG + KB retrieval (blend mode) ---
     const toolPromises: Promise<ToolResult>[] = [];
-    if (chatNeedsCorpusSearch(question)) {
-      toolPromises.push(callRAGRetrieval(question));
-    }
+    toolPromises.push(
+      callRAGRetrieval({
+        question,
+        objective: objectiveEffective,
+        report,
+        videoAnalysis,
+        history
+      })
+    );
     if (chatNeedsHashtags(question)) {
       toolPromises.push(callHashtagSuggest(question));
     }
+    toolPromises.push(
+      callKnowledgeBaseSearch({
+        question,
+        objective: objectiveEffective,
+        priority: chatNeedsKnowledgeBase(question) ? "high" : "low"
+      })
+    );
 
     const toolResults = await Promise.allSettled(toolPromises);
     const resolvedTools: ToolResult[] = toolResults
@@ -3081,28 +3441,34 @@ app.post("/chat", async (request, response) => {
     // --- Fallback if no LLM ---
     if (!DEEPSEEK_ENABLED) {
       // Enhanced local fallback that includes tool results
+      const knowledgeTool = resolvedTools.find((tool) => tool.source === "knowledge_base");
+      const knowledgeEntries = knowledgeTool?.knowledgeBaseEntries ?? [];
       let fallbackAnswer: string;
-      if (report) {
-        fallbackAnswer = buildLocalChatAnswer(report, question);
-      } else {
-        fallbackAnswer = "Upload a video and generate a report to start chatting.";
-      }
+      fallbackAnswer = buildLocalChatAnswer({
+        report,
+        question,
+        knowledgeBaseEntries: knowledgeEntries
+      });
 
       const hashtagTool = resolvedTools.find((t) => t.source === "hashtags");
       if (hashtagTool?.hashtags && hashtagTool.hashtags.length > 0) {
-        fallbackAnswer += `\n\nSuggested hashtags: ${hashtagTool.hashtags.join(", ")}`;
+        const topHashtags = uniqueStrings(hashtagTool.hashtags, 6);
+        if (topHashtags.length > 0) {
+          fallbackAnswer += `\n\nSuggested hashtags: ${topHashtags.join(", ")}`;
+        }
       }
 
       const ragTool = resolvedTools.find((t) => t.source === "corpus_search");
-      if (ragTool?.videos && ragTool.videos.length > 0) {
-        const topCaptions = ragTool.videos.slice(0, 3).map((v) => `"${v.caption}"`).join(", ");
-        fallbackAnswer += `\n\nSimilar videos in corpus: ${topCaptions}`;
+      if (chatWantsExamples(question) && ragTool?.videos && ragTool.videos.length > 0) {
+        const examples = formatCorpusExamples(ragTool.videos);
+        if (examples) {
+          fallbackAnswer += `\n\n${examples}`;
+        }
       }
 
       response.setHeader("x-chat-source", "baseline-local-with-tools");
       response.json({
-        answer: removeEmoji(fallbackAnswer),
-        sources: resolvedTools.map((t) => t.source),
+        answer: removeEmoji(fallbackAnswer)
       });
       return;
     }
@@ -3110,16 +3476,13 @@ app.post("/chat", async (request, response) => {
     // --- Build agentic prompt ---
     const agenticPrompt = buildAgenticPrompt({
       question,
+      objectiveEffective,
+      metricFocus,
       report,
       videoAnalysis,
+      history,
       toolResults: resolvedTools,
     });
-
-    const sourcesUsed: string[] = [];
-    if (videoAnalysis) sourcesUsed.push("video_analysis");
-    if ((videoAnalysis as Record<string, unknown> | null)?.timeline) sourcesUsed.push("timeline");
-    if (report) sourcesUsed.push("report");
-    sourcesUsed.push(...resolvedTools.map((t) => t.source));
 
     const client = ensureDeepSeekClient();
 
@@ -3136,7 +3499,12 @@ app.post("/chat", async (request, response) => {
               "Reference specific timestamps, metrics, and video data when answering. " +
               "Be concrete and actionable. No emojis. No generic filler. " +
               "When discussing the user's video, cite timeline data (timestamps, relevance scores, scene changes). " +
-              "When suggesting content strategy, reference comparable videos and their engagement patterns."
+              "When suggesting content strategy, reference comparable videos and their engagement patterns. " +
+              "Always explain expected metric impact and keep recommendations prioritized. " +
+              "Use this output structure: Quick diagnosis (one sentence), Top 3 actions (numbered), " +
+              "Expected impact (short metric-linked lines), and one follow-up question. " +
+              "Do not include a weekly test plan. " +
+              "Do not add a 'relevant examples' section unless the user explicitly asks for examples."
           },
           {
             role: "user",
@@ -3149,16 +3517,18 @@ app.post("/chat", async (request, response) => {
       const answer = removeEmoji(rawContent || "I do not have an answer right now.");
 
       response.setHeader("x-chat-source", "deepseek-agentic");
-      response.json({ answer, sources: sourcesUsed });
+      response.json({ answer });
     } catch (providerError) {
       console.error(providerError);
-      const fallback = report
-        ? buildLocalChatAnswer(report, question)
-        : "The AI assistant is currently unavailable. Please try again.";
+      const fallback = buildLocalChatAnswer({
+        report,
+        question,
+        knowledgeBaseEntries:
+          resolvedTools.find((tool) => tool.source === "knowledge_base")?.knowledgeBaseEntries ?? []
+      });
       response.setHeader("x-chat-source", "baseline-local-provider-error");
       response.json({
-        answer: removeEmoji(fallback),
-        sources: resolvedTools.map((t) => t.source),
+        answer: removeEmoji(fallback)
       });
     }
   } catch (error) {

@@ -598,6 +598,9 @@ class LearnedPairwiseReranker:
             )
         with (output_dir / "model.pkl").open("rb") as handle:
             model = pickle.load(handle)
+        # Patch sklearn forward-compat: multi_class removed in 1.7+
+        if hasattr(model, "predict_proba") and not hasattr(model, "multi_class"):
+            model.multi_class = "auto"
         return cls(
             objective=str(manifest.get("objective") or ""),
             model=model,

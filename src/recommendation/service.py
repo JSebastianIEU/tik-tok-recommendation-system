@@ -145,6 +145,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+import logging as _logging
+
+_service_logger = _logging.getLogger("recommendation.service")
+
 _runtime: Optional[RecommenderRuntime] = None
 _runtime_marker: Optional[Tuple[str, int]] = None
 _fabric = _load_fabric()
@@ -212,6 +217,69 @@ def _ensure_runtime(force_reload: bool = False) -> RecommenderRuntime:
     return _runtime
 
 
+@app.on_event("startup")
+def _startup_prewarm() -> None:
+    """Eagerly load the recommender runtime so the first request is fast."""
+    _service_logger.info("startup: pre-warming recommender runtime...")
+    try:
+        runtime = _ensure_runtime()
+        _service_logger.info("startup: runtime loaded from %s", runtime.bundle_dir)
+        if runtime.retriever is not None:
+            warmup_query = {
+                "row_id": "__warmup__",
+                "query_id": "__warmup__",
+                "text": "test",
+                "caption": "test",
+                "hashtags": [],
+                "keywords": [],
+                "search_query": "test",
+                "topic_key": "",
+                "content_type": "",
+                "language": "",
+                "locale": "",
+                "author_id": None,
+                "as_of_time": None,
+            }
+            try:
+                runtime.retriever.retrieve(
+                    query_row=warmup_query, top_k=1, objective="engagement",
+                    return_metadata=False,
+                )
+                _service_logger.info("startup: warm-up retrieval complete")
+            except Exception as warn:
+                _service_logger.warning("startup: warm-up retrieval skipped: %s", warn)
+    except Exception as error:
+        _service_logger.error("startup: failed to pre-warm runtime: %s", error)
+
+    # Pre-load video analysis ML models so first /v1/video/analyze is fast
+    _service_logger.info("startup: pre-loading video analysis models...")
+    try:
+        from src.recommendation.video.analyzer import (
+            _load_whisper_model,
+            _load_ocr_reader,
+            _load_blip,
+            _load_keybert,
+        )
+        _load_whisper_model()
+        _service_logger.info("startup: Whisper model loaded")
+        _load_ocr_reader()
+        _service_logger.info("startup: EasyOCR reader loaded")
+        _load_blip()
+        _service_logger.info("startup: BLIP captioner loaded")
+        _load_keybert()
+        _service_logger.info("startup: KeyBERT model loaded")
+    except Exception as video_err:
+        _service_logger.warning("startup: video model pre-load failed: %s", video_err)
+
+
+@app.get("/v1/warmup")
+def warmup_check() -> Dict[str, Any]:
+    """Readiness probe — returns ready only when the runtime is loaded."""
+    if _runtime is None:
+        return {"ready": False, "reason": "runtime_not_loaded"}
+    return {"ready": True, "bundle_dir": str(_runtime.bundle_dir)}
+
+
 @app.get("/v1/health")
 def health() -> Dict[str, Any]:
     try:
@@ -226,6 +294,9 @@ def health() -> Dict[str, Any]:
         "ok": True,
         "status": "ready",
         "bundle_dir": str(runtime.bundle_dir),
+        "retriever_loaded": runtime.retriever is not None,
+        "retriever_load_warning": runtime.retriever_load_warning,
+        "comment_index_loaded": runtime.comment_index is not None,
     }
 
 
@@ -487,28 +558,6 @@ def suggest_hashtags(request: HashtagSuggestRequest) -> Dict[str, Any]:
 _video_analyzer = None
 
 
-@app.on_event("startup")
-async def _preload_video_models():
-    """Pre-load video analysis ML models at startup so first request is fast."""
-    import logging
-    _log = logging.getLogger(__name__)
-    global _video_analyzer
-    try:
-        from .video.analyzer import VideoAnalyzer, _load_whisper_model, _load_ocr_reader, _load_blip, _load_keybert
-        _video_analyzer = VideoAnalyzer()
-        _log.info("startup: pre-loading Whisper model...")
-        _load_whisper_model()
-        _log.info("startup: pre-loading EasyOCR reader...")
-        _load_ocr_reader()
-        _log.info("startup: pre-loading BLIP captioner...")
-        _load_blip()
-        _log.info("startup: pre-loading KeyBERT...")
-        _load_keybert()
-        _log.info("startup: all video models pre-loaded")
-    except Exception as err:
-        _log.warning("startup: video model pre-load failed: %s", err)
-
-
 @app.post("/v1/video/analyze")
 async def video_analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
     global _video_analyzer
@@ -546,6 +595,16 @@ class ChatRAGRequest(BaseModel):
     question: str
     top_k: int = Field(default=5, ge=1, le=50)
     objective: str = "engagement"
+    report_hashtags: List[str] = Field(default_factory=list)
+    report_keywords: List[str] = Field(default_factory=list)
+    candidate_ids: List[str] = Field(default_factory=list)
+    topic_key: Optional[str] = None
+    language: Optional[str] = None
+    locale: Optional[str] = None
+    content_type: Optional[str] = None
+    primary_cta: Optional[str] = None
+    transcript_hint: Optional[str] = None
+    recent_user_questions: List[str] = Field(default_factory=list)
 
 
 @app.post("/v1/chat/rag")
@@ -565,21 +624,75 @@ def chat_rag(request: ChatRAGRequest) -> Dict[str, Any]:
             ) from error
 
     started = time.perf_counter()
+    deduped_hashtags: List[str] = []
+    seen_hashtags: set[str] = set()
+    for value in request.report_hashtags:
+        cleaned = str(value or "").strip().lower()
+        if not cleaned:
+            continue
+        if not cleaned.startswith("#"):
+            cleaned = f"#{cleaned}"
+        if cleaned in seen_hashtags:
+            continue
+        seen_hashtags.add(cleaned)
+        deduped_hashtags.append(cleaned)
+        if len(deduped_hashtags) >= 24:
+            break
+
+    deduped_keywords: List[str] = []
+    seen_keywords: set[str] = set()
+    for value in request.report_keywords:
+        cleaned = str(value or "").strip().lower()
+        if not cleaned or cleaned in seen_keywords:
+            continue
+        seen_keywords.add(cleaned)
+        deduped_keywords.append(cleaned)
+        if len(deduped_keywords) >= 30:
+            break
+
+    context_fragments: List[str] = [request.question]
+    context_fragments.extend(
+        str(item or "").strip() for item in request.recent_user_questions[:3]
+    )
+    context_fragments.extend(deduped_keywords[:10])
+    if request.primary_cta:
+        context_fragments.append(f"primary cta {request.primary_cta.strip()}")
+    if request.transcript_hint:
+        context_fragments.append(str(request.transcript_hint).strip()[:800])
+    combined_text = " ".join(fragment for fragment in context_fragments if fragment).strip()
+
     query_row: Dict[str, Any] = {
-        "text": request.question,
+        "text": combined_text or request.question,
         "caption": request.question,
-        "hashtags": [],
-        "keywords": [],
-        "topic_key": "",
+        "hashtags": deduped_hashtags,
+        "keywords": deduped_keywords,
+        "topic_key": (
+            request.topic_key.strip()
+            if isinstance(request.topic_key, str) and request.topic_key.strip()
+            else deduped_keywords[0]
+            if deduped_keywords
+            else ""
+        ),
         "search_query": request.question,
+        "language": request.language,
+        "locale": request.locale,
+        "content_type": request.content_type,
         "as_of_time": datetime.utcnow(),
     }
+    retrieval_constraints = {
+        "language": request.language,
+        "locale": request.locale,
+        "content_type": request.content_type,
+    }
+    candidate_ids = [str(value).strip() for value in request.candidate_ids if str(value).strip()]
 
     try:
         results, meta = _runtime.retriever.retrieve(
             query_row=query_row,
             top_k=request.top_k,
             objective=request.objective,
+            candidate_ids=candidate_ids or None,
+            retrieval_constraints=retrieval_constraints,
             return_metadata=True,
         )
     except Exception as error:
@@ -611,15 +724,34 @@ def chat_rag(request: ChatRAGRequest) -> Dict[str, Any]:
         })
 
     elapsed_ms = (time.perf_counter() - started) * 1000.0
+    candidate_pool_total = (
+        int(meta.get("candidate_pool_total", 0))
+        if isinstance(meta.get("candidate_pool_total"), (int, float))
+        else len(_runtime.retriever.row_ids)
+    )
     return {
         "retrieved_videos": retrieved_videos,
         "retrieval_meta": {
-            "objective": request.objective,
+            "objective": str(meta.get("objective_effective") or request.objective),
             "top_k": request.top_k,
+            "query_topic_key": query_row.get("topic_key") or "",
+            "candidate_ids_supplied": len(candidate_ids),
             "branches_used": {
                 k: v for k, v in (meta.get("branch_coverage") or {}).items()
             },
-            "total_indexed": meta.get("total_indexed", 0),
+            "weights": {
+                k: round(float(v), 4)
+                for k, v in (meta.get("weights") or {}).items()
+                if isinstance(v, (int, float))
+            },
+            "constraint_tier_used": meta.get("constraint_tier_used"),
+            "candidate_pool_total": candidate_pool_total,
+            "candidate_pool_temporal": meta.get("candidate_pool_temporal"),
+            "candidate_pool_constrained": meta.get("candidate_pool_constrained"),
+            "candidate_pool_constrained_unique_candidates": meta.get(
+                "candidate_pool_constrained_unique_candidates"
+            ),
+            "retriever_artifact_version": meta.get("retriever_artifact_version"),
         },
         "latency_ms": round(elapsed_ms, 2),
     }
