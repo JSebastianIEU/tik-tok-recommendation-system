@@ -1,27 +1,16 @@
-import { buildApiUrl, MOCK_ONLY_MODE } from "../../../services/api/runtimeConfig";
+import { buildApiUrl } from "../../../services/api/runtimeConfig";
 
 const THUMBNAIL_PROXY_URL = buildApiUrl("/thumbnail");
 
+/**
+ * Proxies TikTok CDN thumbnail URLs through our serverless function
+ * to bypass CORS and expired-signature restrictions.
+ */
 export function buildThumbnailProxyUrl(
   thumbnailUrl: string,
-  videoUrl: string
+  _videoUrl: string
 ): string {
-  if (MOCK_ONLY_MODE) {
-    return "";
-  }
-
-  const params = new URLSearchParams();
-  const normalizedThumbnailUrl = thumbnailUrl.trim();
-  const normalizedVideoUrl = videoUrl.trim();
-
-  if (normalizedThumbnailUrl) {
-    params.set("url", normalizedThumbnailUrl);
-  }
-
-  if (normalizedVideoUrl) {
-    params.set("video", normalizedVideoUrl);
-  }
-
-  const queryString = params.toString();
-  return queryString ? `${THUMBNAIL_PROXY_URL}?${queryString}` : "";
+  const url = thumbnailUrl.trim();
+  if (!url) return "";
+  return `${THUMBNAIL_PROXY_URL}?url=${encodeURIComponent(url)}`;
 }

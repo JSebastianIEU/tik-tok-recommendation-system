@@ -135,10 +135,9 @@ def _load_fabric() -> FeatureFabric:
         return FeatureFabric()
 
 
-app = FastAPI(title="Recommendation Service", version="v1")
-
-# CORS – allow browser-based uploads from Vercel frontend
 from fastapi.middleware.cors import CORSMiddleware
+
+app = FastAPI(title="Recommendation Service", version="v1")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

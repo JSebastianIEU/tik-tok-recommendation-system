@@ -1,12 +1,16 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { readFileSync } from "fs";
 import { join } from "path";
+import { Client as PgClient } from "pg";
 
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY ?? "";
 const DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL ?? "deepseek-chat";
 const DEEPSEEK_BASE_URL =
   process.env.DEEPSEEK_BASE_URL ?? "https://api.deepseek.com";
 const RECOMMENDER_SERVICE_URL = process.env.RECOMMENDER_SERVICE_URL ?? "";
+const DATABASE_URL = process.env.DATABASE_URL ?? "";
+
+export const config = { maxDuration: 60 };
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -408,6 +412,83 @@ function buildReport(
 }
 
 // ---------------------------------------------------------------------------
+// Supabase enrichment — fetch real engagement metrics for candidate IDs
+// ---------------------------------------------------------------------------
+
+interface VideoEnrichment {
+  caption: string;
+  author_username: string;
+  author_id: string;
+  thumbnail_url: string;
+  video_url: string;
+  views: number;
+  likes: number;
+  comments_count: number;
+  shares: number;
+}
+
+async function enrichFromSupabase(
+  candidateIds: string[]
+): Promise<Map<string, VideoEnrichment>> {
+  const map = new Map<string, VideoEnrichment>();
+  if (!DATABASE_URL || candidateIds.length === 0) return map;
+
+  const client = new PgClient({
+    connectionString: DATABASE_URL,
+    ssl: { rejectUnauthorized: false },
+  });
+  try {
+    await client.connect();
+
+    const sql = `
+      SELECT
+        v.video_id,
+        v.caption,
+        v.author_id,
+        v.thumbnail_url,
+        v.url AS video_url,
+        a.username AS author_username,
+        s.plays   AS views,
+        s.likes,
+        s.comments_count,
+        s.shares
+      FROM videos v
+      LEFT JOIN authors a ON a.author_id = v.author_id
+      LEFT JOIN LATERAL (
+        SELECT vs.plays, vs.likes, vs.comments_count, vs.shares
+        FROM video_snapshots vs
+        WHERE vs.video_id = v.video_id
+        ORDER BY vs.scraped_at DESC
+        LIMIT 1
+      ) s ON true
+      WHERE v.video_id = ANY($1)
+    `;
+
+    const result = await client.query(sql, [candidateIds]);
+
+    for (const row of result.rows) {
+      map.set(row.video_id, {
+        caption: row.caption ?? "",
+        author_username: row.author_username ?? row.author_id ?? "unknown",
+        author_id: row.author_id ?? "",
+        thumbnail_url: row.thumbnail_url ?? "",
+        video_url: row.video_url ?? "",
+        views: Number(row.views) || 0,
+        likes: Number(row.likes) || 0,
+        comments_count: Number(row.comments_count) || 0,
+        shares: Number(row.shares) || 0,
+      });
+    }
+  } catch (err) {
+    console.error("[enrichFromSupabase] error:", err);
+  } finally {
+    await client.end().catch(() => {});
+  }
+
+  return map;
+}
+
+// ---------------------------------------------------------------------------
 // Try to call Cloud Run recommender service
 // ---------------------------------------------------------------------------
 
@@ -421,6 +502,7 @@ async function callRecommenderService(payload: Record<string, unknown>) {
   const contentType = typeof payload.content_type === "string" ? payload.content_type : "video";
 
   try {
+    console.log("[callRecommenderService] calling", RECOMMENDER_SERVICE_URL);
     const recResp = await fetch(`${RECOMMENDER_SERVICE_URL}/v1/recommendations`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -433,37 +515,59 @@ async function callRecommenderService(payload: Record<string, unknown>) {
       }),
       signal: AbortSignal.timeout(55000),
     });
-    if (!recResp.ok) return null;
+    if (!recResp.ok) {
+      console.error("[callRecommenderService] HTTP", recResp.status, await recResp.text().catch(() => ""));
+      return null;
+    }
     const recData = await recResp.json() as {
       items?: Array<{
         candidate_id: string; score: number; caption?: string; hashtags?: string[];
         author_id?: string; score_components?: Record<string, number>;
         ranking_reasons?: string[]; retrieval_branch_scores?: Record<string, number>;
-        metrics?: Record<string, number>;
+        views?: number; likes?: number; comments_count?: number; shares?: number;
+        engagement_rate?: number;
       }>;
     };
     const items = recData.items ?? [];
     if (items.length === 0) return null;
 
-    const comparables = items.map((item, idx) => ({
-      id: `comp-${idx}`,
-      candidate_id: item.candidate_id,
-      caption: item.caption ?? "",
-      author: item.author_id ?? "unknown",
-      video_url: "",
-      thumbnail_url: "",
-      hashtags: item.hashtags ?? [],
-      similarity: item.score,
-      support_level: item.score > 0.5 ? "full" : item.score > 0.3 ? "partial" : "low",
-      confidence_label: item.score > 0.5 ? "High confidence" : item.score > 0.3 ? "Medium confidence" : "Low confidence",
-      metrics: item.metrics ?? { views: 0, likes: 0, comments_count: 0, shares: 0, engagement_rate: "0%" },
-      matched_keywords: hashtags.filter(h => (item.hashtags ?? []).some(rh => rh.toLowerCase().replace("#", "") === h.toLowerCase().replace("#", ""))),
-      observations: [] as string[],
-      why_this_was_chosen: `Ranked #${idx + 1} by ${objective} objective scoring.`,
-      ranking_reasons: item.ranking_reasons ?? [],
-      score_components: item.score_components ?? {},
-      retrieval_branches: Object.keys(item.retrieval_branch_scores ?? {}),
-    }));
+    // Enrich with real Supabase data (views, likes, captions, author names)
+    const candidateIds = items.map((it) => it.candidate_id);
+    const enrichment = await enrichFromSupabase(candidateIds);
+
+    const comparables = items.map((item, idx) => {
+      const enriched = enrichment.get(item.candidate_id);
+      const v = enriched?.views ?? item.views ?? 0;
+      const l = enriched?.likes ?? item.likes ?? 0;
+      const cc = enriched?.comments_count ?? item.comments_count ?? 0;
+      const s = enriched?.shares ?? item.shares ?? 0;
+      const er = v > 0 ? (l + cc + s) / v : 0;
+      return {
+        id: `comp-${idx}`,
+        candidate_id: item.candidate_id,
+        caption: enriched?.caption || item.caption || "",
+        author: enriched?.author_username || item.author_id || "unknown",
+        video_url: enriched?.video_url || "",
+        thumbnail_url: enriched?.thumbnail_url || "",
+        hashtags: item.hashtags ?? [],
+        similarity: item.score,
+        support_level: item.score > 0.5 ? "full" : item.score > 0.3 ? "partial" : "low",
+        confidence_label: item.score > 0.5 ? ("High confidence" as const) : item.score > 0.3 ? ("Medium confidence" as const) : ("Low confidence" as const),
+        metrics: {
+          views: v,
+          likes: l,
+          comments_count: cc,
+          shares: s,
+          engagement_rate: `${(er * 100).toFixed(2)}%`,
+        },
+        matched_keywords: hashtags.filter(h => (item.hashtags ?? []).some(rh => rh.toLowerCase().replace("#", "") === h.toLowerCase().replace("#", ""))),
+        observations: [] as string[],
+        why_this_was_chosen: `Ranked #${idx + 1} by ${objective} objective scoring.`,
+        ranking_reasons: item.ranking_reasons ?? [],
+        score_components: item.score_components ?? {},
+        retrieval_branches: Object.keys(item.retrieval_branch_scores ?? {}),
+      };
+    });
 
     const report = buildReport(
       { description, hashtags, mentions, objective, content_type: contentType },
@@ -472,7 +576,8 @@ async function callRecommenderService(payload: Record<string, unknown>) {
     (report.meta as Record<string, unknown>).recommender_source = "cloud-run-python";
 
     return { report, suggested_hashtags: [] };
-  } catch {
+  } catch (err) {
+    console.error("[callRecommenderService] error:", err);
     return null;
   }
 }
@@ -507,15 +612,15 @@ async function enrichSummaryWithLLM(report: ReturnType<typeof buildReport>) {
       },
       body: JSON.stringify({
         model: DEEPSEEK_MODEL,
-        temperature: 0.2,
+        ...(DEEPSEEK_MODEL.includes("reasoner") ? {} : { temperature: 0.2 }),
         max_tokens: 1024,
         messages: [
-          {
-            role: "system",
-            content:
-              "You are a senior growth analyst. Return valid JSON only. No markdown.",
-          },
-          { role: "user", content: prompt },
+          ...(DEEPSEEK_MODEL.includes("reasoner")
+            ? []
+            : [{ role: "system" as const, content: "You are a senior growth analyst. Return valid JSON only. No markdown." }]),
+          { role: "user", content: DEEPSEEK_MODEL.includes("reasoner")
+            ? "You are a senior growth analyst. Return valid JSON only. No markdown.\n\n" + prompt
+            : prompt },
         ],
       }),
       signal: AbortSignal.timeout(30000),

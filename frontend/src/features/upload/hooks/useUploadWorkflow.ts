@@ -336,18 +336,41 @@ export function useUploadWorkflow(
         // Run video analysis — this calls the Python service which does
         // frame extraction, scene detection, whisper, OCR, etc.
         onProgress("frames");
-        const analysis = preAnalysis ?? await analysisService.analyzeVideo({
-          file: selectedFile,
-          mentions: formValues.mentions,
-          hashtags: formValues.hashtags,
-          description: formValues.description,
-          objective: formValues.objective,
-          audience: formValues.audience,
-          content_type: formValues.content_type,
-          primary_cta: formValues.primary_cta,
-          locale: formValues.locale,
-          signal_hints: requestSignalHints
-        });
+        let analysis: VideoAnalysisResult;
+        if (preAnalysis) {
+          analysis = preAnalysis;
+        } else {
+          try {
+            analysis = await analysisService.analyzeVideo({
+              file: selectedFile,
+              mentions: formValues.mentions,
+              hashtags: formValues.hashtags,
+              description: formValues.description,
+              objective: formValues.objective,
+              audience: formValues.audience,
+              content_type: formValues.content_type,
+              primary_cta: formValues.primary_cta,
+              locale: formValues.locale,
+              signal_hints: requestSignalHints
+            });
+          } catch (analysisErr) {
+            console.warn("Video analysis failed, continuing with stub:", analysisErr);
+            const stubId = crypto.randomUUID();
+            analysis = {
+              asset_id: stubId,
+              summary: "",
+              keyTopics: [],
+              suggestedEdits: [],
+              metrics: { retention: 0, hookStrength: 0, clarity: 0 },
+              asset: {
+                asset_id: stubId,
+                original_filename: selectedFile.name,
+                content_type: selectedFile.type || "video/mp4",
+                size_bytes: selectedFile.size,
+              },
+            };
+          }
+        }
 
         // Video analysis done — expose timeline immediately so
         // VideoPlayerPanel renders even if report generation fails.
