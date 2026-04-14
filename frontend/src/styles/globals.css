@@ -314,6 +314,13 @@ body {
   overflow: hidden;
 }
 
+.panel-transition-wrapper.layout-split {
+  grid-template-columns: minmax(280px, 350px) minmax(280px, 1fr);
+  width: min(860px, 96vw);
+  height: min(90vh, 800px);
+  gap: 16px;
+}
+
 .panel-transition-wrapper.layout-merged {
   grid-template-columns: 1fr;
   width: min(920px, 92vw);
@@ -849,6 +856,21 @@ body {
   display: flex;
   overflow-y: auto;
   flex-direction: column;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(167, 139, 250, 0.35) transparent;
+}
+
+.form-panel::-webkit-scrollbar {
+  width: 4px;
+}
+
+.form-panel::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.form-panel::-webkit-scrollbar-thumb {
+  background: rgba(167, 139, 250, 0.35);
+  border-radius: 99px;
 }
 
 .response-panel,
@@ -931,6 +953,29 @@ body {
   font: inherit;
   font-size: 0.88rem;
   padding: 0 2px;
+}
+
+/* Standalone inputs (audience, locale) — not inside a tag-field-box */
+.form-field > .tag-inline-input {
+  flex: none;
+  height: 42px;
+  min-width: 0;
+  width: 100%;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 12px;
+  background: rgba(208, 185, 237, 0.18);
+  padding: 0 12px;
+  font-size: 0.92rem;
+  transition: border-color 200ms ease, background-color 200ms ease;
+}
+
+.form-field > .tag-inline-input:hover {
+  border-color: rgba(167, 139, 250, 0.4);
+  background-color: rgba(208, 185, 237, 0.24);
+}
+
+.form-field > .tag-inline-input::placeholder {
+  color: rgba(240, 230, 255, 0.5);
 }
 
 .tag-inline-input::placeholder {
@@ -3330,6 +3375,12 @@ button.comp-card-body:focus-visible {
     height: min(74vh, 580px);
   }
 
+  .panel-transition-wrapper.layout-split {
+    grid-template-columns: minmax(260px, 320px) minmax(260px, 1fr);
+    width: min(780px, 96vw);
+    height: min(90vh, 780px);
+  }
+
   .panel-transition-wrapper.layout-results {
     grid-template-columns: minmax(250px, 290px) minmax(420px, 1fr);
     width: min(1020px, 98vw);
@@ -3340,6 +3391,8 @@ button.comp-card-body:focus-visible {
 @media (max-width: 900px) {
   body {
     overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    scroll-behavior: smooth;
   }
 
   .app-shell {
@@ -3408,6 +3461,20 @@ button.comp-card-body:focus-visible {
     width: min(360px, 90vw);
   }
 
+  .panel-transition-wrapper.layout-split {
+    grid-template-columns: 1fr;
+    width: 100%;
+    height: auto;
+    gap: 14px;
+  }
+
+  /* Form panel: in stacked mobile layout let it grow to content height */
+  .panel-transition-wrapper.layout-split .form-panel {
+    overflow-y: visible;
+    flex: none;
+    min-height: 0;
+  }
+
   .panel-transition-wrapper.layout-merged,
   .panel-transition-wrapper.layout-results {
     width: 100%;
@@ -3434,15 +3501,18 @@ button.comp-card-body:focus-visible {
   }
 
   .upload-card-container {
-    min-height: 420px;
+    min-height: auto;
     height: auto;
-    padding: 16px;
+    padding: 16px 14px;
   }
 
   .upload-dropzone {
-    width: min(100%, 300px);
-    min-height: 360px;
-    height: auto;
+    aspect-ratio: auto;
+    width: min(85vw, 300px);
+    height: 240px;
+    min-height: 0;
+    max-width: none;
+    min-width: 0;
   }
 
   .upload-text {
