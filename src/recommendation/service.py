@@ -145,6 +145,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 _runtime: Optional[RecommenderRuntime] = None
 _runtime_marker: Optional[Tuple[str, int]] = None
 _fabric = _load_fabric()
