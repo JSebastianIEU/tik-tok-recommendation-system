@@ -439,31 +439,45 @@ async function callRecommenderService(payload: Record<string, unknown>) {
         candidate_id: string; score: number; caption?: string; hashtags?: string[];
         author_id?: string; score_components?: Record<string, number>;
         ranking_reasons?: string[]; retrieval_branch_scores?: Record<string, number>;
-        metrics?: Record<string, number>;
+        views?: number; likes?: number; comments_count?: number; shares?: number;
+        engagement_rate?: number;
       }>;
     };
     const items = recData.items ?? [];
     if (items.length === 0) return null;
 
-    const comparables = items.map((item, idx) => ({
-      id: `comp-${idx}`,
-      candidate_id: item.candidate_id,
-      caption: item.caption ?? "",
-      author: item.author_id ?? "unknown",
-      video_url: "",
-      thumbnail_url: "",
-      hashtags: item.hashtags ?? [],
-      similarity: item.score,
-      support_level: item.score > 0.5 ? "full" : item.score > 0.3 ? "partial" : "low",
-      confidence_label: item.score > 0.5 ? "High confidence" : item.score > 0.3 ? "Medium confidence" : "Low confidence",
-      metrics: item.metrics ?? { views: 0, likes: 0, comments_count: 0, shares: 0, engagement_rate: "0%" },
-      matched_keywords: hashtags.filter(h => (item.hashtags ?? []).some(rh => rh.toLowerCase().replace("#", "") === h.toLowerCase().replace("#", ""))),
-      observations: [] as string[],
-      why_this_was_chosen: `Ranked #${idx + 1} by ${objective} objective scoring.`,
-      ranking_reasons: item.ranking_reasons ?? [],
-      score_components: item.score_components ?? {},
-      retrieval_branches: Object.keys(item.retrieval_branch_scores ?? {}),
-    }));
+    const comparables = items.map((item, idx) => {
+      const v = item.views ?? 0;
+      const l = item.likes ?? 0;
+      const cc = item.comments_count ?? 0;
+      const s = item.shares ?? 0;
+      const er = item.engagement_rate ?? (v > 0 ? (l + cc + s) / v : 0);
+      return {
+        id: `comp-${idx}`,
+        candidate_id: item.candidate_id,
+        caption: item.caption ?? "",
+        author: item.author_id ?? "unknown",
+        video_url: "",
+        thumbnail_url: "",
+        hashtags: item.hashtags ?? [],
+        similarity: item.score,
+        support_level: item.score > 0.5 ? "full" : item.score > 0.3 ? "partial" : "low",
+        confidence_label: item.score > 0.5 ? ("High confidence" as const) : item.score > 0.3 ? ("Medium confidence" as const) : ("Low confidence" as const),
+        metrics: {
+          views: v,
+          likes: l,
+          comments_count: cc,
+          shares: s,
+          engagement_rate: `${(er * 100).toFixed(2)}%`,
+        },
+        matched_keywords: hashtags.filter(h => (item.hashtags ?? []).some(rh => rh.toLowerCase().replace("#", "") === h.toLowerCase().replace("#", ""))),
+        observations: [] as string[],
+        why_this_was_chosen: `Ranked #${idx + 1} by ${objective} objective scoring.`,
+        ranking_reasons: item.ranking_reasons ?? [],
+        score_components: item.score_components ?? {},
+        retrieval_branches: Object.keys(item.retrieval_branch_scores ?? {}),
+      };
+    });
 
     const report = buildReport(
       { description, hashtags, mentions, objective, content_type: contentType },

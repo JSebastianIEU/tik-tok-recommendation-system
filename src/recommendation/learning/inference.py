@@ -1702,16 +1702,23 @@ class RecommenderRuntime:
                 "trajectory_dense": _round(trajectory_dense_score, 6),
                 "fused": _round(raw_branch_scores.get("fused", fused_retrieval), 6),
             }
+            eng = item.get("engagement_metrics") or {}
             payload = {
                 "candidate_id": item["candidate_id"],
                 "candidate_row_id": item["candidate_row_id"],
                 "author_id": item.get("author_id"),
+                "caption": str(item.get("raw_text") or item.get("text") or ""),
                 "topic_key": item.get("topic_key"),
                 "content_type": item.get("content_type"),
                 "language": item.get("language"),
                 "locale": item.get("locale"),
                 "hashtags": list(item.get("hashtags") or []),
                 "keywords": list(item.get("keywords") or []),
+                "views": int(eng.get("views", 0)),
+                "likes": int(eng.get("likes", 0)),
+                "comments_count": int(eng.get("comments", 0)),
+                "shares": int(eng.get("shares", 0)),
+                "engagement_rate": float(eng.get("engagement_rate", 0.0)),
                 "rank": rank,
                 "score": _round(item["score"], 6),
                 "score_raw": _round(item["score_raw"], 6),
