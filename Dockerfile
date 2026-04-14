@@ -25,7 +25,30 @@ RUN pip install --no-cache-dir \
     keybert>=0.8 \
     librosa>=0.10 \
     decord>=0.6 \
-    imageio-ffmpeg>=0.5
+    imageio-ffmpeg>=0.5 \
+    Pillow>=10.0
+
+# Pre-download ML models at build time to avoid runtime HuggingFace rate limits
+# 1. faster-whisper "small" model
+RUN python -c "\
+from faster_whisper import WhisperModel; \
+WhisperModel('small', device='cpu', compute_type='int8')"
+
+# 2. EasyOCR detection + recognition models (en, es)
+RUN python -c "\
+import easyocr; \
+easyocr.Reader(['en', 'es'], gpu=False, verbose=True)"
+
+# 3. BLIP image captioning model
+RUN python -c "\
+from transformers import BlipProcessor, BlipForConditionalGeneration; \
+BlipProcessor.from_pretrained('Salesforce/blip-image-captioning-base'); \
+BlipForConditionalGeneration.from_pretrained('Salesforce/blip-image-captioning-base')"
+
+# 4. KeyBERT sentence-transformers model
+RUN python -c "\
+from keybert import KeyBERT; \
+KeyBERT('paraphrase-multilingual-MiniLM-L12-v2')"
 
 # Copy source code and ensure package is importable
 COPY src/ ./src/
@@ -55,6 +78,10 @@ ENV HASHTAG_RECOMMENDER_DIR=artifacts/hashtag_recommender
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
 ENV PORT=8081
+# Disable demucs (too heavy for Cloud Run memory limits)
+ENV DEMUCS_ENABLED=false
+# Use CPU-friendly BLIP model (pre-downloaded above)
+ENV BLIP_MODEL_ID=Salesforce/blip-image-captioning-base
 
 EXPOSE 8081
 
