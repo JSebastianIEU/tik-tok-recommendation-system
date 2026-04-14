@@ -73,7 +73,7 @@ class CorpusScope(BaseModel):
 
 class RecommendationRequest(BaseModel):
     objective: str
-    as_of_time: datetime
+    as_of_time: Optional[datetime] = Field(default_factory=datetime.utcnow)
     query: RecommendationQueryInput
     candidates: List[RecommendationCandidateInput] = Field(default_factory=list)
     corpus_scope: Optional[CorpusScope] = None
@@ -95,7 +95,7 @@ class RecommendationRequest(BaseModel):
 
 class FabricExtractRequest(BaseModel):
     video_id: str
-    as_of_time: datetime
+    as_of_time: Optional[datetime] = Field(default_factory=datetime.utcnow)
     caption: str = ""
     hashtags: List[str] = Field(default_factory=list)
     keywords: List[str] = Field(default_factory=list)
@@ -595,6 +595,16 @@ class ChatRAGRequest(BaseModel):
     question: str
     top_k: int = Field(default=5, ge=1, le=50)
     objective: str = "engagement"
+    report_hashtags: List[str] = Field(default_factory=list)
+    report_keywords: List[str] = Field(default_factory=list)
+    candidate_ids: List[str] = Field(default_factory=list)
+    topic_key: Optional[str] = None
+    language: Optional[str] = None
+    locale: Optional[str] = None
+    content_type: Optional[str] = None
+    primary_cta: Optional[str] = None
+    transcript_hint: Optional[str] = None
+    recent_user_questions: List[str] = Field(default_factory=list)
 
 
 @app.post("/v1/chat/rag")
@@ -614,21 +624,81 @@ def chat_rag(request: ChatRAGRequest) -> Dict[str, Any]:
             ) from error
 
     started = time.perf_counter()
+    deduped_hashtags: List[str] = []
+    seen_hashtags: set[str] = set()
+    for value in request.report_hashtags:
+        cleaned = str(value or "").strip().lower()
+        if not cleaned:
+            continue
+        if not cleaned.startswith("#"):
+            cleaned = f"#{cleaned}"
+        if cleaned in seen_hashtags:
+            continue
+        seen_hashtags.add(cleaned)
+        deduped_hashtags.append(cleaned)
+        if len(deduped_hashtags) >= 24:
+            break
+
+    deduped_keywords: List[str] = []
+    seen_keywords: set[str] = set()
+    for value in request.report_keywords:
+        cleaned = str(value or "").strip().lower()
+        if not cleaned or cleaned in seen_keywords:
+            continue
+        seen_keywords.add(cleaned)
+        deduped_keywords.append(cleaned)
+        if len(deduped_keywords) >= 30:
+            break
+
+    context_fragments: List[str] = [request.question]
+    context_fragments.extend(
+        str(item or "").strip() for item in request.recent_user_questions[:3]
+    )
+    context_fragments.extend(deduped_keywords[:10])
+    if request.primary_cta:
+        context_fragments.append(f"primary cta {request.primary_cta.strip()}")
+    if request.transcript_hint:
+        context_fragments.append(str(request.transcript_hint).strip()[:800])
+    combined_text = " ".join(fragment for fragment in context_fragments if fragment).strip()
+
     query_row: Dict[str, Any] = {
-        "text": request.question,
+        "text": combined_text or request.question,
         "caption": request.question,
-        "hashtags": [],
-        "keywords": [],
-        "topic_key": "",
+        "hashtags": deduped_hashtags,
+        "keywords": deduped_keywords,
+        "topic_key": (
+            request.topic_key.strip()
+            if isinstance(request.topic_key, str) and request.topic_key.strip()
+            else deduped_keywords[0]
+            if deduped_keywords
+            else ""
+        ),
         "search_query": request.question,
+        "language": request.language,
+        "locale": request.locale,
+        "content_type": request.content_type,
         "as_of_time": datetime.utcnow(),
     }
+    retrieval_constraints = {
+        "language": request.language,
+        "locale": request.locale,
+        "content_type": request.content_type,
+    }
+    candidate_ids = [str(value).strip() for value in request.candidate_ids if str(value).strip()]
+
+    if _runtime.retriever is None:
+        raise HTTPException(
+            status_code=503,
+            detail={"error": "retriever_unavailable", "reason": "retriever_artifact_not_loaded"},
+        )
 
     try:
         results, meta = _runtime.retriever.retrieve(
             query_row=query_row,
             top_k=request.top_k,
             objective=request.objective,
+            candidate_ids=candidate_ids or None,
+            retrieval_constraints=retrieval_constraints,
             return_metadata=True,
         )
     except Exception as error:
@@ -660,15 +730,34 @@ def chat_rag(request: ChatRAGRequest) -> Dict[str, Any]:
         })
 
     elapsed_ms = (time.perf_counter() - started) * 1000.0
+    candidate_pool_total = (
+        int(meta.get("candidate_pool_total", 0))
+        if isinstance(meta.get("candidate_pool_total"), (int, float))
+        else len(_runtime.retriever.row_ids)
+    )
     return {
         "retrieved_videos": retrieved_videos,
         "retrieval_meta": {
-            "objective": request.objective,
+            "objective": str(meta.get("objective_effective") or request.objective),
             "top_k": request.top_k,
+            "query_topic_key": query_row.get("topic_key") or "",
+            "candidate_ids_supplied": len(candidate_ids),
             "branches_used": {
                 k: v for k, v in (meta.get("branch_coverage") or {}).items()
             },
-            "total_indexed": meta.get("total_indexed", 0),
+            "weights": {
+                k: round(float(v), 4)
+                for k, v in (meta.get("weights") or {}).items()
+                if isinstance(v, (int, float))
+            },
+            "constraint_tier_used": meta.get("constraint_tier_used"),
+            "candidate_pool_total": candidate_pool_total,
+            "candidate_pool_temporal": meta.get("candidate_pool_temporal"),
+            "candidate_pool_constrained": meta.get("candidate_pool_constrained"),
+            "candidate_pool_constrained_unique_candidates": meta.get(
+                "candidate_pool_constrained_unique_candidates"
+            ),
+            "retriever_artifact_version": meta.get("retriever_artifact_version"),
         },
         "latency_ms": round(elapsed_ms, 2),
     }

@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _WHISPER_MODEL = None
-_WHISPER_SIZE = os.getenv("WHISPER_MODEL_SIZE", "small")
+_WHISPER_SIZE = os.getenv("WHISPER_MODEL_SIZE", "base")
 _DEVICE = os.getenv("VIDEO_ANALYZER_DEVICE", "cpu")
 
 _KEYBERT_MODEL = None
@@ -816,8 +816,8 @@ def _extract_ocr_text(frames: List[np.ndarray]) -> str:
     try:
         seen = set()
         texts = []
-        # Sample up to 5 evenly-spaced frames
-        sample_indices = np.linspace(0, len(frames) - 1, min(5, len(frames)), dtype=int)
+        # Sample up to 3 evenly-spaced frames
+        sample_indices = np.linspace(0, len(frames) - 1, min(3, len(frames)), dtype=int)
         for idx in sample_indices:
             preprocessed = _preprocess_frame_for_ocr(frames[int(idx)])
             # detail=1 returns list of (bbox, text, confidence)
@@ -875,8 +875,8 @@ def _generate_video_caption_cpu(frames: List[np.ndarray]) -> Optional[str]:
         import torch
         from PIL import Image
 
-        # Caption 3 evenly-spaced frames (beginning, middle, end)
-        n = min(3, len(frames))
+        # Caption up to 5 evenly-spaced frames
+        n = min(5, len(frames))
         indices = np.linspace(0, len(frames) - 1, n, dtype=int)
         captions = []
 
@@ -950,7 +950,7 @@ def _extract_keywords(text: str, language: str = "", max_keywords: int = 10) -> 
 # Timeline generation (CPU-friendly)
 # ---------------------------------------------------------------------------
 
-_TIMELINE_MAX_FRAMES = 20
+_TIMELINE_MAX_FRAMES = 10
 _TIMELINE_THUMB_WIDTH = 160
 
 
@@ -988,12 +988,6 @@ def _generate_timeline(
     median_diff = float(np.median(diffs)) if diffs else 0.0
     scene_threshold = median_diff * _SCENE_CUT_THRESHOLD_FACTOR
 
-    # OCR reader (reuse singleton)
-    ocr_reader = _load_ocr_reader()
-
-    # Face detector (reuse singleton)
-    face_detector = _load_face_detector()
-
     entries = []
     for i_pos, frame_idx in enumerate(indices):
         frame_idx = int(frame_idx)
@@ -1020,51 +1014,18 @@ def _generate_timeline(
         if frame_idx > 0 and frame_idx - 1 < len(diffs):
             is_scene_change = diffs[frame_idx - 1] > scene_threshold
 
-        # Per-frame OCR (quick, on thumbnail-sized image for speed)
-        frame_ocr = ""
-        if ocr_reader is not None:
-            try:
-                preprocessed = _preprocess_frame_for_ocr(frame)
-                results = ocr_reader.readtext(preprocessed, detail=1, paragraph=False)
-                ocr_parts = []
-                for _, text, conf in results:
-                    if conf >= _OCR_CONFIDENCE_THRESHOLD and len(text.strip()) >= _OCR_MIN_TEXT_LENGTH:
-                        alnum = sum(c.isalnum() or c.isspace() for c in text.strip()) / len(text.strip())
-                        if alnum >= 0.5:
-                            ocr_parts.append(text.strip())
-                frame_ocr = " | ".join(ocr_parts)
-            except Exception:
-                pass
-
-        # Per-frame face detection
-        frame_face_count = 0
-        if face_detector is not None:
-            try:
-                det_type, det_model = face_detector
-                if det_type == "haar":
-                    faces = _detect_faces_haar(det_model, frame)
-                else:
-                    faces = _detect_faces_dnn(det_model, frame)
-                frame_face_count = len(faces)
-            except Exception:
-                pass
-
-        # Relevance heuristic: combine motion, faces, OCR, scene change
+        # Relevance heuristic: motion + scene change (skip per-frame OCR/faces for speed)
         relevance = 0.3  # baseline
         if is_scene_change:
-            relevance += 0.25
-        if frame_face_count > 0:
-            relevance += 0.2
-        if frame_ocr:
-            relevance += 0.15
-        relevance += min(motion * 2.0, 0.1)  # motion contributes up to 0.1
+            relevance += 0.35
+        relevance += min(motion * 2.0, 0.35)
         relevance = min(relevance, 1.0)
 
         entries.append(FrameTimelineEntry(
             timestamp_sec=round(timestamp, 2),
             thumbnail_b64=thumb_b64,
-            ocr_text=frame_ocr,
-            face_count=frame_face_count,
+            ocr_text="",
+            face_count=0,
             motion_score=round(motion, 4),
             is_scene_change=is_scene_change,
             relevance_score=round(relevance, 2),
@@ -1088,7 +1049,7 @@ class VideoAnalyzer:
         started = time.perf_counter()
 
         # Step 1: Extract two tiers of frames + metadata
-        vlm_frames, visual_frames, fps, duration, width, height = _extract_frames(video_path, n_vlm=12)
+        vlm_frames, visual_frames, fps, duration, width, height = _extract_frames(video_path, n_vlm=6)
 
         # Step 2: Extract audio (single 44.1kHz stereo WAV for both demucs and whisper)
         wav_path = _extract_audio_track(video_path)
@@ -1122,7 +1083,6 @@ class VideoAnalyzer:
             )
             future_vlm = pool.submit(_generate_video_caption, vlm_frames)
             future_ocr = pool.submit(_extract_ocr_text, vlm_frames)
-            future_faces = pool.submit(_detect_faces, vlm_frames)
             future_colors = pool.submit(_analyze_colors, visual_frames)
             future_blur = pool.submit(_compute_blur_score, vlm_frames)
             future_timeline = pool.submit(_generate_timeline, visual_frames, fps, duration)
@@ -1133,7 +1093,6 @@ class VideoAnalyzer:
                 future_visual: "visual",
                 future_vlm: "vlm",
                 future_ocr: "ocr",
-                future_faces: "faces",
                 future_colors: "colors",
                 future_blur: "blur",
                 future_timeline: "timeline",
@@ -1141,6 +1100,7 @@ class VideoAnalyzer:
 
             for future in as_completed(futures):
                 name = futures[future]
+                branch_start = time.perf_counter()
                 try:
                     if name == "transcribe":
                         transcript, speech_seconds, detected_language = future.result(timeout=120)
@@ -1152,16 +1112,15 @@ class VideoAnalyzer:
                         video_caption = future.result(timeout=60)
                     elif name == "ocr":
                         ocr_text = future.result(timeout=60)
-                    elif name == "faces":
-                        face_count, face_area_ratio = future.result(timeout=30)
                     elif name == "colors":
                         dominant_colors, brightness, saturation, contrast = future.result(timeout=10)
                     elif name == "blur":
                         blur_score = future.result(timeout=10)
                     elif name == "timeline":
                         timeline = future.result(timeout=120)
+                    logger.info("Branch [%s] completed in %.1fs", name, time.perf_counter() - branch_start)
                 except Exception:
-                    logger.warning("Branch %s failed", name, exc_info=True)
+                    logger.warning("Branch %s failed after %.1fs", name, time.perf_counter() - branch_start, exc_info=True)
 
         # Clean up temp audio
         if wav_path is not None:
@@ -1182,6 +1141,7 @@ class VideoAnalyzer:
         keywords = _extract_keywords(keyword_source, language=detected_language)
 
         elapsed = time.perf_counter() - started
+        logger.info("Video analysis total: %.1fs (video duration: %.1fs)", elapsed, duration)
 
         aspect_ratio = _get_aspect_ratio_label(width, height)
         resolution = f"{width}x{height}" if width > 0 and height > 0 else ""

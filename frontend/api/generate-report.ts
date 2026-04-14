@@ -489,11 +489,149 @@ async function enrichFromSupabase(
 }
 
 // ---------------------------------------------------------------------------
+// Supabase candidate search — find relevant videos by hashtag + text match
+// ---------------------------------------------------------------------------
+
+async function searchCandidatesFromSupabase(
+  description: string,
+  hashtags: string[],
+  limit: number = 50
+): Promise<DemoRecord[]> {
+  if (!DATABASE_URL) return [];
+
+  const client = new PgClient({
+    connectionString: DATABASE_URL,
+    ssl: { rejectUnauthorized: false },
+  });
+  try {
+    await client.connect();
+
+    // Build search terms from hashtags and description keywords
+    const hashtagTerms = hashtags
+      .map((h) => h.toLowerCase().replace(/^#/, "").trim())
+      .filter(Boolean);
+    const descWords = description
+      .toLowerCase()
+      .split(/\W+/)
+      .filter((w) => w.length >= 3);
+    const searchTerms = [...new Set([...hashtagTerms, ...descWords.slice(0, 10)])];
+
+    if (searchTerms.length === 0) {
+      // No search terms — return recent high-engagement videos
+      const fallbackSql = `
+        SELECT
+          v.video_id, v.caption, v.author_id, v.thumbnail_url,
+          v.url AS video_url,
+          a.username AS author_username,
+          s.plays AS views, s.likes, s.comments_count, s.shares,
+          ARRAY(
+            SELECT h.tag FROM video_hashtags vh
+            JOIN hashtags h ON h.hashtag_id = vh.hashtag_id
+            WHERE vh.video_id = v.video_id
+          ) AS hashtags
+        FROM videos v
+        LEFT JOIN authors a ON a.author_id = v.author_id
+        LEFT JOIN LATERAL (
+          SELECT vs.plays, vs.likes, vs.comments_count, vs.shares
+          FROM video_snapshots vs WHERE vs.video_id = v.video_id
+          ORDER BY vs.scraped_at DESC LIMIT 1
+        ) s ON true
+        WHERE s.plays > 1000
+        ORDER BY s.plays DESC
+        LIMIT $1
+      `;
+      const result = await client.query(fallbackSql, [limit]);
+      return result.rows.map(rowToRecord);
+    }
+
+    // Search by hashtag match first, then caption text match
+    const sql = `
+      WITH hashtag_matches AS (
+        SELECT DISTINCT vh.video_id, 2 AS match_weight
+        FROM video_hashtags vh
+        JOIN hashtags h ON h.hashtag_id = vh.hashtag_id
+        WHERE LOWER(h.tag) = ANY($1)
+      ),
+      caption_matches AS (
+        SELECT v.video_id, 1 AS match_weight
+        FROM videos v
+        WHERE ${searchTerms.map((_, i) => `LOWER(v.caption) LIKE $${i + 3}`).join(" OR ")}
+      ),
+      all_matches AS (
+        SELECT video_id, SUM(match_weight) AS relevance
+        FROM (
+          SELECT * FROM hashtag_matches
+          UNION ALL
+          SELECT * FROM caption_matches
+        ) combined
+        GROUP BY video_id
+      )
+      SELECT
+        v.video_id, v.caption, v.author_id, v.thumbnail_url,
+        v.url AS video_url,
+        a.username AS author_username,
+        s.plays AS views, s.likes, s.comments_count, s.shares,
+        am.relevance,
+        ARRAY(
+          SELECT h.tag FROM video_hashtags vh
+          JOIN hashtags h ON h.hashtag_id = vh.hashtag_id
+          WHERE vh.video_id = v.video_id
+        ) AS hashtags
+      FROM all_matches am
+      JOIN videos v ON v.video_id = am.video_id
+      LEFT JOIN authors a ON a.author_id = v.author_id
+      LEFT JOIN LATERAL (
+        SELECT vs.plays, vs.likes, vs.comments_count, vs.shares
+        FROM video_snapshots vs WHERE vs.video_id = v.video_id
+        ORDER BY vs.scraped_at DESC LIMIT 1
+      ) s ON true
+      ORDER BY am.relevance DESC, COALESCE(s.plays, 0) DESC
+      LIMIT $2
+    `;
+
+    const likeTerms = searchTerms.map((t) => `%${t}%`);
+    const params: (string | string[] | number)[] = [hashtagTerms, limit, ...likeTerms];
+    const result = await client.query(sql, params);
+    return result.rows.map(rowToRecord);
+  } catch (err) {
+    console.error("[searchCandidatesFromSupabase] error:", err);
+    return [];
+  } finally {
+    await client.end().catch(() => {});
+  }
+}
+
+function rowToRecord(row: Record<string, unknown>): DemoRecord {
+  const views = Number(row.views) || 0;
+  const likes = Number(row.likes) || 0;
+  const comments_count = Number(row.comments_count) || 0;
+  const shares = Number(row.shares) || 0;
+  return {
+    video_id: String(row.video_id ?? ""),
+    video_url: String(row.video_url ?? ""),
+    caption: String(row.caption ?? ""),
+    hashtags: Array.isArray(row.hashtags) ? row.hashtags.map(String) : [],
+    keywords: [],
+    likes,
+    comments_count,
+    shares,
+    views,
+    author: {
+      nickname: String(row.author_username ?? row.author_id ?? "unknown"),
+      unique_id: String(row.author_username ?? row.author_id ?? "unknown"),
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Try to call Cloud Run recommender service
 // ---------------------------------------------------------------------------
 
 async function callRecommenderService(payload: Record<string, unknown>) {
-  if (!RECOMMENDER_SERVICE_URL) return null;
+  if (!RECOMMENDER_SERVICE_URL) {
+    console.warn("[callRecommenderService] RECOMMENDER_SERVICE_URL is empty — set this env var to your Cloud Run URL");
+    return null;
+  }
 
   const description = typeof payload.description === "string" ? payload.description : "";
   const hashtags = Array.isArray(payload.hashtags) ? payload.hashtags as string[] : [];
@@ -699,28 +837,50 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const contentType =
     typeof body.content_type === "string" ? body.content_type : undefined;
 
-  // 1) Try Cloud Run recommender service
+  // 1) Try Cloud Run recommender service (best quality)
   const serviceResult = await callRecommenderService(body);
   if (serviceResult) {
     return res.json(serviceResult);
   }
 
-  // 2) Local scoring from demodata
-  const records = loadDemoData();
+  // 2) Try Supabase direct search (real corpus, topically relevant)
+  let records = await searchCandidatesFromSupabase(description, hashtags, 50);
+  let candidateSource = "supabase";
+
+  // 3) Last resort: static demodata
   if (records.length === 0) {
-    return res.status(500).json({ error: "No candidate data available." });
+    records = loadDemoData();
+    candidateSource = "demodata";
+    console.warn("[generate-report] Supabase returned 0 candidates, falling back to demodata.jsonl");
+  }
+
+  if (records.length === 0) {
+    return res.status(500).json({ error: "No candidate data available. Set DATABASE_URL or RECOMMENDER_SERVICE_URL." });
   }
 
   const scored = records.map((rec, idx) =>
     buildComparable(rec, idx, description, hashtags, objective)
   );
   scored.sort((a, b) => b.similarity - a.similarity);
-  const top = scored.slice(0, 10);
+
+  // Filter out very low relevance candidates — don't return garbage matches
+  const MIN_SCORE = 0.15;
+  const relevant = scored.filter((c) => c.similarity >= MIN_SCORE);
+  const top = (relevant.length >= 3 ? relevant : scored).slice(0, 10);
 
   let report = buildReport(
     { description, hashtags, mentions, objective, content_type: contentType },
     top
   );
+
+  // Tag the report source so the UI knows where candidates came from
+  (report.meta as Record<string, unknown>).recommender_source = candidateSource;
+  if (candidateSource !== "supabase") {
+    (report.meta as Record<string, unknown>).fallback_mode = true;
+    (report.meta as Record<string, unknown>).fallback_reason =
+      !RECOMMENDER_SERVICE_URL ? "RECOMMENDER_SERVICE_URL not set" :
+      !DATABASE_URL ? "DATABASE_URL not set" : "all_sources_failed";
+  }
 
   report = await enrichSummaryWithLLM(report);
 

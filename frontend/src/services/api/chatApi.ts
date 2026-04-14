@@ -7,6 +7,8 @@ const CHAT_API_URL = buildApiUrl("/chat");
 
 interface ChatApiResponse {
   answer: string;
+  sources?: string[];
+  evidence_refs?: string[];
 }
 
 function createAssistantMessage(content: string): ChatMessage {
@@ -37,7 +39,9 @@ export class ApiChatService implements IChatService {
         body: JSON.stringify({
           report: request.report,
           question: request.question,
-          videoAnalysis: request.videoAnalysis ?? null
+          videoAnalysis: request.videoAnalysis ?? null,
+          history: request.history,
+          objective_effective: request.report.meta.objective_effective
         })
       });
     } catch {

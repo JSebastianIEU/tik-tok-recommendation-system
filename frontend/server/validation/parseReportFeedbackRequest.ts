@@ -15,6 +15,7 @@ export interface ReportFeedbackRequest {
   signal_strength: "strong" | "medium" | "weak" | "context";
   label_direction: "positive" | "negative" | "neutral" | "context";
   metadata?: Record<string, unknown>;
+  user_id?: string;
 }
 
 type ParseResult =
@@ -75,6 +76,7 @@ export function parseReportFeedbackRequest(value: unknown): ParseResult {
   }
   const entityId = normalizeString(value.entity_id) ?? undefined;
   const experimentId = normalizeString(value.experiment_id) ?? undefined;
+  const userId = normalizeString(value.user_id) ?? undefined;
   return {
     ok: true,
     value: {
@@ -92,7 +94,8 @@ export function parseReportFeedbackRequest(value: unknown): ParseResult {
           : undefined,
       signal_strength: signalStrength as ReportFeedbackRequest["signal_strength"],
       label_direction: labelDirection as ReportFeedbackRequest["label_direction"],
-      metadata: (value.metadata as Record<string, unknown> | undefined) ?? undefined
+      metadata: (value.metadata as Record<string, unknown> | undefined) ?? undefined,
+      user_id: userId
     }
   };
 }

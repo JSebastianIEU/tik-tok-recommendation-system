@@ -1,0 +1,12 @@
+{
+  "total_time": "1903.6min",
+  "as_of_time": "2026-04-12T21:30:43.798760+00:00",
+  "steps": {
+    "export": "ok",
+    "comment_intelligence": "ok",
+    "datamart": "ok",
+    "recommender": "ok",
+    "reranker": "ok",
+    "calibration": "skipped"
+  }
+}

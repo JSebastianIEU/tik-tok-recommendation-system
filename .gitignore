@@ -235,3 +235,4 @@ artifacts/recommender/*/trajectory/
 data/real/
 frontend/.env.local
 .vite/
+artifacts/recommender/*/diagnostics/

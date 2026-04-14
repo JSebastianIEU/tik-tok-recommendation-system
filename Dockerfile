@@ -34,10 +34,10 @@ RUN pip install --no-cache-dir \
 # Models are cached in /root/.cache and loaded offline at runtime.
 # ---------------------------------------------------------------------------
 
-# 1. faster-whisper "small" model (~500MB)
+# 1. faster-whisper "base" model (fast on CPU, good enough for keyword extraction)
 RUN python -c "\
 from faster_whisper import WhisperModel; \
-WhisperModel('small', device='cpu', compute_type='int8')"
+WhisperModel('base', device='cpu', compute_type='int8')"
 
 # 2. EasyOCR detection + recognition models for en & es (~200MB)
 RUN mkdir -p /root/.EasyOCR/model && \
@@ -45,7 +45,7 @@ RUN mkdir -p /root/.EasyOCR/model && \
 import easyocr; \
 easyocr.Reader(['en', 'es'], gpu=False, verbose=True)"
 
-# 3. BLIP image captioning model (~1GB) — download as safetensors
+# 3. BLIP image captioning model (~1GB)
 RUN python -c "\
 from transformers import BlipProcessor, BlipForConditionalGeneration; \
 p = BlipProcessor.from_pretrained('Salesforce/blip-image-captioning-base'); \
@@ -57,6 +57,28 @@ RUN python -c "\
 from keybert import KeyBERT; \
 kb = KeyBERT('paraphrase-multilingual-MiniLM-L12-v2'); \
 print('KeyBERT loaded')"
+
+# 5. SentenceTransformer for hashtag recommender
+RUN python -c "\
+from sentence_transformers import SentenceTransformer; \
+m = SentenceTransformer('all-MiniLM-L6-v2'); \
+print('SentenceTransformer loaded, dim:', m.get_sentence_embedding_dimension())"
+
+# Verify all models load in offline mode (catches cache misses at build time)
+ENV HF_HUB_OFFLINE=1
+ENV TRANSFORMERS_OFFLINE=1
+ENV HF_DATASETS_OFFLINE=1
+RUN python -c "\
+from sentence_transformers import SentenceTransformer; \
+m = SentenceTransformer('all-MiniLM-L6-v2'); \
+print('OFFLINE OK: SentenceTransformer'); \
+from transformers import BlipProcessor, BlipForConditionalGeneration; \
+BlipProcessor.from_pretrained('Salesforce/blip-image-captioning-base'); \
+BlipForConditionalGeneration.from_pretrained('Salesforce/blip-image-captioning-base'); \
+print('OFFLINE OK: BLIP'); \
+from keybert import KeyBERT; \
+KeyBERT('paraphrase-multilingual-MiniLM-L12-v2'); \
+print('OFFLINE OK: KeyBERT')"
 
 # Copy source code and ensure package is importable
 COPY src/ ./src/
@@ -79,25 +101,16 @@ snapshot_download( \
     ] \
 )"
 
-# Environment — recommender paths
+# Environment
 ENV RECOMMENDER_BUNDLE_DIR=artifacts/recommender/20260414T050542Z-phase2-bootstrap-feedback
 ENV RECOMMENDER_CORPUS_BUNDLE_PATH=artifacts/contracts/f0119270fe1433f1adea9f41fbfd6eae66124c85ec9618619d0646ae29858bce/bundle.json
 ENV HASHTAG_RECOMMENDER_DIR=artifacts/hashtag_recommender
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
 ENV PORT=8081
-
-# CRITICAL: Force all HuggingFace / transformers libs to use ONLY local cache.
-# Without this, every model load triggers an HTTP call to HF to check for updates,
-# which gets rate-limited (429) on Cloud Run shared IPs.
-ENV HF_HUB_OFFLINE=1
-ENV TRANSFORMERS_OFFLINE=1
-ENV HF_DATASETS_OFFLINE=1
-
-# Disable demucs (too heavy, not critical for analysis)
 ENV DEMUCS_ENABLED=false
-# Use CPU-friendly BLIP model (pre-downloaded above)
 ENV BLIP_MODEL_ID=Salesforce/blip-image-captioning-base
+ENV WHISPER_MODEL_SIZE=base
 
 EXPOSE 8081
 

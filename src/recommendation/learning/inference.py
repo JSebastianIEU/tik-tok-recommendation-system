@@ -1585,8 +1585,8 @@ class RecommenderRuntime:
 
         retrieval_elapsed_ms = (time.perf_counter() - retrieval_started) * 1000.0
         retrieval_budget_ms = _as_float(
-            ((routing_payload.get("stage_budgets_ms") or {}).get("retrieval") if isinstance(routing_payload.get("stage_budgets_ms"), dict) else 260.0),
-            260.0,
+            ((routing_payload.get("stage_budgets_ms") or {}).get("retrieval") if isinstance(routing_payload.get("stage_budgets_ms"), dict) else 5000.0),
+            5000.0,
         )
         if retrieval_elapsed_ms > retrieval_budget_ms:
             raise RecommenderStageTimeoutError("retrieval", retrieval_elapsed_ms, retrieval_budget_ms)
@@ -1634,8 +1634,8 @@ class RecommenderRuntime:
 
         ranking_elapsed_ms = (time.perf_counter() - ranking_started) * 1000.0
         ranking_budget_ms = _as_float(
-            ((routing_payload.get("stage_budgets_ms") or {}).get("ranking") if isinstance(routing_payload.get("stage_budgets_ms"), dict) else 260.0),
-            260.0,
+            ((routing_payload.get("stage_budgets_ms") or {}).get("ranking") if isinstance(routing_payload.get("stage_budgets_ms"), dict) else 5000.0),
+            5000.0,
         )
         if ranking_elapsed_ms > ranking_budget_ms:
             raise RecommenderStageTimeoutError("ranking", ranking_elapsed_ms, ranking_budget_ms)
