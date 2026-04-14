@@ -76,41 +76,64 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
   }
 
-  const context = buildContext(body);
+  let context = buildContext(body);
+  // Truncate context to avoid exceeding DeepSeek token limits
+  const MAX_CONTEXT_CHARS = 3000;
+  if (context.length > MAX_CONTEXT_CHARS) {
+    context = context.slice(0, MAX_CONTEXT_CHARS) + "\n\n[...context truncated]";
+  }
   const userContent = context
     ? `${context}\n\n---\n\nUser question: ${question}`
     : question;
 
   try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 25_000);
+
     const response = await fetch(`${DEEPSEEK_BASE_URL}/chat/completions`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${DEEPSEEK_API_KEY}`,
       },
+      signal: controller.signal,
       body: JSON.stringify({
         model: DEEPSEEK_MODEL,
-        temperature: 0.4,
+        // deepseek-reasoner does not accept temperature
+        ...(DEEPSEEK_MODEL.includes("reasoner") ? {} : { temperature: 0.4 }),
         max_tokens: 2048,
         messages: [
+          // deepseek-reasoner ignores system messages — prepend to user content instead
+          ...(DEEPSEEK_MODEL.includes("reasoner")
+            ? []
+            : [
+                {
+                  role: "system" as const,
+                  content:
+                    "You are a TikTok video content strategist with access to frame-by-frame video analysis, " +
+                    "a recommendation report with comparable videos, and a searchable corpus of 13,000+ TikTok videos. " +
+                    "Reference specific data when answering. " +
+                    "Be concrete and actionable. No emojis. No generic filler. " +
+                    "When discussing the user's video, cite analysis data (timestamps, relevance scores, scene changes). " +
+                    "When suggesting content strategy, reference comparable videos and their engagement patterns.",
+                },
+              ]),
           {
-            role: "system",
-            content:
-              "You are a TikTok video content strategist with access to frame-by-frame video analysis, " +
-              "a recommendation report with comparable videos, and a searchable corpus of 13,000+ TikTok videos. " +
-              "Reference specific data when answering. " +
-              "Be concrete and actionable. No emojis. No generic filler. " +
-              "When discussing the user's video, cite analysis data (timestamps, relevance scores, scene changes). " +
-              "When suggesting content strategy, reference comparable videos and their engagement patterns.",
+            role: "user",
+            content: DEEPSEEK_MODEL.includes("reasoner")
+              ? "You are a TikTok content strategist. Be concrete and actionable. No emojis.\n\n" + userContent
+              : userContent,
           },
-          { role: "user", content: userContent },
         ],
       }),
     });
 
+    clearTimeout(timeout);
+
     if (!response.ok) {
       const text = await response.text();
       console.error("DeepSeek error:", response.status, text);
+      console.error("DeepSeek request model:", DEEPSEEK_MODEL, "| user content length:", userContent.length);
       return res.json({
         answer: "The AI assistant is currently unavailable. Please try again.",
         sources: [],

@@ -46,18 +46,23 @@ export class ApiVideoAnalysisService implements IVideoAnalysisService {
     }
 
     onPhaseChange?.("uploading");
-    const fileBytes = await request.file.arrayBuffer();
+    const fileName = request.file.name;
+    const fileType = request.file.type || "application/octet-stream";
     let response: Response;
 
     try {
       response = await fetch(UPLOAD_ANALYSIS_API_URL, {
         method: "POST",
         headers: {
-          "Content-Type": "application/octet-stream",
-          "x-file-name": request.file.name,
-          "x-file-type": request.file.type || "application/octet-stream"
+          "Content-Type": "application/json",
+          "x-file-name": fileName,
+          "x-file-type": fileType
         },
-        body: fileBytes
+        body: JSON.stringify({
+          file_name: fileName,
+          file_type: fileType,
+          file_size: request.file.size
+        })
       });
     } catch {
       throw new Error("Could not reach the upload analysis service.");
