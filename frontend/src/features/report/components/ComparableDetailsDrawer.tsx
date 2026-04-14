@@ -1,6 +1,7 @@
 import { CloseIcon } from "./ReportIcons";
 import type { ComparableItem } from "../types";
 import { ComparableThumbnailImage } from "./ComparableThumbnailImage";
+import { ScoreComponentsChart } from "./ScoreBar";
 
 interface ComparableDetailsDrawerProps {
   item: ComparableItem | null;
@@ -34,7 +35,10 @@ export function ComparableDetailsDrawer(
           <>
             <header className="report-drawer-header">
               <div>
-                <h4>Comparable details</h4>
+                <h4>Comparable Details</h4>
+                <p className="drawer-similarity">
+                  Similarity: {Math.round(item.similarity * 100)}% · {item.support_level} support
+                </p>
               </div>
 
               <button
@@ -67,39 +71,79 @@ export function ComparableDetailsDrawer(
                 </a>
               ) : null}
 
-              <section className="report-drawer-block">
-                <h5>Full caption</h5>
+              <section className="drawer-block">
+                <h5>Caption</h5>
                 <p>{item.caption}</p>
+                <p className="drawer-author">@{item.author.replace(/^@+/, "")}</p>
               </section>
 
-              <section className="report-drawer-block">
-                <h5>Metrics</h5>
-                <ul>
-                  <li>Views: {formatNumber(item.metrics.views)}</li>
-                  <li>Likes: {formatNumber(item.metrics.likes)}</li>
-                  <li>Comments: {formatNumber(item.metrics.comments_count)}</li>
-                  <li>Shares: {formatNumber(item.metrics.shares)}</li>
-                  <li>Engagement rate: {item.metrics.engagement_rate}</li>
-                </ul>
+              <section className="drawer-block">
+                <h5>Performance Metrics</h5>
+                <div className="drawer-metrics-grid">
+                  <div className="drawer-metric">
+                    <span className="drawer-metric-val">{formatNumber(item.metrics.views)}</span>
+                    <span className="drawer-metric-lbl">Views</span>
+                  </div>
+                  <div className="drawer-metric">
+                    <span className="drawer-metric-val">{formatNumber(item.metrics.likes)}</span>
+                    <span className="drawer-metric-lbl">Likes</span>
+                  </div>
+                  <div className="drawer-metric">
+                    <span className="drawer-metric-val">{formatNumber(item.metrics.comments_count)}</span>
+                    <span className="drawer-metric-lbl">Comments</span>
+                  </div>
+                  <div className="drawer-metric">
+                    <span className="drawer-metric-val">{formatNumber(item.metrics.shares)}</span>
+                    <span className="drawer-metric-lbl">Shares</span>
+                  </div>
+                  <div className="drawer-metric drawer-metric-wide">
+                    <span className="drawer-metric-val">{item.metrics.engagement_rate}</span>
+                    <span className="drawer-metric-lbl">Engagement Rate</span>
+                  </div>
+                </div>
               </section>
 
-              <section className="report-drawer-block">
-                <h5>Why this is similar</h5>
-                <ul>
-                  {item.matched_keywords.map((keyword) => (
-                    <li key={keyword}>{keyword}</li>
-                  ))}
-                </ul>
+              <section className="drawer-block">
+                <h5>Score Breakdown</h5>
+                <ScoreComponentsChart components={item.score_components} />
               </section>
 
-              <section className="report-drawer-block">
-                <h5>Observations</h5>
-                <ul>
-                  {item.observations.map((note) => (
-                    <li key={note}>{note}</li>
-                  ))}
-                </ul>
-              </section>
+              {item.hashtags.length > 0 && (
+                <section className="drawer-block">
+                  <h5>Hashtags</h5>
+                  <div className="drawer-tags">
+                    {item.hashtags.map((tag) => (
+                      <span className="drawer-tag" key={tag}>{tag}</span>
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {item.ranking_reasons.length > 0 && (
+                <section className="drawer-block">
+                  <h5>Selection Reasons</h5>
+                  <div className="drawer-reasons">
+                    {item.ranking_reasons.map((reason, i) => (
+                      <span className="drawer-reason" key={i}>
+                        {reason.replace(/_/g, " ")}
+                      </span>
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {item.retrieval_branches.length > 0 && (
+                <section className="drawer-block">
+                  <h5>Retrieval Branches</h5>
+                  <div className="drawer-reasons">
+                    {item.retrieval_branches.map((branch, i) => (
+                      <span className="drawer-reason" key={i}>
+                        {branch.replace(/_/g, " ")}
+                      </span>
+                    ))}
+                  </div>
+                </section>
+              )}
             </div>
           </>
         ) : null}

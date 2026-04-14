@@ -7,6 +7,14 @@ import type {
 import { MockVideoAnalysisService } from "../mock/mockUploadApi";
 import { buildApiUrl, MOCK_ONLY_MODE } from "./runtimeConfig";
 
+export interface FrameTimelineEntry {
+  timestamp_sec: number;
+  relevance_score: number;
+  is_scene_change: boolean;
+  caption?: string;
+  thumbnail_b64?: string;
+}
+
 const UPLOAD_ANALYSIS_API_URL = buildApiUrl("/upload-video");
 
 interface UploadApiErrorPayload {

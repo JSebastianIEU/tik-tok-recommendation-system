@@ -1,11 +1,18 @@
 ﻿import {
+  useEffect,
+  useRef,
   useState,
   type ClipboardEvent,
   type FormEvent,
   type KeyboardEvent,
   type MouseEvent
 } from "react";
+import { createPortal } from "react-dom";
 import type { UploadFormValues } from "../../../services/contracts/models";
+import {
+  suggestHashtags,
+  type HashtagSuggestion
+} from "../../../services/api/hashtagApi";
 import { TagInputOverlay, type TagEditorMode } from "./TagInputOverlay";
 
 interface UploadFormProps {
@@ -30,6 +37,9 @@ interface TagFieldProps {
   items: string[];
   disabled: boolean;
   placeholder?: string;
+  suggestions?: HashtagSuggestion[];
+  loadingSuggestions?: boolean;
+  onPickSuggestion?: (hashtag: string) => void;
   onOpen: (initialValue?: string) => void;
   onRemove: (index: number) => void;
 }
@@ -39,7 +49,7 @@ function normalizeForCompare(value: string): string {
 }
 
 function TagField(props: TagFieldProps): JSX.Element {
-  const { label, symbol, items, disabled, placeholder, onOpen, onRemove } = props;
+  const { label, symbol, items, disabled, placeholder, suggestions, loadingSuggestions, onPickSuggestion, onOpen, onRemove } = props;
   const [inlineDraft, setInlineDraft] = useState<string>("");
 
   const openFromTypedText = (typedValue: string): void => {
@@ -142,6 +152,28 @@ function TagField(props: TagFieldProps): JSX.Element {
             placeholder={placeholder ?? (items.length === 0 ? "no items" : "add item")}
             aria-label={`Type ${label}`}
           />
+
+          {loadingSuggestions && (
+            <span className="suggestion-loading">suggesting...</span>
+          )}
+
+          {suggestions && suggestions.length > 0 && (
+            <>
+              <span className="suggestion-divider" />
+              <span className="suggestion-label">tap to add:</span>
+              {suggestions.map((s) => (
+                <button
+                  key={s.hashtag}
+                  type="button"
+                  className="suggestion-chip"
+                  disabled={disabled}
+                  onClick={() => onPickSuggestion?.(s.hashtag)}
+                >
+                  + {symbol}{s.hashtag.replace(/^#/, "")}
+                </button>
+              ))}
+            </>
+          )}
         </div>
       </div>
     </div>
@@ -167,6 +199,8 @@ export function UploadForm(props: UploadFormProps): JSX.Element {
 
   const [editorMode, setEditorMode] = useState<TagEditorMode | null>(null);
   const [editorInitialValue, setEditorInitialValue] = useState<string>("");
+  const [hashtagSuggestions, setHashtagSuggestions] = useState<HashtagSuggestion[]>([]);
+  const [suggestingHashtags, setSuggestingHashtags] = useState(false);
 
   const openEditor = (mode: TagEditorMode, initialValue = ""): void => {
     setEditorMode(mode);
@@ -211,6 +245,82 @@ export function UploadForm(props: UploadFormProps): JSX.Element {
     }
   };
 
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastFetchedDesc = useRef<string>("");
+  const isFetchingRef = useRef(false);
+
+  useEffect(() => {
+    const desc = values.description.trim();
+
+    // Clear pending timer on every description change
+    if (debounceRef.current) {
+      clearTimeout(debounceRef.current);
+      debounceRef.current = null;
+    }
+
+    // Don't clear existing suggestions — only clear if description is emptied
+    if (!desc || desc.length < 5) {
+      if (desc.length === 0) {
+        setHashtagSuggestions([]);
+        lastFetchedDesc.current = "";
+      }
+      return;
+    }
+
+    // Already fetched for this exact description
+    if (desc === lastFetchedDesc.current) {
+      return;
+    }
+
+    debounceRef.current = setTimeout(() => {
+      if (isFetchingRef.current) {
+        return;
+      }
+      isFetchingRef.current = true;
+      lastFetchedDesc.current = desc;
+      setSuggestingHashtags(true);
+
+      suggestHashtags({
+        caption: desc,
+        top_n: 10,
+        exclude_tags: values.hashtags.map((h) =>
+          h.startsWith("#") ? h : `#${h}`
+        ),
+        include_neighbours: false
+      })
+        .then((result) => {
+          setHashtagSuggestions(result.suggestions ?? []);
+        })
+        .catch(() => {
+          // keep existing suggestions on error
+        })
+        .finally(() => {
+          setSuggestingHashtags(false);
+          isFetchingRef.current = false;
+        });
+    }, 3000);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [values.description]);
+
+  const handlePickSuggestion = (tag: string): void => {
+    const clean = tag.replace(/^#/, "").trim().toLowerCase();
+    if (!clean) {
+      return;
+    }
+
+    const exists = values.hashtags.some(
+      (item) => normalizeForCompare(item) === clean
+    );
+
+    if (!exists) {
+      onHashtagsChange([...values.hashtags, clean]);
+    }
+
+    setHashtagSuggestions((prev) =>
+      prev.filter((s) => s.hashtag.replace(/^#/, "").toLowerCase() !== clean)
+    );
+  };
+
   return (
     <section className="glass-card form-panel">
       <form onSubmit={handleSubmit} className="upload-form">
@@ -231,6 +341,9 @@ export function UploadForm(props: UploadFormProps): JSX.Element {
           items={values.hashtags}
           disabled={disabled}
           placeholder={isAnalyzing && values.hashtags.length === 0 ? "Suggesting hashtags..." : undefined}
+          suggestions={hashtagSuggestions}
+          loadingSuggestions={suggestingHashtags}
+          onPickSuggestion={handlePickSuggestion}
           onOpen={(initialValue) => openEditor("hashtags", initialValue)}
           onRemove={(index) =>
             onHashtagsChange(values.hashtags.filter((_, itemIndex) => itemIndex !== index))
@@ -349,12 +462,15 @@ export function UploadForm(props: UploadFormProps): JSX.Element {
         </button>
       </form>
 
-      <TagInputOverlay
-        mode={editorMode}
-        initialValue={editorInitialValue}
-        onConfirm={handleAddTag}
-        onClose={closeEditor}
-      />
+      {editorMode && createPortal(
+        <TagInputOverlay
+          mode={editorMode}
+          initialValue={editorInitialValue}
+          onConfirm={handleAddTag}
+          onClose={closeEditor}
+        />,
+        document.body
+      )}
     </section>
   );
 }

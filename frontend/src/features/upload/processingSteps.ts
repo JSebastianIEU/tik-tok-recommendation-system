@@ -1,35 +1,47 @@
-﻿import type { ProcessingStep } from "./hooks/useProcessingFlow";
+import type { ProcessingStep } from "./hooks/useProcessingFlow";
 
 export const PROCESSING_STEPS: ProcessingStep[] = [
   {
     id: "upload",
     label: "Uploading video...",
     icon: "upload",
-    durationMs: 900
+    durationMs: 800
   },
   {
-    id: "analyze",
-    label: "Analyzing content...",
-    icon: "analyze",
-    durationMs: 2400
+    id: "frames",
+    label: "Extracting frames & audio...",
+    icon: "frames",
+    durationMs: 4000
   },
   {
-    id: "extract",
-    label: "Extracting information...",
-    icon: "extract",
-    durationMs: 1350
+    id: "vision",
+    label: "Analyzing scenes & motion...",
+    icon: "vision",
+    durationMs: 6000
+  },
+  {
+    id: "transcript",
+    label: "Transcribing audio...",
+    icon: "transcript",
+    durationMs: 8000
+  },
+  {
+    id: "timeline",
+    label: "Building interactive timeline...",
+    icon: "timeline",
+    durationMs: 3000
   },
   {
     id: "compare",
-    label: "Comparing results...",
+    label: "Finding comparable videos...",
     icon: "compare",
-    durationMs: 1450
+    durationMs: 2000
   },
   {
     id: "report",
-    label: "Building report...",
+    label: "Ranking & building report...",
     icon: "report",
-    durationMs: 2650
+    durationMs: 3000
   },
   {
     id: "done",
