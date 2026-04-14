@@ -251,6 +251,26 @@ def _startup_prewarm() -> None:
     except Exception as error:
         _service_logger.error("startup: failed to pre-warm runtime: %s", error)
 
+    # Pre-load video analysis ML models so first /v1/video/analyze is fast
+    _service_logger.info("startup: pre-loading video analysis models...")
+    try:
+        from src.recommendation.video.analyzer import (
+            _load_whisper_model,
+            _load_ocr_reader,
+            _load_blip,
+            _load_keybert,
+        )
+        _load_whisper_model()
+        _service_logger.info("startup: Whisper model loaded")
+        _load_ocr_reader()
+        _service_logger.info("startup: EasyOCR reader loaded")
+        _load_blip()
+        _service_logger.info("startup: BLIP captioner loaded")
+        _load_keybert()
+        _service_logger.info("startup: KeyBERT model loaded")
+    except Exception as video_err:
+        _service_logger.warning("startup: video model pre-load failed: %s", video_err)
+
 
 @app.get("/v1/warmup")
 def warmup_check() -> Dict[str, Any]:
